@@ -1,0 +1,245 @@
+{
+  "base": "http://localhost:5173",
+  "shots": [
+    {
+      "route": "01-home",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-17/01-home-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "01-home",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-17/01-home-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "01-home",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-17/01-home-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "01-home",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-17/01-home-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "01-home",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-17/01-home-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "02-empty-thread",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-17/02-empty-thread-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "02-empty-thread",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-17/02-empty-thread-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "02-empty-thread",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-17/02-empty-thread-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "02-empty-thread",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-17/02-empty-thread-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "02-empty-thread",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-17/02-empty-thread-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "03-chat-filled",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-17/03-chat-filled-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "03-chat-filled",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-17/03-chat-filled-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "03-chat-filled",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-17/03-chat-filled-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "03-chat-filled",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-17/03-chat-filled-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "03-chat-filled",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-17/03-chat-filled-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "04-agent-list",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-17/04-agent-list-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "04-agent-list",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-17/04-agent-list-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "04-agent-list",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-17/04-agent-list-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "04-agent-list",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-17/04-agent-list-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "04-agent-list",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-17/04-agent-list-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "05-agent-editor",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-17/05-agent-editor-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "05-agent-editor",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-17/05-agent-editor-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "05-agent-editor",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-17/05-agent-editor-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "05-agent-editor",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-17/05-agent-editor-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "05-agent-editor",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-17/05-agent-editor-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "06-group-list",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-17/06-group-list-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "06-group-list",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-17/06-group-list-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "06-group-list",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-17/06-group-list-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "06-group-list",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-17/06-group-list-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "06-group-list",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-17/06-group-list-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "07-group-chat",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-17/07-group-chat-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "07-group-chat",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-17/07-group-chat-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "07-group-chat",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-17/07-group-chat-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "07-group-chat",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-17/07-group-chat-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "07-group-chat",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-17/07-group-chat-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "08-provider",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-17/08-provider-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "08-provider",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-17/08-provider-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "08-provider",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-17/08-provider-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "08-provider",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-17/08-provider-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "08-provider",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-17/08-provider-390x844.png",
+      "ok": true
+    }
+  ]
+}

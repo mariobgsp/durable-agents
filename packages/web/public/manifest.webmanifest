@@ -1,0 +1,14 @@
+{
+  "name": "Durable Agents",
+  "short_name": "Agents",
+  "description": "Durable chat with agents and agent groups on top of pi-durable.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#16171a",
+  "theme_color": "#16171a",
+  "lang": "en",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "types": ["vite/client", "svelte"]
+  },
+  "include": ["src/**/*.ts", "src/**/*.svelte", "vite.config.ts", "scripts/**/*.mjs"]
+}
