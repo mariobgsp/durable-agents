@@ -219,11 +219,11 @@ The wire sequence a client actually sees, captured with `node scripts/ws-probe.m
 snapshot       { entries: [...] }        # durable transcript so far
 entry          { role: "user" }          # the message you just sent
 message-start                            # a bubble opens
-delta          { text: "Arrr, " }        # partials, ~80 ms apart
-delta          { text: "aku adalah " }
-delta          { text: "kapten " }
+delta          { text: "Ahoy, " }        # partials, ~80 ms apart
+delta          { text: "I am the " }
+delta          { text: "pirate captain " }
 entry          { role: "assistant" }     # the committed entry
-message-end    { text: "Arrr, aku adalah kapten bajak laut…" }
+message-end    { text: "Ahoy, I am the pirate captain of this crew." }
 ```
 
 `watchEvents` also emits start/end events for **user** entries, so only `pi.assistant` entries are allowed
