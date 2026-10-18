@@ -10,6 +10,7 @@ import {
   AGENT_TEMPLATE,
   SOUL_TEMPLATE,
   deleteAgent,
+  ensureAgentTmp,
   listAgents,
   readAgent,
   setAgentEnabled,
@@ -20,13 +21,18 @@ import {
 import { activeIds, subscribe as subscribeActivity } from "./activity.ts";
 import { makeAuthHook } from "./auth.ts";
 import { modelCatalog } from "./capabilities.ts";
+import { usageReport } from "./usage.ts";
 import { enableE2E, e2eState, setE2EScript, type E2EStep } from "./e2e.ts";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, clearApiKey, models, providerStatus, setApiKey } from "./models.ts";
 import { context, harnessInstance, openHarness } from "./harness.ts";
 import { configuredToken, dataDir, host, serverPort, tokenPath } from "./paths.ts";
+import { setAgentResolver } from "./remember.ts";
 import {
   abortSession,
+  agentForConversation,
   allSessionRecords,
+  compactSession,
+  contextInfo,
   conversationIdFromParam,
   createSession,
   deleteSession,
@@ -38,6 +44,7 @@ import {
   restartSession,
   restoreSession,
   sendMessage,
+  setSessionModel,
   trackIfBusy,
   transcript,
 } from "./sessions.ts";
@@ -66,6 +73,13 @@ const e2e = process.env.PI_E2E === "1";
 if (e2e) enableE2E();
 await openHarness();
 
+// Every agent's scratch directory exists before any prompt announces it, and the shared `remember` tool can
+// now find which agent is calling it.
+for (const agent of await listAgents()) {
+  await ensureAgentTmp(agent.id);
+}
+setAgentResolver(agentForConversation);
+
 // Warm start: `resume()` inside openHarness() may have rescheduled work that began before this process
 // started, which nobody marked. Each check marks a session only if it is still busy after a short grace
 // window, so an idle session is never reported as generating.
@@ -89,6 +103,44 @@ await app.register(
     api.post("/sessions", async (request) => {
       const body = (request.body ?? {}) as { title?: string; agentId?: string };
       return createSession(body.title, body.agentId);
+    });
+
+    /** What the composer's caption shows: this thread's context against its model's window. */
+    api.get("/sessions/:id/context", async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const info = await contextInfo(id);
+      if (!info) {
+        await reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      return info;
+    });
+
+    /** Compact this thread's context now. Runs in the background; the transcript shows a pill when it lands. */
+    api.post("/sessions/:id/compact", async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const started = await compactSession(id);
+      if (!started) {
+        await reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      return { ok: true };
+    });
+
+    /** Switch the model from the composer. Agent threads move their agent, so every thread of it follows. */
+    api.put("/sessions/:id/model", async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = (request.body ?? {}) as { provider?: string; modelId?: string };
+      if (!body.provider || !body.modelId) {
+        await reply.code(400).send({ error: "provider and modelId are required" });
+        return;
+      }
+      const result = await setSessionModel(id, { provider: body.provider, modelId: body.modelId });
+      if (!result) {
+        await reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      return result;
     });
 
     api.patch("/sessions/:id", async (request, reply) => {
@@ -215,16 +267,19 @@ await app.register(
 
     api.post("/sessions/:id/messages", async (request, reply) => {
       const { id } = request.params as { id: string };
-      const body = (request.body ?? {}) as { text?: string };
+      const body = (request.body ?? {}) as { text?: string; whenBusy?: string };
       const text = (body.text ?? "").trim();
       if (!text) {
         await reply.code(400).send({ error: "Empty text" });
         return;
       }
+      // Steering is a per-message decision: the composer asks for it while the agent is replying. A group
+      // takes the plain queue path, because one message may start several member turns.
+      const whenBusy = body.whenBusy === "steer" || body.whenBusy === "reject" ? body.whenBusy : "followUp";
       if (await isRoom(id)) {
         return postToRoom(id, text);
       }
-      const result = await sendMessage(id, text);
+      const result = await sendMessage(id, text, whenBusy);
       if (!result) {
         await reply.code(404).send({ error: "Session not found" });
         return;
@@ -268,6 +323,9 @@ await app.register(
     api.get("/activity", async () => ({ active: activeIds() }));
 
     // ---------- providers ----------
+
+    /** Aggregates behind the usage view: who answered, on which model, at what cost. */
+    api.get("/usage", async () => usageReport());
 
     api.get("/providers", async () => ({
       providers: await providerStatus(),

@@ -1,7 +1,7 @@
 /// <reference types="svelte" />
 import { api } from "./api.ts";
-import type { AgentRecord, Msg, Session } from "./types.ts";
-import { connect, connectPresence, type Frame } from "./ws.ts";
+import type { AgentRecord, ContextInfo, Msg, Session } from "./types.ts";
+import { connect, connectPresence, type Frame, type ToolCall } from "./ws.ts";
 
 export const store = $state({
   sessions: [] as Session[],
@@ -17,6 +17,12 @@ export const store = $state({
   busy: false,
   /** Session ids the server reports as generating, for every thread and not just the open one. */
   active: [] as string[],
+  /** Tool calls of the current round. The server sends whole-list snapshots, so there is nothing to diff. */
+  tools: [] as ToolCall[],
+  /** Context used against the model's window, for the caption under the composer. */
+  context: null as ContextInfo | null,
+  /** Models of the connected providers, grouped for the composer's picker. Loaded once per tab. */
+  modelGroups: [] as { provider: string; models: { id: string; name: string }[] }[],
   connection: "idle" as "idle" | "open" | "closed",
   error: null as string | null,
 });
@@ -94,6 +100,8 @@ function onFrame(frame: Frame): void {
       store.live = false;
       store.busy = false;
       void refreshEntries();
+      // The answer just grew the context, so the caption is stale until this lands.
+      void loadContext();
       break;
     case "log":
       store.connection = frame.text.includes("connection lost") ? "closed" : "open";
@@ -114,7 +122,9 @@ function onFrame(frame: Frame): void {
     case "presence":
       store.active = frame.active;
       break;
-    case "tool":
+    case "tools":
+      store.tools = frame.tools;
+      break;
     default:
       break;
   }
@@ -170,6 +180,68 @@ export async function loadSessions(includeDeleted = false): Promise<void> {
   }
 }
 
+/**
+ * Read the caption's two numbers. Failure is silent and clears the caption: a thread must never break over a
+ * meter, and the next message-end retries it anyway.
+ */
+export async function loadContext(): Promise<void> {
+  const current = store.currentId;
+  if (!current) {
+    store.context = null;
+    return;
+  }
+  try {
+    const info = await api.context(current);
+    if (store.currentId === current) store.context = info;
+  } catch {
+    if (store.currentId === current) store.context = null;
+  }
+}
+
+/** Models grouped by the providers that actually hold credentials; loaded once per tab. */
+export async function loadModelGroups(): Promise<void> {
+  if (store.modelGroups.length > 0) return;
+  try {
+    const { providers } = await api.providers();
+    const connected = providers.filter((row) => row.configured);
+    const groups = await Promise.all(
+      connected.map(async (row) => {
+        const { models } = await api.models(row.id);
+        return { provider: row.id, models: models.map((model) => ({ id: model.id, name: model.name })) };
+      }),
+    );
+    store.modelGroups = groups.filter((group) => group.models.length > 0);
+  } catch (err) {
+    report(err);
+  }
+}
+
+/** Ask the server to rewrite this thread's context; the result arrives in the transcript as a pill. */
+export async function compactThread(): Promise<boolean> {
+  const current = store.currentId;
+  if (!current) return false;
+  try {
+    await api.compact(current);
+    return true;
+  } catch (err) {
+    report(err);
+    return false;
+  }
+}
+
+/** Switch the model from the composer. An agent thread moves its agent, and the server decides which. */
+export async function setThreadModel(provider: string, modelId: string): Promise<void> {
+  const current = store.currentId;
+  if (!current) return;
+  try {
+    await api.setModel(current, provider, modelId);
+    await loadSessions();
+    await loadContext();
+  } catch (err) {
+    report(err);
+  }
+}
+
 export async function loadAgents(): Promise<void> {
   try {
     const { agents } = await api.agents();
@@ -201,6 +273,7 @@ export async function openSession(id: string): Promise<void> {
   if (token !== openToken) return;
   store.connection = "open";
   disconnect = connect(id, onFrame);
+  void loadContext();
 }
 
 export function closeSession(): void {
@@ -295,7 +368,13 @@ export async function updateRoomMode(id: string, mode: "nyahut" | "moderator" | 
   }
 }
 
-export async function send(text: string): Promise<void> {
+/**
+ * Send one message.
+ *
+ * `whenBusy: "steer"` folds it into the run that is generating instead of queueing behind it — the composer
+ * switches to that while the agent is replying, so a correction lands while it still matters.
+ */
+export async function send(text: string, whenBusy?: "steer" | "followUp"): Promise<void> {
   const id = store.currentId;
   const value = text.trim();
   if (!id || !value) return;
@@ -306,7 +385,7 @@ export async function send(text: string): Promise<void> {
     session.id === id ? { ...session, updatedAt: Date.now() } : session,
   );
   try {
-    await api.send(id, value);
+    await api.send(id, value, whenBusy);
   } catch (err) {
     report(err);
     store.busy = false;

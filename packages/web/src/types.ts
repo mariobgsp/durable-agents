@@ -31,6 +31,41 @@ export type Session = {
   deletedAt?: number;
 };
 
+/** A finished tool call, as one line in the transcript. Mirrors packages/server/src/wire.ts. */
+export type ToolLine = {
+  name: string;
+  isError: boolean;
+  durationMs?: number;
+  /** Nested calls this one made through code mode. */
+  nested?: number;
+};
+
+/** One measured row of the usage report. */
+export type UsageBucket = {
+  turns: number;
+  tokens: number;
+  cost: number;
+};
+
+export type UsageReport = {
+  generatedAt: number;
+  totals: UsageBucket & { sessions: number; toolCalls: number };
+  agents: (UsageBucket & { id: string; name: string })[];
+  models: (UsageBucket & { provider: string; modelId: string })[];
+  tools: { name: string; calls: number; errors: number; avgMs: number }[];
+  days: { date: string; turns: number; tokens: number }[];
+};
+
+/** What the composer caption shows, straight from the server's own reading of the last turn. */
+export type ContextInfo = {
+  usedTokens: number;
+  maxTokens?: number;
+  provider: string;
+  modelId: string;
+  /** "agent" when the picker edits the agent's model rather than this thread's. */
+  source: "session" | "agent";
+};
+
 export type Msg = {
   id: string;
   role: Role;
@@ -38,6 +73,8 @@ export type Msg = {
   ts: number;
   kind?: string;
   author?: string | null;
+  /** Present on role "tool": the call this line summarizes. */
+  tool?: ToolLine;
   data?: unknown;
 };
 

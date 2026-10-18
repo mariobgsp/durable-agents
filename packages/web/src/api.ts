@@ -3,17 +3,20 @@ import type {
   AgentFiles,
   AgentInput,
   AgentRecord,
+  ContextInfo,
   ModelInfo,
   Msg,
   ProviderRow,
   RoomConfig,
   Session,
+  UsageReport,
 } from "./types.ts";
 
 export type {
   AgentFiles,
   AgentInput,
   AgentRecord,
+  ContextInfo,
   ModelInfo,
   Msg,
   ProviderRow,
@@ -22,6 +25,7 @@ export type {
   RoomMode,
   Session,
   ThinkingLevel,
+  UsageReport,
 } from "./types.ts";
 
 type Boot = { token: string; apiBase: string };
@@ -74,17 +78,26 @@ export const api = {
       body: JSON.stringify({ handoff }),
     }),
   messages: (id: string) => req<{ entries: Msg[] }>(`/api/sessions/${id}/messages`),
-  send: (id: string, text: string) =>
+  send: (id: string, text: string, whenBusy?: "steer" | "followUp") =>
     req<{ submissionId: string }>(`/api/sessions/${id}/messages`, {
       method: "POST",
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, ...(whenBusy ? { whenBusy } : {}) }),
     }),
   abort: (id: string) => req<{ ok: true }>(`/api/sessions/${id}/abort`, { method: "POST" }),
+  context: (id: string) => req<ContextInfo>(`/api/sessions/${id}/context`),
+  compact: (id: string) => req<{ ok: true }>(`/api/sessions/${id}/compact`, { method: "POST" }),
+  setModel: (id: string, provider: string, modelId: string) =>
+    req<{ changed: "session" | "agent" }>(`/api/sessions/${id}/model`, {
+      method: "PUT",
+      body: JSON.stringify({ provider, modelId }),
+    }),
 
   createRoom: (title: string, members: string[]) =>
     req<Session>("/api/rooms", { method: "POST", body: JSON.stringify({ title, members }) }),
   updateRoom: (id: string, patch: Partial<RoomConfig>) =>
     req<Session>(`/api/rooms/${id}`, { method: "PUT", body: JSON.stringify(patch) }),
+
+  usage: () => req<UsageReport>("/api/usage"),
 
   providers: () =>
     req<{ providers: ProviderRow[]; default: { provider: string; modelId: string } }>("/api/providers"),

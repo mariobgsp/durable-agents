@@ -35,11 +35,86 @@ function textOfMessage(message: unknown): string {
   return textOf(message.content);
 }
 
+/** A finished tool call, read structurally so a shape change in pi-ai cannot break the transcript. */
+type ToolResultLike = {
+  toolName?: unknown;
+  content?: unknown;
+  isError?: unknown;
+  durationMs?: unknown;
+  nestedCalls?: unknown;
+};
+
+function nestedCount(value: unknown): number {
+  if (!value || typeof value !== "object") return 0;
+  const calls = (value as { calls?: unknown }).calls;
+  return Array.isArray(calls) ? calls.length : 0;
+}
+
+/** One elided line from a longer text: a tool result is a paragraph, and only its gist belongs in chat. */
+function firstLine(text: string, limit = 200): string {
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed !== "") return trimmed.length > limit ? trimmed.slice(0, limit) + "\u2026" : trimmed;
+  }
+  return "";
+}
+
 /**
- * Durable entry -> UI message. Only pi.user and pi.assistant are shown for now;
- * pi.system (prompt/tool deltas), pi.compaction, pi.reset and pi.tool-result are hidden.
+ * One line for a tool call that has finished.
+ *
+ * This is what makes the trace durable. `pi.live` holds a call only while it runs, so without this line a
+ * session would forget that a tool was ever used — and the model's own toolCall blocks are dropped as
+ * text. A skill, an MCP tool and a coding tool all arrive here the same way, so all of them leave a line.
+ */
+function toolResultLine(entry: EntryRecord): WireMsg | null {
+  if (entry.kind !== "pi.tool-result") return null;
+  const first = Array.isArray(entry.model) ? (entry.model[0] as unknown) : undefined;
+  if (!first || typeof first !== "object") return null;
+  const result = first as ToolResultLike;
+  if (typeof result.toolName !== "string") return null;
+  const nested = nestedCount(result.nestedCalls);
+  return {
+    id: String(entry.id),
+    role: "tool",
+    text: firstLine(textOf(result.content)),
+    ts: 0,
+    kind: entry.kind,
+    author: null,
+    tool: {
+      name: result.toolName,
+      isError: result.isError === true,
+      ...(typeof result.durationMs === "number" ? { durationMs: result.durationMs } : {}),
+      ...(nested > 0 ? { nested } : {}),
+    },
+    data: entry.data ?? null,
+  };
+}
+
+/**
+ * Durable entry -> UI message. pi.user and pi.assistant become bubbles, pi.tool-result becomes one line of
+ * tool trace and pi.compaction becomes one pill. pi.system (prompt and tool deltas) and pi.reset stay
+ * hidden: they are bookkeeping, not conversation.
  */
 export function entryToMsg(entry: EntryRecord): WireMsg | null {
+  const toolLine = toolResultLine(entry);
+  if (toolLine) return toolLine;
+
+  // A compaction rewrote the context. One pill is enough information about it; the summary itself is
+  // already inside the conversation the model sees. The reason is worth keeping: "by hand" and "the window
+  // was about to overflow" mean different things when you are reading a long thread back.
+  if (entry.kind === "pi.compaction") {
+    const reason = (entry.data as { reason?: unknown } | undefined)?.reason;
+    return {
+      id: String(entry.id),
+      role: "system",
+      text: typeof reason === "string" ? "Context compacted (" + reason + ")" : "Context compacted",
+      ts: 0,
+      kind: entry.kind,
+      author: null,
+      data: entry.data ?? null,
+    };
+  }
+
   const builtin = BUILTIN_ROLES[entry.kind];
   const data: unknown = entry.data;
   const author = authorProp(data) ?? null;

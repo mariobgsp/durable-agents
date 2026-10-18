@@ -1,10 +1,11 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { AgentChange, Conversation, ConversationId } from "@earendil-works/pi-durable";
-import { readAgent, renderInstructions } from "./agents.ts";
+import { readAgent, renderInstructions, writeAgent } from "./agents.ts";
+import { rememberTool } from "./remember.ts";
 import { WATCHDOG_MS, markActive, markIdle, markIdleIfCurrent } from "./activity.ts";
 import { context, harnessInstance, toolsByName } from "./harness.ts";
-import { resolveDefaultModel, type ModelRef } from "./models.ts";
+import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, models, resolveDefaultModel, type ModelRef } from "./models.ts";
 import { sessionsPath } from "./paths.ts";
 import { entriesToMsgs } from "./transcript.ts";
 import type { WireMsg } from "./wire.ts";
@@ -164,6 +165,21 @@ export async function restartSession(id: string, handoff?: string): Promise<bool
   return true;
 }
 
+/**
+ * Which agent owns a conversation: a direct thread's own agent, or one member's conversation inside a group.
+ * The `remember` tool needs this because it is shared by every conversation.
+ */
+export async function agentForConversation(conversationId: string): Promise<string | undefined> {
+  for (const record of await readIndex()) {
+    if (record.deletedAt) continue;
+    if (record.agent && String(record.id) === conversationId) return record.agent;
+    for (const [agentId, id] of Object.entries(record.room?.conversations ?? {})) {
+      if (String(id) === conversationId) return agentId;
+    }
+  }
+  return undefined;
+}
+
 export async function findSession(id: string): Promise<SessionRecord | undefined> {
   const numeric = Number(id);
   return (await readIndex()).find((session) => session.id === numeric);
@@ -203,7 +219,9 @@ export function agentChangeOf(files: Awaited<ReturnType<typeof readAgent>>): Age
     model: { provider: files.record.provider, modelId: files.record.modelId },
     thinkingLevel: files.record.thinkingLevel,
     instructions: renderInstructions(files),
-    tools: toolsByName(files.record.tools),
+    // `remember` is always offered: keeping memory is part of being an agent, not a tool the owner has to
+    // switch on first. Everything else comes from the agent's own list.
+    tools: [...toolsByName(files.record.tools), rememberTool],
     cwd: files.record.cwd ?? null,
   };
 }
@@ -239,6 +257,95 @@ export async function conversationOf(id: string): Promise<Conversation | undefin
   const conversationId = conversationIdFromParam(id);
   if (conversationId === null) return undefined;
   return harnessInstance().conversation(conversationId, context);
+}
+
+/** What the composer shows under the box: this thread's context against the model's window. */
+export type ContextInfo = {
+  /** Tokens the next request would carry: the last answer's prompt plus what it committed. */
+  usedTokens: number;
+  maxTokens?: number;
+  provider: string;
+  modelId: string;
+  /** Where the model comes from, so the UI can say what the picker actually edits. */
+  source: "session" | "agent";
+};
+
+/**
+ * Read the context size from the last assistant entry's usage rather than summing the transcript: usage is what
+ * the provider actually charged for the prompt, which is the number the window is measured against.
+ */
+export async function contextInfo(id: string): Promise<ContextInfo | null> {
+  const record = await findSession(id);
+  if (!record) return null;
+  const conversation = await conversationOf(id);
+  if (!conversation) return null;
+
+  const view = await conversation.viewState(context);
+  let usedTokens = 0;
+  for (const entry of [...view.value.entries].reverse()) {
+    if (entry.kind !== "pi.assistant") continue;
+    const message = Array.isArray(entry.model) ? (entry.model[0] as { usage?: { totalTokens?: unknown } }) : undefined;
+    const total = message?.usage?.totalTokens;
+    if (typeof total === "number") {
+      usedTokens = total;
+      break;
+    }
+  }
+
+  const agent = record.agent ? await readAgent(record.agent) : null;
+  const ref = agent
+    ? { provider: agent.record.provider, modelId: agent.record.modelId }
+    : (record.model ?? { provider: DEFAULT_PROVIDER, modelId: DEFAULT_MODEL_ID });
+  const model = models.getModel(ref.provider, ref.modelId);
+  return {
+    usedTokens,
+    ...(typeof model?.contextWindow === "number" ? { maxTokens: model.contextWindow } : {}),
+    provider: ref.provider,
+    modelId: ref.modelId,
+    source: record.agent ? "agent" : "session",
+  };
+}
+
+/**
+ * Point a thread at another model.
+ *
+ * An agent thread follows its agent, so changing it there would silently diverge from AGENT.md's model; the
+ * agent's own record is updated and every thread of that agent is reconfigured instead. A plain thread has no
+ * agent, so its own record carries the model.
+ */
+export async function setSessionModel(
+  id: string,
+  ref: { provider: string; modelId: string },
+): Promise<{ changed: "session" | "agent" } | null> {
+  const record = await findSession(id);
+  if (!record) return null;
+
+  if (record.agent) {
+    const files = await readAgent(record.agent);
+    if (!files) return null;
+    await writeAgent({ ...files.record, id: files.record.id, provider: ref.provider, modelId: ref.modelId });
+    await rebindAgent(files.record.id);
+    return { changed: "agent" };
+  }
+
+  const conversation = await conversationOf(id);
+  if (!conversation) return null;
+  await conversation.configure({ model: ref }, context);
+  await updateSessionRecord(Number(id), { model: ref, updatedAt: Date.now() });
+  return { changed: "session" };
+}
+
+/**
+ * Ask the harness to rewrite this thread's context now instead of waiting for the automatic threshold.
+ *
+ * The task runs in the background: the transcript shows a pill when it lands, and the conversation keeps working
+ * meanwhile. The context caption only drops after the next answer, because it reads the last request's usage.
+ */
+export async function compactSession(id: string): Promise<boolean> {
+  const conversation = await conversationOf(id);
+  if (!conversation) return false;
+  await conversation.compact(undefined, context);
+  return true;
 }
 
 /** Transcript for REST: read from the conversation's durable view state, not a UI cache. */
@@ -297,11 +404,22 @@ async function settle(id: string, epoch: number): Promise<void> {
   }
 }
 
-export async function sendMessage(id: string, text: string): Promise<{ submissionId: string } | null> {
+/**
+ * Place one user message.
+ *
+ * `whenBusy` is pi-durable's own routing for a message that arrives mid-run: `steer` folds it into the turn
+ * that is generating, `followUp` queues it for after that turn, `reject` fails the submission. The default is
+ * follow-up, so an ordinary send can never be swallowed by a run that happens to be in flight.
+ */
+export async function sendMessage(
+  id: string,
+  text: string,
+  whenBusy: "steer" | "followUp" | "reject" = "followUp",
+): Promise<{ submissionId: string } | null> {
   const conversation = await conversationOf(id);
   if (!conversation) return null;
   // The submission is durable by the time this call returns; the answer arrives over the WebSocket.
-  const submission = await conversation.submit({ type: "input", content: text }, context);
+  const submission = await conversation.submit({ type: "input", content: text, whenBusy }, context);
   // Track only after the submission is placed: a waiter started earlier could observe the conversation
   // as already idle and clear the mark before any work began.
   void trackActivity(id);
@@ -341,6 +459,11 @@ export async function rebindAgent(agentId: string): Promise<number> {
     const conversation = await conversationOf(String(record.id));
     if (!conversation) continue;
     await conversation.configure(change, context);
+    // Keep the record's model in step with the agent, or the model chip on every thread of this agent lies
+    // after the owner picks another model in the editor.
+    await updateSessionRecord(record.id, {
+      model: { provider: files.record.provider, modelId: files.record.modelId },
+    });
     updated += 1;
   }
   return updated;

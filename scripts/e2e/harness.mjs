@@ -20,6 +20,8 @@ export async function startServer(options = {}) {
     ...process.env,
     PI_DATA_DIR: dataDir,
     PI_SERVER_PORT: "0",
+    // Agent scratch space is ~/tmp by default; inside a test it must never touch the real home.
+    PI_AGENT_TMP_DIR: resolve(dataDir, "tmp"),
     PI_E2E: options.real === true ? "0" : "1",
   };
   const child = spawn(process.execPath, ["packages/server/src/index.ts"], {

@@ -143,5 +143,10 @@ function stepToResponse(step: E2EStep): FauxResponseStep {
       ),
     );
   }
-  return fauxAssistantMessage(blocks.length > 0 ? blocks : fauxText("(empty)"));
+  // A message that carries a tool call must say so: `stopReason` is what tells the harness the turn is not
+  // over and a tool has to run. Left at "stop", a scripted tool call is scrolled into the transcript and
+  // never executed, which is how a `toolCall` step would look broken rather than test the tool path.
+  return fauxAssistantMessage(blocks.length > 0 ? blocks : fauxText("(empty)"), {
+    ...(step.toolCall ? { stopReason: "toolUse" as const } : {}),
+  });
 }

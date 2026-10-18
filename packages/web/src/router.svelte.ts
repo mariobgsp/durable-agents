@@ -5,6 +5,7 @@ type Route =
   | { name: "groups" }
   | { name: "agents" }
   | { name: "providers" }
+  | { name: "usage" }
   | { name: "agent"; id: string };
 
 function parse(): Route {
@@ -15,6 +16,7 @@ function parse(): Route {
   if (agent?.[1]) return { name: "agent", id: agent[1] };
   if (hash === "groups") return { name: "groups" };
   if (hash === "providers") return { name: "providers" };
+  if (hash === "usage") return { name: "usage" };
   if (hash === "agents") return { name: "agents" };
   return { name: "home" };
 }

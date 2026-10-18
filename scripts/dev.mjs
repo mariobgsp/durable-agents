@@ -78,4 +78,4 @@ start(
   resolve(root, "packages/web"),
 );
 
-console.log("\n  Durable Agents dev → http://localhost:5173\n");
+console.log("\n  dura-agents dev → http://localhost:5173\n");

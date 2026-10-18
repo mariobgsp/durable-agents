@@ -23,6 +23,9 @@
   import type { Msg, RoomMode } from "../types.ts";
   import AgentAvatar from "../components/AgentAvatar.svelte";
   import GroupSettings from "../components/GroupSettings.svelte";
+  import ContextBar from "../components/ContextBar.svelte";
+  import ToolCallRow from "../components/ToolCallRow.svelte";
+  import ToolTrace from "../components/ToolTrace.svelte";
   import TypingDots from "../components/TypingDots.svelte";
 
   // A group bubble shows the speaker's own colour and face, so a room reads like several people talking.
@@ -41,6 +44,18 @@
     session?.agent ? (store.agents.find((entry) => entry.id === session.agent) ?? null) : null,
   );
   const agentDisabled = $derived(agent !== null && agent.enabled === false);
+  /**
+   * The composer hint has to fit on one line: at phone width the long placeholder was clipped mid-sentence,
+   * which reads as a broken field rather than a hidden tip.
+   */
+  let narrow = $state(false);
+  $effect(() => {
+    const query = window.matchMedia("(max-width: 720px)");
+    const apply = () => (narrow = query.matches);
+    apply();
+    query.addEventListener("change", apply);
+    return () => query.removeEventListener("change", apply);
+  });
   /** What to call the agent in a direct thread: its own name, never the generic word "agent". */
   const agentName = $derived(agent?.name || agent?.id || "agent");
   /**
@@ -48,6 +63,23 @@
    * included so returning to a thread mid-answer still shows it, before any delta has arrived.
    */
   const replying = $derived(store.busy || isReplying(store.currentId));
+  /**
+   * While a reply is in flight the composer steers instead of queueing, so it says so rather than pretending to
+   * be the same box. Declared after `replying` because it reads it.
+   */
+  const placeholder = $derived(
+    replying
+      ? narrow
+        ? "Steer the reply…"
+        : "Steer the reply… (lands in the turn that is running)"
+      : room
+        ? narrow
+          ? "Write to the group… @name calls a member"
+          : "Write to the group… use @name to call a member"
+        : narrow
+          ? "Write a message…"
+          : "Write a message… (Enter sends, Shift+Enter adds a line)",
+  );
   const groupIdentity = $derived(session ? identityOfGroup(session) : null);
   const members = $derived(
     (room?.members ?? []).map((member) => identityOfMember(member, store.agents)),
@@ -94,7 +126,8 @@
     const value = text.trim();
     if (!value) return;
     text = "";
-    await send(value);
+    // Steering folds the message into the running turn; otherwise it is an ordinary new turn.
+    await send(value, replying ? "steer" : undefined);
   }
 
   function onKeydown(event: KeyboardEvent) {
@@ -234,7 +267,19 @@
 
   <div class="timeline" bind:this={scroller} data-testid="timeline">
     {#each store.entries as message, index (message.id)}
-      {#if message.role === "system"}
+      {#if message.role === "tool" && message.tool}
+        <!-- The durable half of the trace: a call that already finished, replayed from the transcript. -->
+        <div class="toolhistory" data-testid="tool-line">
+          <ToolCallRow
+            name={message.tool.name}
+            variant="inline"
+            output={message.text}
+            isError={message.tool.isError}
+            durationMs={message.tool.durationMs}
+            nested={message.tool.nested}
+          />
+        </div>
+      {:else if message.role === "system"}
         <p class="sys" data-testid="msg-system">{message.text}</p>
       {:else if message.role === "assistant"}
         {@const identity = identityFor(message)}
@@ -256,6 +301,8 @@
         </article>
       {/if}
     {/each}
+
+    <ToolTrace tools={store.tools} />
 
     {#if replying && !store.live}
       <article class="msg msg--assistant msg--identity" data-testid="msg-typing">
@@ -314,12 +361,13 @@
       bind:this={area}
       bind:value={text}
       rows="1"
-      placeholder={room
-        ? "Write to the group… use @name to call a member"
-        : "Write a message… (Enter sends, Shift+Enter adds a line)"}
+      {placeholder}
       data-testid="composer"
       onkeydown={onKeydown}
     ></textarea>
-    <button class="btn btn--primary" type="submit" disabled={store.busy}>Send</button>
+    <button class="btn btn--primary" type="submit">{replying ? "Steer" : "Send"}</button>
   </form>
+
+  <!-- Under the box, not in it: context used and the model it is measured against. -->
+  <ContextBar />
 </section>

@@ -1,12 +1,29 @@
 import { token } from "./api.ts";
 
+/** One tool call, in the shape the chat trace renders. Mirrors packages/server/src/wire.ts. */
+export type ToolCall = {
+  callId: string;
+  name: string;
+  status: "pending" | "running" | "done";
+  /** Retained running output; absent for a call that has produced none yet. */
+  output?: string;
+  /** An error-severity diagnostic on this call. */
+  isError?: boolean;
+  /** Nested calls this one made through code mode. */
+  nested?: number;
+};
+
 export type Frame =
   | { type: "snapshot"; entries: import("./api").Msg[] }
   | { type: "entry"; entry: import("./api").Msg }
   | { type: "message-start" }
   | { type: "delta"; text: string }
   | { type: "message-end"; text: string }
-  | { type: "tool"; name: string; phase: "start" | "end"; output?: string; isError?: boolean }
+  /**
+   * Tool calls of the current round. A whole-list snapshot, like presence: the client never diffs, so a
+   * missed start/stop pair cannot leave a row spinning forever.
+   */
+  | { type: "tools"; tools: ToolCall[] }
   | { type: "typing"; author: string; state: "start" | "stop" }
   | { type: "presence"; active: string[] }
   | { type: "refresh"; entries: import("./api").Msg[] }

@@ -1,14 +1,27 @@
 :root {
-  /* Ethereal Glass: a near-black OLED base, so the identity colours are the only real light. */
-  --bg: #08090b;
-  --panel: #101114;
-  --panel-2: #16181c;
-  --line: rgb(255 255 255 / 7%);
-  --line-strong: rgb(255 255 255 / 12%);
+  /* Ethereal Glass: a true-black OLED base, so the identity colours are the only real light.
+     The panels sit just above #000: on a pure-black base a difference smaller than this disappears on
+     cheap panels, and a larger one starts to read as a grey card instead of a surface. */
+  --bg: #000000;
+  --panel: #0a0b0d;
+  --panel-2: #131519;
+  /* A hairline is a white alpha over whatever is behind it, so it also goes dimmer when the base goes
+     black. 7% used to composite to ~#191a1c over #08090b; 9% over #000 lands on the same brightness. */
+  --line: rgb(255 255 255 / 9%);
+  --line-strong: rgb(255 255 255 / 14%);
+  --line-active: rgb(255 255 255 / 26%);
   --text: #ecedef;
   --muted: #8b9096;
   --accent: #e0a35c;
-  --accent-ink: #1a1206;
+
+  /*
+   * Buttons are the one place the palette goes monochrome: paper on ink for the primary action, ink with a
+   * white hairline for everything else. Exactly one filled button can exist per screen, which is what makes
+   * the hierarchy readable without adding a second colour to compete with the identity accents.
+   */
+  --paper: #ffffff;
+  --paper-dim: #dfe0e2;
+  --ink: #000000;
   --danger: #e06c60;
   --ok: #7bbf7b;
 
@@ -53,7 +66,9 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* A single faint radial mesh, capped at 6% so it can never wash out text. */
+/* A single faint radial mesh, capped at 3% so it can never wash out text. Halved from 6% with the
+   move to a pure-black base: the same alpha reads twice as strong against #000, and OLED renders the
+   low end of the ramp as banding. */
 body::before {
   content: "";
   position: fixed;
@@ -61,8 +76,8 @@ body::before {
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(58ch 58ch at 10% -10%, rgb(224 163 92 / 6%), transparent 70%),
-    radial-gradient(48ch 48ch at 102% -2%, rgb(127 179 213 / 4%), transparent 70%);
+    radial-gradient(58ch 58ch at 10% -10%, rgb(224 163 92 / 3%), transparent 70%),
+    radial-gradient(48ch 48ch at 102% -2%, rgb(127 179 213 / 2%), transparent 70%);
 }
 
 code,
@@ -390,32 +405,55 @@ button {
   white-space: nowrap;
 }
 
+/* Utility button: an ink surface with a white hairline. No fill, so the one paper button owns the screen. */
 .btn {
   padding: 8px 12px;
   border-radius: var(--r-sm);
-  border: 1px solid var(--border);
-  background: var(--panel-2);
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text);
   cursor: pointer;
-  transition: filter var(--t) var(--ease), opacity var(--t) var(--ease);
+  transition:
+    background var(--t) var(--ease),
+    border-color var(--t) var(--ease),
+    opacity var(--t) var(--ease),
+    transform var(--t) var(--ease);
 }
 
 .btn:hover {
-  filter: brightness(1.12);
+  background: rgb(255 255 255 / 7%);
+  border-color: var(--line-active);
+}
+
+/* Press feedback is transform-only: no layout, no repaint of the surface underneath. */
+.btn:active {
+  transform: scale(0.98);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--paper);
+  outline-offset: 2px;
 }
 
 .btn:disabled {
-  opacity: 0.55;
+  opacity: 0.45;
   cursor: default;
 }
 
 .btn--primary {
-  background: var(--accent);
-  border-color: transparent;
-  color: var(--accent-ink);
+  background: var(--paper);
+  border-color: var(--paper);
+  color: var(--ink);
   font-weight: 600;
   /* The primary action is a pill with room to breathe; utility buttons stay squircles. */
   border-radius: 999px;
   padding: 9px 16px;
+}
+
+/* White has no headroom left for a brightness filter, so the hover dims the paper instead. */
+.btn--primary:hover {
+  background: var(--paper-dim);
+  border-color: var(--paper-dim);
 }
 
 /* Button-in-button: a trailing glyph sits in its own circle, flush with the inner padding. */
@@ -426,13 +464,18 @@ button {
   height: 20px;
   margin-left: 8px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--accent-ink) 14%, transparent);
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
   font-size: 13px;
   line-height: 1;
 }
 
 .btn--ghost {
   background: transparent;
+  border-color: transparent;
+}
+
+.btn--ghost:hover {
+  border-color: transparent;
 }
 
 .btn--block {
@@ -1000,6 +1043,18 @@ button {
   color: var(--text);
 }
 
+/* Every control answers the keyboard the same way: a paper ring, never a colour change. */
+.icon-btn:focus-visible,
+.tab:focus-visible,
+.mode:focus-visible,
+.chip--link:focus-visible,
+.drawer-btn:focus-visible,
+.swatch:focus-visible,
+.emoji:focus-visible {
+  outline: 2px solid var(--paper);
+  outline-offset: 2px;
+}
+
 .menu {
   display: flex;
   flex-direction: column;
@@ -1105,11 +1160,20 @@ button {
   gap: 8px;
 }
 
+/*
+ * Outlined, not filled: with paper as the only filled button on a screen, a filled red would read as the
+ * primary action. The red hairline keeps the warning without winning the hierarchy.
+ */
 .btn--danger {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: #1b0f0d;
+  background: transparent;
+  border-color: color-mix(in srgb, var(--danger) 60%, transparent);
+  color: var(--danger);
   font-weight: 600;
+}
+
+.btn--danger:hover {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  border-color: var(--danger);
 }
 
 .btn--small {
@@ -1535,6 +1599,399 @@ button {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
+/* ---------- tool calls ---------- */
+
+/*
+ * The trace of the current round: one row per call, hairline between, read like a console. It carries no
+ * surface beyond a panel, so the identity colours in the bubbles stay the loudest thing on the screen.
+ */
+.tooltrace {
+  display: flex;
+  flex-direction: column;
+  max-width: 72ch;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  overflow: hidden;
+  animation: rise var(--t) var(--ease) both;
+}
+
+.toolcall {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.toolcall + .toolcall {
+  border-top: 1px solid var(--line);
+}
+
+.toolcall__dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  opacity: 0.5;
+}
+
+/* The only motion a running call needs: a dot that breathes, under an output line that keeps changing. */
+.toolcall--running .toolcall__dot {
+  background: var(--accent);
+  opacity: 1;
+  animation: pulse 1.2s var(--ease) infinite;
+}
+
+.toolcall--done .toolcall__dot {
+  background: var(--ok);
+  opacity: 1;
+}
+
+.toolcall--error .toolcall__dot {
+  background: var(--danger);
+}
+
+.toolcall__name {
+  flex-shrink: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.toolcall__nested {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.toolcall__state {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.toolcall__state--ok {
+  color: var(--ok);
+}
+
+.toolcall__state--error {
+  color: var(--danger);
+}
+
+/* One line, elided: a row never grows, so the timeline below it never jumps while a call runs. */
+.toolcall__output {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.toolcall__time {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * The transcript half of the trace: the same row standing on its own in the timeline instead of inside the
+ * live strip. No surface, no padding, indented past the avatar so it lines up with the bubbles around it —
+ * one quiet line saying which tool ran, for how long, and how it ended.
+ */
+.toolcall--inline {
+  padding: 0;
+}
+
+.toolhistory {
+  max-width: 78ch;
+  margin-left: 38px;
+}
+
+/* ---------- usage graphs ---------- */
+
+.usage__stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.usage__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px 12px 0;
+}
+
+.usage__stat + .usage__stat {
+  border-left: 1px solid var(--line);
+  padding-left: 14px;
+}
+
+.usage__stat-value {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage__stat-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.usage__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 18px 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.usage__head-note {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.usage__chart {
+  display: flex;
+  flex-direction: column;
+}
+
+/* One row per comparison: label, bar, number, note. Hairlines do the separating, not boxes. */
+.usage__row {
+  display: grid;
+  grid-template-columns: minmax(80px, 168px) 1fr 44px minmax(90px, 168px);
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.usage__label {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+/* The track is the full scale; the bar is one transform-friendly width, drawn from the left. */
+.usage__track {
+  display: block;
+  height: 6px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 6%);
+  overflow: hidden;
+}
+
+.usage__bar {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  animation: rise var(--t-slow) var(--ease) both;
+}
+
+.usage__bar--paper {
+  background: var(--paper);
+  opacity: 0.82;
+}
+
+.usage__value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage__sub {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage__bad {
+  color: var(--danger);
+}
+
+/* Columns share the row's baseline: the tallest day sets the scale for the rest. */
+.usage__days {
+  display: flex;
+  /* A fixed height, never a shrunk one: the page is a flex column, and without this the chart collapses to
+     the height of its labels when the content is taller than the viewport. */
+  flex-shrink: 0;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 6px;
+  height: 120px;
+  min-height: 120px;
+  padding-top: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+/*
+ * Capped width, so two quiet weeks never turn into one giant block and one busy day stays a column. Grid rather
+ * than flex: the bar's percentage height then measures the free row, not a row already spent on the label.
+ */
+.usage__day {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  align-items: end;
+  flex: 1 1 0;
+  gap: 6px;
+  height: 100%;
+  min-width: 0;
+  max-width: 72px;
+}
+
+/*
+ * The bar fills its row and is scaled from the bottom, so the height never depends on a percentage chain
+ * resolving through the grid — that chain is what made the column invisible on a phone.
+ */
+.usage__day-bar {
+  width: 100%;
+  align-self: stretch;
+  border-radius: 3px 3px 0 0;
+  background: var(--paper);
+  opacity: 0.82;
+  transform-origin: bottom center;
+  transition: transform var(--t-slower) var(--ease);
+}
+
+.usage__day-label {
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .usage__stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .usage__stat:nth-child(3) {
+    border-left: none;
+  }
+
+  /* The note wraps under the number instead of stealing the bar's room on a phone. */
+  .usage__row {
+    grid-template-columns: minmax(64px, 96px) 1fr 36px;
+  }
+
+  .usage__sub {
+    grid-column: 2 / -1;
+    font-size: 10px;
+  }
+
+  /* Fourteen labels cannot fit on a phone, so only every third day is named. */
+  .usage__days {
+    gap: 3px;
+    height: 96px;
+    min-height: 96px;
+  }
+
+  .usage__day-label {
+    display: none;
+    font-size: 9px;
+  }
+
+  .usage__day:nth-child(3n + 1) .usage__day-label {
+    display: block;
+  }
+}
+
+/* ---------- composer caption ---------- */
+
+/* One quiet line under the box: context used, and the model it is measured against. */
+.contextbar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 0 24px 14px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.contextbar__usage {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.contextbar__pct {
+  color: var(--text);
+}
+
+/* A 2px meter scaled with transform, so rising usage never reflows the line it sits on. */
+.contextbar__meter {
+  flex: 1;
+  min-width: 24px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 9%);
+  overflow: hidden;
+}
+
+.contextbar__fill {
+  display: block;
+  height: 100%;
+  background: var(--paper);
+  transform-origin: left center;
+  transition: transform var(--t-slower) var(--ease);
+}
+
+/* The compact action stays quiet: a maintenance affordance, not a primary path. */
+.contextbar__action {
+  flex-shrink: 0;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.contextbar__model select {
+  appearance: none;
+  padding: 3px 24px 3px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background-color: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  /* The chevron is two gradients, the same trick the editor's selects use. */
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 13px) 50%,
+    calc(100% - 9px) 50%;
+  background-repeat: no-repeat;
+  background-size:
+    4px 4px,
+    4px 4px;
+}
+
+.contextbar__model select:hover {
+  border-color: var(--line-active);
+}
+
+.contextbar__model select:focus-visible {
+  outline: 2px solid var(--paper);
+  outline-offset: 2px;
+}
+
 /* ---------- responsive: narrow, then off-canvas drawer ---------- */
 
 .drawer-btn {
@@ -1593,7 +2050,9 @@ button {
   }
 
   .main {
-    padding-top: 54px;
+    /* 54px clears the fixed drawer button; the inset keeps the header out from under the status bar
+       when the PWA runs standalone with viewport-fit=cover and a translucent status bar. */
+    padding-top: calc(54px + env(safe-area-inset-top, 0px));
   }
 
   /* The spine needs horizontal room the drawer does not have. */
@@ -1615,6 +2074,20 @@ button {
   /* The header carries an avatar, a title and three chips; on a phone it has to wrap tidily. */
   .chat__head {
     padding: 10px 14px;
+  }
+
+  /* The drawer already gives up horizontal room; the trace drops its own cap to match the bubbles. */
+  .tooltrace {
+    max-width: none;
+  }
+
+  .toolcall {
+    padding: 6px 8px;
+  }
+
+  /* The row gets padding at this tier; the transcript line must not, or it stops lining up. */
+  .toolcall--inline {
+    padding: 0;
   }
 
   .chat__meta {

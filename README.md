@@ -1,4 +1,6 @@
-# Durable Agents
+# dura-agents
+
+The application is called **dura-agents**; the repository and its directory keep the name `durable-agents`.
 
 A local, single-user web app for **durable agent chat**: threads that survive restarts, agents defined by
 two markdown files, and group chats where several agents talk to each other.
@@ -41,8 +43,8 @@ Latest verified run:
 | Check | Result |
 | --- | --- |
 | `npm run check` | `tsc` clean · `svelte-check` **0 errors** · `lint:lang` clean |
-| `npm run e2e` | **4 passed, 0 failed** (`activity`, `identity`, `models`, `sessions`) |
-| `npm run build` | **58.8 kB JS** + **5.8 kB CSS** gzip (budget 100 kB) |
+| `npm run e2e` | **7 passed, 0 failed** (`activity`, `identity`, `memory`, `models`, `sessions`, `steering`, `tools`) |
+| `npm run build` | **62.3 kB JS** + **6.7 kB CSS** gzip (budget 100 kB) |
 | `npm run shots` | 40 screenshots across 5 viewports |
 | `npm run shots:replying` | 3 screenshots of the replying indicator |
 
@@ -315,6 +317,12 @@ The `#/providers` screen writes the last one. To run the whole thing as one proc
 npm run build && npm start      # one Fastify process serving UI + API + WS on 8787
 ```
 
+### Reaching it from a phone
+
+The server listens on loopback only and speaks plain HTTP, so a phone needs TLS and a route in front of it
+before the UI can be installed as an app. The runbook — Tailscale, the `PI_ALLOWED_HOSTS` allowlist, the
+systemd user unit and the iOS/Android install — is in [`docs/tailscale.md`](docs/tailscale.md).
+
 ### Commands
 
 | Command | Purpose |
@@ -380,7 +388,8 @@ scripts/dev.mjs          One dev command (token + server + Vite)
 scripts/e2e/             Deterministic E2E: harness.mjs, run.mjs, scenarios/
 apps/desktop/            Tauri shell — never compiled; see Known gaps
 data/                    gitignored: app.sqlite, sessions.json, token, credentials.json, agents/
-docs/                    roadmap.md, ui-review/ (screenshots + findings)
+docs/                    roadmap.md, tailscale.md (phone access), ui-review/ (screenshots + findings)
+deploy/                  dura-agents.service (systemd user unit)
 ```
 
 ## Design system

@@ -1,5 +1,5 @@
 import { mkdir } from "node:fs/promises";
-import { Harness, createRegistry } from "@earendil-works/pi-durable";
+import { Harness, createRegistry, defineExtension } from "@earendil-works/pi-durable";
 import type { Extension, Registry, ToolRegistration } from "@earendil-works/pi-durable";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
@@ -9,6 +9,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { models } from "./models.ts";
+import { rememberTool } from "./remember.ts";
 import { dataDir, dbPath } from "./paths.ts";
 
 /** Extension registry shared by every session. */
@@ -30,6 +31,10 @@ export async function openHarness(): Promise<Harness> {
   // does: decode, honour EXIF orientation, resize to the model's limits.
   const images = await createNodePhotonImages();
   registry.install(createCodingTools({ images }));
+
+  // Memory: one line per agent, written by the agent itself. Installed for the registry, then selected by
+  // every agent in agentChangeOf() — a tool that is offered but not registered answers "not available".
+  registry.install(defineExtension({ name: "memory", tools: [rememberTool] }));
 
   // Code mode: the model writes JavaScript that calls the conversation's tools in a QuickJS sandbox.
   registry.install(

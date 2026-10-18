@@ -1,11 +1,14 @@
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { dataDir } from "./paths.ts";
+import { agentTmpRoot, dataDir } from "./paths.ts";
 import { models, resolveDefaultModel } from "./models.ts";
 
 export type ThinkingLevel = "off" | "low" | "medium" | "high";
 
-/** One agent is one directory at data/agents/<id>/ holding agent.json + AGENT.md + SOUL.md. */
+/**
+ * One agent is one directory at data/agents/<id>/ holding agent.json + AGENT.md + SOUL.md + MEMORY.md.
+ * Its scratch space lives outside the repository, at ~/tmp/<id>, and is not part of the agent's files.
+ */
 export type AgentRecord = {
   id: string;
   name: string;
@@ -26,7 +29,7 @@ export type AgentRecord = {
   avatar?: string;
 };
 
-export type AgentFiles = { record: AgentRecord; agentMd: string; soulMd: string };
+export type AgentFiles = { record: AgentRecord; agentMd: string; soulMd: string; memoryMd: string };
 
 export type AgentInput = {
   id?: string;
@@ -149,6 +152,7 @@ export async function readAgent(id: string): Promise<AgentFiles | null> {
     record,
     agentMd: await readText(resolve(dirOf(id), "AGENT.md")),
     soulMd: await readText(resolve(dirOf(id), "SOUL.md")),
+    memoryMd: await readText(memoryPath(id)),
   };
 }
 
@@ -175,6 +179,8 @@ export async function writeAgent(input: AgentInput): Promise<AgentFiles> {
   else if (!existing) await writeText(resolve(dirOf(id), "AGENT.md"), AGENT_TEMPLATE);
   if (input.soulMd !== undefined) await writeText(resolve(dirOf(id), "SOUL.md"), input.soulMd);
   else if (!existing) await writeText(resolve(dirOf(id), "SOUL.md"), SOUL_TEMPLATE);
+  // The announced scratch path must exist before any prompt mentions it.
+  await ensureAgentTmp(id);
   const files = await readAgent(id);
   if (!files) throw new Error("failed to write agent: " + id);
   return files;
@@ -194,11 +200,93 @@ export async function deleteAgent(id: string): Promise<boolean> {
   return true;
 }
 
-/** System-prompt instructions: SOUL first (who you are), then AGENT (working rules). */
+/** Notes rendered into the prompt; older ones stay on disk instead of crowding out the conversation. */
+const MEMORY_RENDER_LIMIT = 40;
+
+/** The agent's scratch directory: ~/tmp/<id>, created on save and on boot. */
+export function agentTmpDir(id: string): string {
+  return resolve(agentTmpRoot, id);
+}
+
+/** Announce a path only once it exists. */
+export async function ensureAgentTmp(id: string): Promise<string> {
+  const dir = agentTmpDir(id);
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+export function memoryPath(id: string): string {
+  return resolve(dirOf(id), "MEMORY.md");
+}
+
+export async function readMemory(id: string): Promise<string> {
+  return readText(memoryPath(id));
+}
+
+/**
+ * Append one note to an agent's memory.
+ *
+ * This runs inside a tool call, so it must not reach the model again by itself: the saved line is echoed back
+ * in the tool result instead. A note already present (same day, or the same sentence from an earlier day) is
+ * reported rather than duplicated, because a model that repeats itself should not grow the file.
+ */
+export async function appendMemory(id: string, note: string): Promise<{ saved: boolean; line: string }> {
+  const clean = note.replace(/\s+/g, " ").trim().slice(0, 500);
+  if (!clean) throw new Error("a memory note cannot be empty");
+
+  const existing = await readMemory(id);
+  const line = "- " + new Date().toISOString().slice(0, 10) + " \u00b7 " + clean;
+  const lower = clean.toLowerCase();
+  const duplicate = existing
+    .split("\n")
+    .some((entry) => entry.trim().toLowerCase().endsWith(lower));
+  if (duplicate) return { saved: false, line };
+
+  const body = existing.trim().length > 0 ? existing.trimEnd() + "\n" + line + "\n" : "# Memory\n\n" + line + "\n";
+  await writeText(memoryPath(id), body);
+  return { saved: true, line };
+}
+
+/**
+ * The notes the agent saved with `remember`. Only the newest `MEMORY_RENDER_LIMIT` are rendered: memory is
+ * meant to inform the prompt, not to become the conversation.
+ */
+function memorySection(memoryMd: string): string {
+  const notes = memoryMd
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("- "));
+  if (notes.length === 0) return "";
+  const kept = notes.slice(-MEMORY_RENDER_LIMIT);
+  const omitted = notes.length - kept.length;
+  return [
+    "## Memory",
+    "",
+    "Notes you saved with the `remember` tool. They are yours in every thread, so treat them as things you already know.",
+    "",
+    ...(omitted > 0 ? ["(" + omitted + " older notes are on disk but omitted here)", ""] : []),
+    ...kept,
+  ].join("\n");
+}
+
+/** Where this agent may write scripts, named explicitly so it never invents a shared directory. */
+function scratchSection(id: string): string {
+  return [
+    "## Scratch space",
+    "",
+    "Your own directory is `" + agentTmpDir(id) + "`. Put scripts and throwaway files there.",
+    "Every agent has its own directory; do not write into another agent's.",
+  ].join("\n");
+}
+
+/** System-prompt instructions: SOUL (who you are), AGENT (rules), memory (what you learned), then scratch space. */
 export function renderInstructions(files: AgentFiles): string {
   const parts: string[] = [];
   if (files.soulMd.trim()) parts.push("## SOUL.md\n\n" + files.soulMd.trim());
   if (files.agentMd.trim()) parts.push("## AGENT.md\n\n" + files.agentMd.trim());
+  const memory = memorySection(files.memoryMd);
+  if (memory) parts.push(memory);
+  parts.push(scratchSection(files.record.id));
   return parts.join("\n\n");
 }
 
