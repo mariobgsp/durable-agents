@@ -15,6 +15,16 @@ export function setAgentResolver(resolver: (conversationId: string) => Promise<s
   resolveAgent = resolver;
 }
 
+/**
+ * The same resolver, for the other shared hooks that need it.
+ *
+ * `permissions.ts` applies a different policy per agent, and it is installed before the server has an index
+ * to resolve against, so it has to ask for the resolver at call time rather than capture it at install time.
+ */
+export function agentResolver(): ((conversationId: string) => Promise<string | undefined>) | undefined {
+  return resolveAgent;
+}
+
 export const rememberTool = defineTool({
   name: "remember",
   description:

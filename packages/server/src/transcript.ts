@@ -61,6 +61,24 @@ function firstLine(text: string, limit = 200): string {
 }
 
 /**
+ * The structured reason a call failed, from the result's own diagnostics.
+ *
+ * A failed call's model-visible text is the diagnostics block rendered between `<harness>` tags, so taking its
+ * first line gives the tag rather than the message. The diagnostic is the same reason, unrendered, which is
+ * what a reader wants on the line — and it is the only reason a policy block leaves.
+ */
+function diagnosticText(data: unknown): string | undefined {
+  const diagnostics = (data as { diagnostics?: unknown } | undefined)?.diagnostics;
+  if (!Array.isArray(diagnostics)) return undefined;
+  for (const entry of diagnostics) {
+    if (!entry || typeof entry !== "object") continue;
+    const { severity, message } = entry as { severity?: unknown; message?: unknown };
+    if (severity === "error" && typeof message === "string" && message.length > 0) return message;
+  }
+  return undefined;
+}
+
+/**
  * One line for a tool call that has finished.
  *
  * This is what makes the trace durable. `pi.live` holds a call only while it runs, so without this line a
@@ -77,7 +95,7 @@ function toolResultLine(entry: EntryRecord): WireMsg | null {
   return {
     id: String(entry.id),
     role: "tool",
-    text: firstLine(textOf(result.content)),
+    text: diagnosticText(entry.data) ?? firstLine(textOf(result.content)),
     ts: 0,
     kind: entry.kind,
     author: null,

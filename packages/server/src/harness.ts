@@ -10,6 +10,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { models } from "./models.ts";
+import { permissionsExtension } from "./permissions.ts";
 import { rememberTool } from "./remember.ts";
 import { dataDir, dbPath } from "./paths.ts";
 
@@ -46,6 +47,10 @@ export async function openHarness(): Promise<Harness> {
   // Memory: one line per agent, written by the agent itself. Installed for the registry, then selected by
   // every agent in agentChangeOf() — a tool that is offered but not registered answers "not available".
   registry.install(defineExtension({ name: "memory", tools: [rememberTool] }));
+
+  // Permissions: a policy, not a sandbox. It refuses the escape hatches for a Standard agent and keeps a
+  // scoped agent inside its roots; the systemd unit is what actually contains an allowed tool.
+  registry.install(permissionsExtension());
 
   // Code mode: the model writes JavaScript that calls the conversation's tools in a QuickJS sandbox.
   registry.install(

@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { dirname, resolve } from "node:path";
 import { agentTmpRoot, dataDir } from "./paths.ts";
 import { models, resolveDefaultModel } from "./models.ts";
+import type { PermissionTier } from "./permissions.ts";
 
 export type ThinkingLevel = "off" | "low" | "medium" | "high";
 
@@ -27,6 +28,15 @@ export type AgentRecord = {
   /** Identity the user picks: a hex colour and an emoji face shown in the sidebar and bubbles. */
   color?: string;
   avatar?: string;
+  /**
+   * What this agent may do. Absent on records written before tiers existed, where the policy is inferred:
+   * an agent that already had `bash` or `codemode` is reported as `full` rather than quietly losing it.
+   */
+  permissions?: PermissionTier;
+  /** Tools a Custom agent may not call; `*` wildcards allowed (`mcp__*`). */
+  blockedTools?: string[];
+  /** Extra roots a scoped agent may reach beyond its `cwd`. */
+  allowedPaths?: string[];
 };
 
 export type AgentFiles = { record: AgentRecord; agentMd: string; soulMd: string; memoryMd: string };
@@ -44,6 +54,9 @@ export type AgentInput = {
   enabled?: boolean;
   color?: string;
   avatar?: string;
+  permissions?: PermissionTier;
+  blockedTools?: string[];
+  allowedPaths?: string[];
   agentMd?: string;
   soulMd?: string;
 };
@@ -124,6 +137,19 @@ async function readRecord(id: string): Promise<AgentRecord | null> {
     enabled: parsed.enabled !== false,
     color: typeof parsed.color === "string" && parsed.color ? parsed.color : undefined,
     avatar: typeof parsed.avatar === "string" && parsed.avatar ? parsed.avatar : undefined,
+    // Carried explicitly, like every other field here: a reader that rebuilds the record drops what it does
+    // not name, and a dropped tier silently becomes the inferred one — which for an agent with `bash` means
+    // Full Access. The identity scenario documents the same trap for a room's colour.
+    permissions:
+      parsed.permissions === "standard" || parsed.permissions === "custom" || parsed.permissions === "full"
+        ? parsed.permissions
+        : undefined,
+    blockedTools: Array.isArray(parsed.blockedTools)
+      ? parsed.blockedTools.filter((tool) => typeof tool === "string")
+      : undefined,
+    allowedPaths: Array.isArray(parsed.allowedPaths)
+      ? parsed.allowedPaths.filter((path) => typeof path === "string")
+      : undefined,
   };
 }
 
@@ -173,6 +199,9 @@ export async function writeAgent(input: AgentInput): Promise<AgentFiles> {
     enabled: input.enabled ?? existing?.enabled ?? true,
     color: input.color ?? existing?.color,
     avatar: input.avatar ?? existing?.avatar,
+    permissions: input.permissions ?? existing?.permissions,
+    blockedTools: input.blockedTools ?? existing?.blockedTools,
+    allowedPaths: input.allowedPaths ?? existing?.allowedPaths,
   };
   await writeText(resolve(dirOf(id), "agent.json"), JSON.stringify(record, null, 2) + "\n");
   if (input.agentMd !== undefined) await writeText(resolve(dirOf(id), "AGENT.md"), input.agentMd);
