@@ -1,10 +1,11 @@
 import { mkdir } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { Harness, createRegistry, defineExtension } from "@earendil-works/pi-durable";
 import type { Extension, Registry, ToolRegistration } from "@earendil-works/pi-durable";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import type { ImageProcessor } from "@earendil-works/pi-durable/tools";
-import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
+import { listAgents } from "./agents.ts";
 import type { CodemodeSandbox, CodemodeSandboxBase } from "@earendil-works/pi-codemode";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -19,8 +20,8 @@ import { dataDir, dbPath } from "./paths.ts";
 /** Extension registry shared by every session. */
 export const registry: Registry = createRegistry();
 
-// read/write/edit/bash and codemode are installed inside openHarness(): the coding tools want an
-// image processor, which is loaded asynchronously (Photon, in a worker thread).
+// read/write/edit/bash are installed inside openHarness(): the coding tools want an image processor, which is
+// loaded asynchronously (Photon, in a worker thread). Code mode is installed by installCodemode() instead.
 
 /** Root server context: lives as long as the process, never cancelled. */
 export const context = BACKGROUND_CONTEXT;
@@ -85,6 +86,34 @@ const lazySandbox: CodemodeSandboxBase = new Proxy({} as CodemodeSandboxBase, {
   },
 });
 
+/**
+ * Code mode, installed only for an agent that lists `codemode`.
+ *
+ * The extension itself drags in the whole sandbox graph — `pi-durable/codemode` → `pi-codemode/portable` →
+ * `inline` → `vm` → `quickjs-wasi` — for a tool most agents never call. Registering it lazily keeps that graph
+ * out of boot; the measured saving is ~1.5 MB, inside this machine's run-to-run noise, so this is a behaviour
+ * decision (an ownerless thread no longer gets code mode) rather than a memory one.
+ *
+ * The load is a synchronous `require()`: `toolsByName()` is synchronous, and Node resolves an ESM package
+ * through `require()` synchronously, so the tool list an agent change asks for is complete when it is built. An
+ * `import()` could not be awaited there.
+ */
+let codemodeInstalled = false;
+const nodeRequire = createRequire(import.meta.url);
+type CodemodeModule = typeof import("@earendil-works/pi-durable/codemode");
+
+function installCodemode(): void {
+  if (codemodeInstalled) return;
+  const { createCodemodeExtension } = nodeRequire("@earendil-works/pi-durable/codemode") as CodemodeModule;
+  registry.install(createCodemodeExtension({ sandbox: lazySandbox }));
+  codemodeInstalled = true;
+}
+
+/** Does an agent on disk select code mode? Read at boot so a restart keeps agent-bound threads working. */
+async function anAgentWantsCodemode(): Promise<boolean> {
+  return (await listAgents()).some((agent) => agent.tools.includes("codemode"));
+}
+
 export async function openHarness(): Promise<Harness> {
   if (instance) return instance;
   await mkdir(dataDir, { recursive: true });
@@ -108,12 +137,15 @@ export async function openHarness(): Promise<Harness> {
   // Web search: keyless, because pi-ai has no provider-native search and this machine has no search credential.
   registry.install(defineExtension({ name: "search", tools: [webSearchTool] }));
 
-  // Code mode: the model writes JavaScript that calls the conversation's tools in a QuickJS sandbox.
-  //
+  // Code mode: the model writes JavaScript that calls the conversation's tools in a QuickJS sandbox. The
+  // extension is registered by installCodemode() — at boot only if an agent on disk selects it, otherwise by
+  // toolsByName() when an agent change asks for it.
+  if (await anAgentWantsCodemode()) installCodemode();
+
   // The sandbox is behind a proxy so its module loads on the first script that actually runs. `start()` is
   // synchronous, so the tool's wrapper is what awaits the import before the original `execute()` can call it; the
-  // extension gets the same interface, so it cannot tell.
-  registry.install(createCodemodeExtension({ sandbox: lazySandbox }));
+  // extension gets the same interface, so it cannot tell. The wrap has no target when code mode is not installed,
+  // and pi-durable then does nothing.
   registry.install(
     defineExtension({
       name: "codemode-loader",
@@ -165,6 +197,8 @@ export function installExtensions(extensions: readonly Extension[]): void {
 export function toolsByName(names: readonly string[]): ToolRegistration[] {
   if (names.length === 0) return [];
   const wanted = new Set(names);
+  // An agent created or rebound after boot asks for code mode here, synchronously, before its tool list is built.
+  if (wanted.has("codemode")) installCodemode();
   return registry
     .snapshot()
     .tools()

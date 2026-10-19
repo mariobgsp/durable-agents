@@ -34,12 +34,13 @@ animation half). Phases 7–9 not started.**
 | Agent & group identity (colour + emoji) | **Done** |
 | Live "replying" indicator, per session | **Done** |
 | Responsive layout + design system | **Done** — 5 viewport tiers in the screenshot gate |
-| E2E suite (faux provider, deterministic) | **13 scenarios passing** |
+| E2E suite (faux provider, deterministic) | **14 scenarios passing** |
 | Image and document attachments | **Done** — bytes live in the entry the model was given |
 | Live activity indicator (phase, calls, elapsed) | **Done** — derived from `pi.live`, never a guess |
 | Storage: size report, cleanup, purge | **Done** — the `#/usage` panel prints the bytes the cleanup actually gave back |
 | The `question` tool + keyless web search | **Done** — a durable `chat.question` with option buttons; DuckDuckGo's HTML endpoint, no key |
 | Hyperlinks and mermaid diagrams in an answer | **Done** — external links open away, a diagram fetches its library only when it is there |
+| Code mode | **Done, agent-selected** — `codemode` is registered only for an agent whose tool list names it, so a fresh default thread answers `Tool codemode is not available` and keeps going (see [docs/roadmap.md](docs/roadmap.md)) |
 | Voice, video | **Not started** |
 | MCP servers, per-agent hooks, skills/curator | **Not started** |
 
@@ -48,7 +49,7 @@ Latest verified run:
 | Check | Result |
 | --- | --- |
 | `npm run check` | `tsc` clean · `svelte-check` **0 errors, 2 warnings** (both in `Dialog.svelte`, untouched) · `lint:lang` clean |
-| `npm run e2e` | **13 passed, 0 failed** (`activity`, `attachments`, `identity`, `live-activity`, `memory`, `models`, `permissions`, `questions`, `search`, `sessions`, `steering`, `storage`, `tools`) |
+| `npm run e2e` | **14 passed, 0 failed** (`activity`, `attachments`, `codemode`, `identity`, `live-activity`, `memory`, `models`, `permissions`, `questions`, `search`, `sessions`, `steering`, `storage`, `tools`) |
 | `npm run build` | entry **71.86 kB JS** + **7.70 kB CSS** gzip (budget 100 kB); mermaid and its layout engines stay in their own chunks (`mermaid.core` 29.31 kB, `elk` 455.84 kB gzip), fetched only when a diagram renders |
 | `npm run shots:replying` | 11 screenshots |
 | `npm run shots` | not re-run in this session — the last full pass (8 routes × 5 viewports) lives in `docs/ui-review/2026-10-17/` |
@@ -621,6 +622,7 @@ That makes the whole stack deterministic: no network, no cost, no flakes.
 | `questions` | The `question` tool writes a `chat.question` entry with its options and ends the turn; the answer arrives as the next user message |
 | `search` | The DuckDuckGo parser (`uddg` redirects, entities, `<b>` highlighting) and the paths that must not look like "no results": 429, unreadable markup, unreachable provider. `fetch` is stubbed, so no network is involved |
 | `permissions` | The per-thread Full Access grant: stored on the thread, enforced at submit time, and not sticky on the agent |
+| `codemode` | Code mode belongs to the agents that select it: a default thread gets `Tool codemode is not available` and still answers, an agent that lists it runs a script, and that agent's thread still runs one after a restart (the boot scan that re-registers it) |
 | `activity` | An idle thread is not active; a thread is active while streaming and clears after; abort clears immediately; a group stays active across the whole flow; an idle thread is still not active **after a restart** |
 
 Two E2E findings worth keeping in mind, because both were real bugs the suite caught immediately:

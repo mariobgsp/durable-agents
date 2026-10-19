@@ -28,6 +28,7 @@ This document is binding. Change the plan here first.
 | Live activity | The phase comes from `pi.live` and from nothing else: no timers, no heuristics. "Thinking" requires observed thinking tokens, "writing" observed text, "tool" a call that is not done. Whole-list snapshots on change, the same rule as presence and the tool trace. |
 | Screenshots | Required for every UI step: `npm run shots` → `docs/ui-review/<date>/` + `findings.md` (at most 2 polish rounds per step). |
 | Testing | **E2E only.** No unit tests. Deterministic E2E uses the official faux provider (`fauxProvider()`, `fauxToolCall()`, `FauxModelDefinition.input`) plus a `PI_E2E` control endpoint; one optional smoke test hits the real model. UI E2E uses `puppeteer-core` with the system Chromium. |
+| Code mode | `codemode` is registered only for an agent whose tool list names it (`installCodemode()` in `harness.ts`, through a synchronous `require`). An ownerless thread resolves to every *installed* tool, so a fresh default thread has no code mode: the model gets `Tool codemode is not available` and the turn still answers. Owner-approved consequence, taken for the behaviour, **not** for the ~1.5 MB it saves. The registry is process-wide, so a thread created after any agent used it gets it back until the process restarts. |
 | Security | Bind `127.0.0.1`, require `X-PI-Token` (or `?token=` for WS), allowlist `Host`, no permissive CORS. |
 
 ## Phases
@@ -190,11 +191,12 @@ Done:
       the thinking levels a model actually supports (`null` in `thinkingLevelMap` means unsupported)
 - [x] `read` now takes an image processor (`createNodePhotonImages()`), so agents can read photos the
       way pi does (decode, EXIF orientation, resize to the model's limits)
-- [x] Code mode installed: `createCodemodeExtension({ sandbox: lazySandbox })` with `quickjs-wasi`;
-      `@earendil-works/pi-codemode` is a declared server dependency. The sandbox **module** is imported by the
-      first script that runs: a proxy stands in for the class and a `codemode-loader` extension wraps the
-      tool's `execute()`, so the `import()` happens before the extension's synchronous `start()` can ask for
-      the class
+- [x] Code mode: `createCodemodeExtension({ sandbox: lazySandbox })` with `quickjs-wasi`;
+      `@earendil-works/pi-codemode` is a declared server dependency. Two layers of lazy loading:
+      the **extension** is installed by `installCodemode()` the first time an agent change names `codemode`
+      (so the module graph is not imported at boot), and the **sandbox** module is imported by the first
+      script that runs: a proxy stands in for the class and a `codemode-loader` extension wraps the tool's
+      `execute()`, so the `import()` happens before the extension's synchronous `start()` can ask for the class
 - [x] New agents default to pi's tool set: `read`, `write`, `edit`, `bash`, `codemode`
 - [x] `agent.json.vision` (`"auto"` | `"off"`) stored and read back
 - [x] The model picker in the agent editor: the provider/model selects, the capability badges
@@ -248,31 +250,35 @@ Done in the session that added storage, questions, search, links and diagrams:
 - [x] `npm run e2e` scenarios `questions` and `search` (the search one stubs `fetch` with the real page
       shape, so its parser and its failure paths are asserted without the network)
 
-### Step 3 — deferring the codemode extension graph (MEASURED, REVERTED, NOT KEPT)
+### Step 3 — deferring the codemode extension graph (LANDED, as a behaviour change)
 
-The idea was that the codemode module graph — `@earendil-works/pi-durable/codemode` → `pi-codemode/portable`
-→ `inline` → `vm` → `quickjs-wasi` — is imported at boot for a tool most agents never call. It is **not** a
-win and **is not in the tree**:
+The codemode module graph — `@earendil-works/pi-durable/codemode` → `pi-codemode/portable` → `inline` → `vm`
+→ `quickjs-wasi` — was imported at boot for a tool most agents never call. It is now registered by
+`installCodemode()` only when an agent change names `codemode`: **not for the memory**, which is at the edge of
+the measurement, but because a default thread should not carry a tool nobody selected. The owner approved that
+trade; it is recorded as a locked decision above.
 
-- **Idle RSS did not move outside the noise.** Deferring the registration took boot RSS 139.8 → 140.6 MB in
-  one probe run and 140.4 → 137.9 MB in another; a single state's own run-to-run spread is ~2 MB and the
-  ranges overlap, so the effect is smaller than the measurement. Directly measured import costs are
-  `pi-durable/codemode` ≈ **+1.4 MB** and `pi-codemode` ≈ **+0.5 MB**, against a ~82 MB bare harness.
-- **The earlier attribution was wrong.** The heavy graph arrives through the static `createCodemodeExtension`
-  import, not through the sandbox class: constructing the sandbox costs 0. The "~35 MB" figure this step
-  started from does not exist. What *is* deferred today is only the sandbox module (see the code-mode row
-  above), which is worth doing but is not a memory win.
-- **The deferral broke a real path.** Registration in pi-durable is synchronous and load-bearing: an
-  ownerless thread (the sidebar's "New thread", `POST /api/sessions` with no `agentId`) leaves its tool list
-  unset, which resolves to *every installed tool*. With lazy registration a fresh default thread answered
-  `Tool codemode is not available`, and `npm run e2e` passed on both states, so the regression would have
-  shipped silently. Preserving it means installing before the first generation — which is boot, or the first
-  conversation — so the ~2 MB is only ever moved, never removed.
-
-The prototype was ≈24 lines in `harness.ts` plus a synchronous `require` seam; it was reverted byte-for-byte,
-and the measurements above are the record we kept. If a future owner decides that a default thread should
-**not** get codemode, that prototype is the change to make — it is the only shape that defers anything, and
-it is a product decision rather than a performance one.
+- **The memory is ~1.5 MB and inside the noise.** Boot-idle RSS, same machine, 8–10 samples per state:
+  139.0 MB median without a codemode agent vs 140.3 MB with one; the clean ranges are 137.4–139.1 vs
+  138.8–140.9 and they overlap, and both states show a ~20 MB machine hiccup (151–159 MB) in 1–2 runs out of
+  8–10. In a bare Node process, importing `pi-durable/codemode` costs **+1.4–2.2 MB**. An earlier run of the
+  same probe read 139.8 → 140.6 (worse) and another 140.4 → 137.9 (better): the effect is smaller than the
+  spread, so the change is not sold as a memory win.
+- **The earlier ~35 MB attribution was wrong.** The heavy graph arrives through the static
+  `createCodemodeExtension` import, not through the sandbox class: constructing the sandbox costs 0.
+- **The shape.** Two synchronous seams, because registration in pi-durable is synchronous and load-bearing:
+  `toolsByName()` installs code mode when an agent's own tool list asks for it (a new or rebound agent), and
+  `openHarness()` installs it at boot only if some `agent.json` on disk selects it (a restart). The load is a
+  `require()` — Node resolves an ESM package through it synchronously — because `toolsByName()` cannot await.
+- **The accepted consequence.** An ownerless thread (the sidebar's "New thread", `POST /api/sessions` with no
+  `agentId`) leaves its tool list unset, which resolves to *every installed tool*. A fresh default thread
+  therefore no longer offers code mode: the model gets `Tool codemode is not available` (diagnostic
+  `tool_unavailable`) and the thread answers normally afterwards. The registry is process-wide, so once an
+  agent has selected code mode, an ownerless thread in that same process gets it too until the process restarts.
+- **The suite was blind to both halves.** `npm run e2e` passed with the old registration and with the deferral,
+  so the scenario `codemode` now pins them: a default thread is refused, an agent thread runs a script, and the
+  same agent thread still runs one after a restart (the boot scan). Dropping the boot scan makes that scenario
+  fail — checked by mutation, not by assumption.
 
 ### Phase 7 — MCP and hooks per agent (APPROVED, NOT STARTED)
 
