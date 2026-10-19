@@ -10,6 +10,8 @@ import type {
   ProviderRow,
   RoomConfig,
   Session,
+  SystemOperation,
+  SystemSnapshot,
   UsageReport,
 } from "./types.ts";
 
@@ -26,6 +28,8 @@ export type {
   RoomConfig,
   RoomMode,
   Session,
+  SystemOperation,
+  SystemSnapshot,
   ThinkingLevel,
   UsageReport,
 } from "./types.ts";
@@ -99,6 +103,11 @@ export function attachmentUrl(sessionId: string, entryId: string, index: number)
 
 export const api = {
   health: () => req<{ ok: true; defaultProvider: string; sandboxed: boolean }>("/api/health"),
+
+  /** The app's own facts: what is running, what it can do, and the current/last operation. */
+  system: () => req<SystemSnapshot>("/api/system"),
+  startUpdate: () => req<SystemOperation>("/api/system/update", { method: "POST", body: "{}" }),
+  startRestart: () => req<SystemOperation>("/api/system/restart", { method: "POST", body: "{}" }),
 
   sessions: (includeDeleted = false) =>
     req<{ sessions: Session[] }>("/api/sessions" + (includeDeleted ? "?includeDeleted=1" : "")),

@@ -141,11 +141,6 @@
     tools = tools.includes(tool) ? tools.filter((item) => item !== tool) : [...tools, tool];
   }
 
-  function shuffleColor(): void {
-    const index = PALETTE.indexOf(color);
-    color = PALETTE[(index + 1) % PALETTE.length] ?? PALETTE[0]!;
-  }
-
   async function testModel(): Promise<void> {
     busy = true;
     testResult = null;
@@ -286,10 +281,6 @@
             ></button>
           {/each}
         </div>
-        <div class="row">
-          <input class="hex" bind:value={color} data-testid="color-hex" />
-          <button class="btn btn--small" onclick={shuffleColor}>Shuffle</button>
-        </div>
       </div>
 
       <div class="field">
@@ -325,13 +316,6 @@
             </option>
           {/each}
         </select>
-        {#if selectedModel}
-          <p class="hint" data-testid="model-badges">
-            {selectedModel.canSeeImages ? "can see images" : "text only"} · context {selectedModel.contextWindow ?? "?"}
-            · cost {selectedModel.cost?.input ?? "?"}/{selectedModel.cost?.output ?? "?"} per Mtok
-            {#if selectedModel.reasoning}· reasoning{/if}
-          </p>
-        {/if}
         <div class="row">
           <button class="btn btn--small" disabled={busy || !modelId} onclick={testModel} data-testid="test-model">
             Test model
@@ -351,13 +335,13 @@
         </select>
       </label>
 
-      <label class="field">
+      <div class="field">
         <span>Responsibility (one line, used by Nyahut mode)</span>
         <textarea bind:value={responsibility} rows="2" data-testid="agent-responsibility"></textarea>
-      </label>
-      <button class="btn" disabled={busy} onclick={suggest} data-testid="suggest-responsibility">
-        Suggest from SOUL.md
-      </button>
+        <button class="btn btn--small" disabled={busy} onclick={suggest} data-testid="suggest-responsibility">
+          Suggest from SOUL.md
+        </button>
+      </div>
 
       <fieldset class="tools">
         <legend>Tools</legend>
@@ -376,49 +360,53 @@
         {/if}
       </fieldset>
 
-      <label class="field">
-        <span>cwd (optional, tool working directory)</span>
-        <input bind:value={cwd} placeholder="/home/artut/Projects/…" />
-      </label>
+      <details class="preview advanced" data-testid="agent-advanced">
+        <summary>Advanced — permissions and working directory</summary>
 
-      <fieldset class="tools">
-        <legend>Permissions</legend>
-        <label class="check">
-          <input type="radio" value="standard" bind:group={permissions} />
-          <span>Standard — no shell or code mode, and files stay inside this agent's root</span>
+        <label class="field">
+          <span>cwd (optional, tool working directory)</span>
+          <input bind:value={cwd} placeholder="/home/artut/Projects/…" />
         </label>
-        <label class="check">
-          <input type="radio" value="custom" bind:group={permissions} />
-          <span>Custom — this agent's tools, minus the ones you block below</span>
-        </label>
-        <label class="check">
-          <input type="radio" value="full" bind:group={permissions} />
-          <span>Full Access — no policy at all</span>
-        </label>
-        {#if permissions === "custom"}
-          <label class="field">
-            <span>Blocked tools (comma separated, <code>*</code> allowed)</span>
-            <input bind:value={blockedTools} placeholder="bash, mcp__*" />
+
+        <fieldset class="tools">
+          <legend>Permissions</legend>
+          <label class="check">
+            <input type="radio" value="standard" bind:group={permissions} />
+            <span>Standard — no shell or code mode, and files stay inside this agent's root</span>
           </label>
-          <label class="field">
-            <span>Extra allowed paths (comma separated)</span>
-            <input bind:value={allowedPaths} placeholder="/home/you/scratch" />
+          <label class="check">
+            <input type="radio" value="custom" bind:group={permissions} />
+            <span>Custom — this agent's tools, minus the ones you block below</span>
           </label>
-        {/if}
-        {#if permissions === "full"}
-          <p class="warn">
-            Full Access refuses nothing. This agent runs as <strong>you</strong>, so it can read your SSH keys,
-            your browser profile, and every file you can. {sandboxed
-              ? "The systemd unit is still enforcing its own limits."
-              : "This server is not inside the sandboxed unit, so nothing is enforcing a limit."}
-          </p>
-        {:else if !sandboxed}
-          <p class="warn">
-            Policy only: this server is not inside the sandboxed unit, so a permitted tool still runs with your
-            permissions. The tiers decide which tools exist, not what they can reach.
-          </p>
-        {/if}
-      </fieldset>
+          <label class="check">
+            <input type="radio" value="full" bind:group={permissions} />
+            <span>Full Access — no policy at all</span>
+          </label>
+          {#if permissions === "custom"}
+            <label class="field">
+              <span>Blocked tools (comma separated, <code>*</code> allowed)</span>
+              <input bind:value={blockedTools} placeholder="bash, mcp__*" />
+            </label>
+            <label class="field">
+              <span>Extra allowed paths (comma separated)</span>
+              <input bind:value={allowedPaths} placeholder="/home/you/scratch" />
+            </label>
+          {/if}
+          {#if permissions === "full"}
+            <p class="warn">
+              Full Access refuses nothing. This agent runs as <strong>you</strong>, so it can read your SSH keys,
+              your browser profile, and every file you can. {sandboxed
+                ? "The systemd unit is still enforcing its own limits."
+                : "This server is not inside the sandboxed unit, so nothing is enforcing a limit."}
+            </p>
+          {:else if !sandboxed}
+            <p class="warn">
+              Policy only: this server is not inside the sandboxed unit, so a permitted tool still runs with your
+              permissions. The tiers decide which tools exist, not what they can reach.
+            </p>
+          {/if}
+        </fieldset>
+      </details>
 
       <details class="preview">
         <summary>System prompt preview</summary>

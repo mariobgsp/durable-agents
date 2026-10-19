@@ -14,6 +14,16 @@ export const tokenPath = resolve(dataDir, "token");
 export const dbPath = resolve(dataDir, "app.sqlite");
 export const sessionsPath = resolve(dataDir, "sessions.json");
 export const credentialsPath = resolve(dataDir, "credentials.json");
+/** The last system operation, written only at a terminal phase. The one writable file outside SQLite. */
+export const systemPath = resolve(dataDir, "system.json");
+/**
+ * The dev supervisor's restart handshake. The server drops this file before exiting; `dev.mjs` sees it and
+ * respawns the server child. A file, not an exit code: `node --watch` sits between dev.mjs and this process
+ * and does not propagate the child's exit.
+ */
+export const restartSentinelPath = resolve(dataDir, "system", "restart-request");
+/** The repository root: where `node_modules` and the web build live. */
+export const repoRoot = resolve(import.meta.dirname, "../../..");
 /** Existing pi credentials; read only, never written. */
 export const piAuthPath = resolve(env.HOME ?? ".", ".pi/agent/auth.json");
 /**

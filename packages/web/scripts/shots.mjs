@@ -100,6 +100,7 @@ const routes = [
   { name: "06-group-list", path: "/#/groups" },
   ...(group ? [{ name: "07-group-chat", path: "/#/s/" + group.id }] : []),
   { name: "08-provider", path: "/#/providers" },
+  { name: "09-system", path: "/#/system" },
 ];
 
 await mkdir(OUT, { recursive: true });

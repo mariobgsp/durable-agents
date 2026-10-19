@@ -234,3 +234,68 @@ export type ProviderRow = {
   source: string | null;
   models: string[];
 };
+
+/**
+ * The app's own process facts and operations. Mirrors `packages/server/src/system.ts`.
+ *
+ * `capability` is what this process can actually do, so the panel can label the sandboxed action "Reload"
+ * instead of offering an install the read-only unit would refuse.
+ */
+export type SystemSupervisor = "systemd" | "dev" | "none";
+export type SystemUpdateMode = "packages" | "reload";
+
+export type ToolVersions = {
+  piDurable: string;
+  piCodemode: string;
+  piAi: string;
+  chord: string;
+  node: string;
+};
+
+export type ProcessFacts = {
+  pid: number;
+  startedAt: number;
+  sandboxed: boolean;
+  supervisor: SystemSupervisor;
+  capability: { update: SystemUpdateMode; restart: "supervised" | "stops" };
+  versions: ToolVersions;
+};
+
+export type SystemStep = "checking" | "installing" | "building" | "reloading" | "stopping";
+
+export type UpdateOutcome = {
+  kind: "update";
+  mode: SystemUpdateMode;
+  before: ToolVersions;
+  after: ToolVersions;
+  changed: boolean;
+};
+
+export type RestartOutcome = { kind: "restart"; supervisor: SystemSupervisor; downtimeMs: number | null };
+
+export type OperationState =
+  | { name: "running"; step: SystemStep }
+  | { name: "done"; outcome: UpdateOutcome | RestartOutcome }
+  | { name: "failed"; reason: string; exitCode: number | null }
+  | { name: "restarting"; supervisor: SystemSupervisor }
+  | { name: "stopped" }
+  | { name: "interrupted"; reason: string };
+
+export type SystemLogLine = { seq: number; at: number; kind: "state" | "log"; text: string };
+
+export type SystemOperation = {
+  id: string;
+  kind: "update" | "restart";
+  state: OperationState;
+  startedAt: number;
+  endedAt: number | null;
+  log: SystemLogLine[];
+  truncated: boolean;
+};
+
+export type SystemSnapshot = {
+  process: ProcessFacts;
+  current: SystemOperation | null;
+  last: SystemOperation | null;
+};
+

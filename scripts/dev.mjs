@@ -5,7 +5,7 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
@@ -20,6 +20,14 @@ chmodSync(tokenPath, 0o600);
 const port = process.env.PI_SERVER_PORT ?? "8787";
 const children = [];
 let closing = false;
+/** Set while a system-panel restart is replacing the server child; the exit below is expected. */
+let restarting = false;
+let serverChild = null;
+/**
+ * The server drops this file before exiting. `node --watch` sits between dev.mjs and the server and does not
+ * propagate its exit, so the file is the only reliable handshake.
+ */
+const sentinel = resolve(dataDir, "system/restart-request");
 
 function shutdown(code = 0) {
   if (closing) return;
@@ -48,7 +56,12 @@ function start(name, scriptPath, env, cwd = root, args = []) {
     });
   }
   child.on("exit", (code, signal) => {
-    if (closing) return;
+    if (closing || restarting) return;
+    // A system-panel restart writes the sentinel first. Replace the server and keep Vite alive.
+    if (child === serverChild && existsSync(sentinel)) {
+      requestRestart();
+      return;
+    }
     console.error(tag + " exited (" + (signal ?? code) + ")");
     shutdown(code ?? 1);
   });
@@ -59,23 +72,46 @@ function start(name, scriptPath, env, cwd = root, args = []) {
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
 
-start(
-  "server",
-  resolve(root, "packages/server/src/index.ts"),
-  {
-    PI_API_TOKEN: token,
-    PI_SERVER_PORT: port,
-    PI_DATA_DIR: dataDir,
-  },
-  root,
-  // --watch: the server restarts when server files change (the frontend has its own HMR).
-  ["--watch"],
-);
+function startServer() {
+  serverChild = start(
+    "server",
+    resolve(root, "packages/server/src/index.ts"),
+    {
+      PI_API_TOKEN: token,
+      PI_SERVER_PORT: port,
+      PI_DATA_DIR: dataDir,
+      PI_SUPERVISOR: "dev",
+    },
+    root,
+    // --watch: the server restarts when server files change (the frontend has its own HMR).
+    ["--watch"],
+  );
+}
+
+/** Replace only the server child. Vite keeps running, so the browser never loses the page. */
+function requestRestart() {
+  if (closing || restarting) return;
+  if (!existsSync(sentinel)) return;
+  rmSync(sentinel, { force: true });
+  restarting = true;
+  const old = serverChild;
+  old?.kill("SIGTERM");
+  setTimeout(() => {
+    old?.kill("SIGKILL");
+    restarting = false;
+    startServer();
+  }, 400);
+}
+
+startServer();
 start(
   "web",
   resolve(root, "node_modules/vite/bin/vite.js"),
   { PI_SERVER_PORT: port },
   resolve(root, "packages/web"),
 );
+
+// Poll rather than watch: the sentinel is one tiny file, and a watcher is one more failure mode.
+setInterval(requestRestart, 500);
 
 console.log("\n  dura-agents dev → http://localhost:5173\n");

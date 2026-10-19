@@ -16,6 +16,7 @@
   import Groups from "./views/Groups.svelte";
   import Providers from "./views/Providers.svelte";
   import Usage from "./views/Usage.svelte";
+  import System from "./views/System.svelte";
   import Chat from "./views/Chat.svelte";
 
   let drawerOpen = $state(false);
@@ -45,6 +46,7 @@
   const onAgents = $derived(route.name === "agents" || route.name === "agent");
   const onProviders = $derived(route.name === "providers");
   const onUsage = $derived(route.name === "usage");
+  const onSystem = $derived(route.name === "system");
 
   // Any navigation closes the mobile drawer, so a tap never lands on a hidden view.
   $effect(() => {
@@ -62,6 +64,9 @@
   <aside class="sidebar">
     <header class="sidebar__head">
       <span class="brand">dura-agents</span>
+      <span class="foot-status" title={status} aria-label={"Server " + status}>
+        <span class="dot" class:dot--on={store.connection === "open"}></span>
+      </span>
     </header>
 
     <Sidebar />
@@ -70,7 +75,7 @@
       <button class="tab" class:tab--active={onAgents} onclick={() => go("#/agents")}>Agents</button>
       <button class="tab" class:tab--active={onProviders} onclick={() => go("#/providers")}>Models</button>
       <button class="tab" class:tab--active={onUsage} onclick={() => go("#/usage")}>Usage</button>
-      <span class="foot-status"><span class="dot" class:dot--on={store.connection === "open"}></span>{status}</span>
+      <button class="tab" class:tab--active={onSystem} onclick={() => go("#/system")}>System</button>
     </footer>
   </aside>
 
@@ -83,6 +88,8 @@
       <Providers />
     {:else if route.name === "usage"}
       <Usage />
+    {:else if route.name === "system"}
+      <System />
     {:else if route.name === "agents"}
       <Agents />
     {:else if route.name === "agent"}
@@ -91,13 +98,8 @@
       <div class="placeholder" data-testid="placeholder">
         <div class="bezel">
           <div class="bezel__core empty-state">
-            <span class="eyebrow">dura-agents</span>
             <h1>Start here</h1>
-            <p>
-          Every agent gets a section in the sidebar with its threads underneath. Pick an agent, create a
-          thread, and send a message. Everything is stored on disk — close the browser or restart the
-          server and it is still there.
-        </p>
+            <p>Pick a thread, or start one.</p>
             <button class="btn btn--primary" onclick={newThread}>
               New thread<span class="btn__icon">+</span>
             </button>

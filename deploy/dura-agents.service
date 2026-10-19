@@ -47,6 +47,10 @@ TimeoutStopSec=20
 #
 # The app reports which of the two is in force (`sandboxed` on /api/health, shown in the agent editor), so
 # this flag is what turns the UI's wording from "policy only" into "enforced by systemd".
+#
+# It also decides what the in-app Update can do: with ProtectHome=read-only the repo and the npm cache are
+# unwritable, so `#/system` offers **Reload tools** (re-register the extensions already in memory) and says
+# why. Package updates belong on the host, as in docs/tailscale.md.
 Environment=PI_SANDBOXED=1
 
 # Read-only everywhere except the data directory. Keep ReadWritePaths in step with WorkingDirectory above.

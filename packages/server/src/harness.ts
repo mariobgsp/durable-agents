@@ -114,10 +114,14 @@ async function anAgentWantsCodemode(): Promise<boolean> {
   return (await listAgents()).some((agent) => agent.tools.includes("codemode"));
 }
 
-export async function openHarness(): Promise<Harness> {
-  if (instance) return instance;
-  await mkdir(dataDir, { recursive: true });
-
+/**
+ * The extensions this app owns, installed at boot and again by a sandboxed Update.
+ *
+ * `registry.install` replaces an extension with its name in place, so re-running this refreshes the live
+ * registry without loading new code. Code mode is deliberately not installed here: `installCodemode()` owns
+ * that decision, so a reload cannot force its module graph into a process that never needed it.
+ */
+function installCoreExtensions(): void {
   // The image processor lets `read` handle photos the way pi does: decode, honour EXIF orientation, resize to
   // the model's limits. An attachment upload reuses the same one. It is the lazy wrapper above, so nothing
   // loads until an image does.
@@ -136,11 +140,6 @@ export async function openHarness(): Promise<Harness> {
 
   // Web search: keyless, because pi-ai has no provider-native search and this machine has no search credential.
   registry.install(defineExtension({ name: "search", tools: [webSearchTool] }));
-
-  // Code mode: the model writes JavaScript that calls the conversation's tools in a QuickJS sandbox. The
-  // extension is registered by installCodemode() — at boot only if an agent on disk selects it, otherwise by
-  // toolsByName() when an agent change asks for it.
-  if (await anAgentWantsCodemode()) installCodemode();
 
   // The sandbox is behind a proxy so its module loads on the first script that actually runs. `start()` is
   // synchronous, so the tool's wrapper is what awaits the import before the original `execute()` can call it; the
@@ -163,6 +162,22 @@ export async function openHarness(): Promise<Harness> {
       ],
     }),
   );
+}
+
+/** Re-register the core extensions from the modules already in memory; return their names. */
+export function reloadTools(): string[] {
+  installCoreExtensions();
+  // A reload must not change the code-mode policy: if it was installed, re-register it; if not, leave it out.
+  if (codemodeInstalled) installCodemode();
+  return registry.snapshot().installed().map((extension) => extension.name);
+}
+
+export async function openHarness(): Promise<Harness> {
+  if (instance) return instance;
+  await mkdir(dataDir, { recursive: true });
+
+  installCoreExtensions();
+  if (await anAgentWantsCodemode()) installCodemode();
 
   const storage = await openNodeSqliteStorage(dbPath);
   instance = await Harness.open(

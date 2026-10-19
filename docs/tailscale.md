@@ -195,8 +195,10 @@ does not resolve at all — that is the intended failure.
 | Task | Command |
 | --- | --- |
 | Logs | `journalctl --user -u dura-agents -f` |
-| Restart | `systemctl --user restart dura-agents` |
-| Update | `git pull && npm ci && npm run build && systemctl --user restart dura-agents` |
+| Restart (in-app) | `#/system` → **Restart**. The unit's `Restart=always` brings it back in about 3 s. |
+| Restart (host) | `systemctl --user restart dura-agents` |
+| Update (in-app) | `#/system` → **Update** on a writable checkout. Under the unit the repo is read-only, so the button reads **Reload tools** and says why; package updates stay on the host. |
+| Update (host) | `git pull && npm ci && npm run build && systemctl --user restart dura-agents` |
 | Checks after an update | `npm run check` and `npm run e2e` |
 | Where the state lives | `data/app.sqlite`, `data/sessions.json`, `data/agents/`, `data/credentials.json`, `data/token` |
 

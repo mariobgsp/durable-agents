@@ -10,7 +10,6 @@
     setAgentEnabled,
     setThreadGrant,
     store,
-    updateRoomMode,
   } from "../state.svelte.ts";
   import {
     identityOfAgent,
@@ -51,18 +50,6 @@
   const agentDisabled = $derived(agent !== null && agent.enabled === false);
   /** Whether this thread has been granted Full Access. Per-thread, so it dies with the thread. */
   const granted = $derived(session?.grant === "full");
-  /**
-   * The composer hint has to fit on one line: at phone width the long placeholder was clipped mid-sentence,
-   * which reads as a broken field rather than a hidden tip.
-   */
-  let narrow = $state(false);
-  $effect(() => {
-    const query = window.matchMedia("(max-width: 720px)");
-    const apply = () => (narrow = query.matches);
-    apply();
-    query.addEventListener("change", apply);
-    return () => query.removeEventListener("change", apply);
-  });
   /** What to call the agent in a direct thread: its own name, never the generic word "agent". */
   const agentName = $derived(agent?.name || agent?.id || "agent");
   /**
@@ -71,21 +58,11 @@
    */
   const replying = $derived(store.busy || isReplying(store.currentId));
   /**
-   * While a reply is in flight the composer steers instead of queueing, so it says so rather than pretending to
-   * be the same box. Declared after `replying` because it reads it.
+   * What the composer says. Short by design: the keyboard hint and the `@name` rule are discoverable, and
+   * the long form was clipped mid-sentence at 390 px.
    */
   const placeholder = $derived(
-    replying
-      ? narrow
-        ? "Steer the reply…"
-        : "Steer the reply… (lands in the turn that is running)"
-      : room
-        ? narrow
-          ? "Write to the group… @name calls a member"
-          : "Write to the group… use @name to call a member"
-        : narrow
-          ? "Write a message…"
-          : "Write a message… (Enter sends, Shift+Enter adds a line)",
+    replying ? "Steer the reply…" : room ? "Write to the group…" : "Write a message…",
   );
   const groupIdentity = $derived(session ? identityOfGroup(session) : null);
   const members = $derived(
@@ -124,6 +101,7 @@
     { id: "moderator", label: "Moderator", hint: "one designated member answers and may call others" },
     { id: "silent", label: "Silent", hint: "only answers when called with @name" },
   ];
+  const currentMode = $derived(MODES.find((mode) => mode.id === room?.mode) ?? null);
 
   /** The choices a `chat.question` message offers, or null for every other message. */
   function questionOptions(message: Msg): string[] | null {
@@ -193,12 +171,6 @@
     } catch {
       return false;
     }
-  }
-
-  async function setMode(mode: RoomMode) {
-    if (!session || session.room?.mode === mode) return;
-    await updateRoomMode(session.id, mode);
-    await loadSessions();
   }
 
   function startTitleEdit(): void {
@@ -279,7 +251,15 @@
         </span>
       {/if}
     {:else if agent}
-      <AgentAvatar identity={identityOfAgent(agent)} size="lg" />
+      <button
+        class="chat__avatar"
+        title={"Edit " + agentName}
+        aria-label={"Edit " + agentName}
+        data-testid="agent-chip"
+        onclick={() => go("#/agents/" + agent.id)}
+      >
+        <AgentAvatar identity={identityOfAgent(agent)} size="lg" />
+      </button>
     {/if}
 
     {#if editingTitle}
@@ -309,21 +289,13 @@
     <div class="chat__meta">
       {#if room}
         <span class="chip" data-testid="group-chip">{members.length} members</span>
-        <div class="modes" data-testid="mode-switch">
-          {#each MODES as mode (mode.id)}
-            <button
-              class="mode"
-              class:mode--active={room.mode === mode.id}
-              title={mode.hint}
-              onclick={() => setMode(mode.id)}
-            >
-              {mode.label}
-            </button>
-          {/each}
-        </div>
-      {:else if session?.agent}
-        <button class="chip chip--link" onclick={() => go("#/agents/" + session?.agent)} data-testid="agent-chip">
-          @{session.agent}
+        <button
+          class="chip chip--link"
+          title={currentMode?.hint ?? "Group settings"}
+          data-testid="group-settings-chip"
+          onclick={() => (settings = true)}
+        >
+          {currentMode?.label ?? "Mode"}
         </button>
       {/if}
       {#if session?.agent}
@@ -337,14 +309,6 @@
           onclick={toggleGrant}
         >
           {granted ? "Full Access (this thread)" : "Full Access: off"}
-        </button>
-      {/if}
-      {#if session?.model}
-        <span class="chip" data-testid="model-chip">{session.model.provider}/{session.model.modelId}</span>
-      {/if}
-      {#if room}
-        <button class="icon-btn" title="Group settings" data-testid="open-group-settings" onclick={() => (settings = true)}>
-          ⚙
         </button>
       {/if}
       {#if store.busy}
@@ -403,7 +367,9 @@
             <span class="msg__spacer"></span>
           {/if}
           <div class="msg__stack">
-            <div class="msg__who" style="--author: {identity.color}">{label(message)}</div>
+            {#if firstOfRun(index)}
+              <div class="msg__who" style="--author: {identity.color}">{label(message)}</div>
+            {/if}
             <div class="msg__body"><Markdown text={message.text} /></div>
             {#if options}
               <QuestionOptions
@@ -416,7 +382,6 @@
         </article>
       {:else}
         <article class="msg msg--{message.role}" data-testid="msg-{message.role}">
-          <div class="msg__who">{label(message)}</div>
           {#if message.files && session}
             <Attachments files={shownFiles(session.id, message.id, message.files)} />
           {/if}
@@ -468,7 +433,6 @@
 
     {#each store.pending as item (item.requestId)}
       <article class="msg msg--user msg--pending" data-testid="msg-pending">
-        <div class="msg__who">you</div>
         {#if item.files.length > 0}
           <Attachments files={shownDrafts(item.files)} />
         {/if}
@@ -486,13 +450,6 @@
       </p>
     {/if}
   </div>
-
-  {#if store.typing.length > 0}
-    <p class="typing" data-testid="typing">
-      <ActivityIndicator size="sm" label={store.typing.join(", ") + " replying"} />
-      <span>{store.typing.map((name) => "@" + name).join(" · ")} replying…</span>
-    </p>
-  {/if}
 
   {#if store.error}
     <p class="error" role="alert" data-testid="error">{store.error}</p>

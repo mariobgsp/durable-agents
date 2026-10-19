@@ -1,7 +1,7 @@
 /// <reference types="svelte" />
 import { api } from "./api.ts";
 import { releaseDrafts } from "./lib/files.ts";
-import { IDLE_ACTIVITY, type Activity, type AgentRecord, type ContextInfo, type DraftFile, type Msg, type Session } from "./types.ts";
+import { IDLE_ACTIVITY, type Activity, type AgentRecord, type ContextInfo, type DraftFile, type Msg, type Session, type SystemSnapshot } from "./types.ts";
 import { connect, connectPresence, type Frame } from "./ws.ts";
 
 export const store = $state({
@@ -36,7 +36,18 @@ export const store = $state({
   modelGroups: [] as { provider: string; models: { id: string; name: string }[] }[],
   connection: "idle" as "idle" | "open" | "closed",
   error: null as string | null,
+  /** The app's own facts and last operation, from `GET /api/system`. */
+  system: null as SystemSnapshot | null,
+  systemOperationError: null as string | null,
+  /** The client's view of a restart, which spans two processes and cannot be read from one snapshot. */
+  restart: null as RestartTracker | null,
 });
+
+export type RestartTracker =
+  | { state: "waiting"; previousPid: number; since: number }
+  | { state: "stopping"; since: number }
+  | { state: "returned"; downtimeMs: number | null }
+  | { state: "missed"; since: number };
 
 let disconnect: (() => void) | null = null;
 let openToken = 0;
@@ -469,4 +480,127 @@ export async function abort(): Promise<void> {
     report(err);
   }
 }
+
+// ---------- system: facts, update, restart ----------
+
+let systemTimer: number | undefined;
+let restartTimer: number | undefined;
+
+function systemMessageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Read the process facts. A failure during a restart is expected, not an error to show.
+ *
+ * `store.restart` is the one place that knows the process is supposed to be gone.
+ */
+export async function loadSystem(): Promise<void> {
+  try {
+    store.system = await api.system();
+    if (store.restart === null || store.restart.state === "returned") store.systemOperationError = null;
+  } catch (error) {
+    if (store.restart === null || store.restart.state === "returned") {
+      store.systemOperationError = systemMessageOf(error);
+    }
+  }
+}
+
+function stopSystemTimer(): void {
+  if (systemTimer !== undefined) {
+    window.clearInterval(systemTimer);
+    systemTimer = undefined;
+  }
+}
+
+/** Poll once a second while an operation runs; stop as soon as the server reports nothing running. */
+export function watchSystem(): void {
+  if (systemTimer !== undefined) return;
+  void loadSystem();
+  systemTimer = window.setInterval(() => {
+    void loadSystem();
+    if (store.system?.current === null) stopSystemTimer();
+  }, 1000);
+}
+
+export function unwatchSystem(): void {
+  stopSystemTimer();
+  if (restartTimer !== undefined) {
+    window.clearInterval(restartTimer);
+    restartTimer = undefined;
+  }
+}
+
+/** Start (or join) the update. The server owns it from here, so navigating away loses nothing. */
+export async function startSystemUpdate(): Promise<void> {
+  store.systemOperationError = null;
+  store.restart = null;
+  try {
+    await api.startUpdate();
+    await loadSystem();
+    watchSystem();
+  } catch (error) {
+    store.systemOperationError = systemMessageOf(error);
+  }
+}
+
+/**
+ * Ask the process to leave, then watch for a *different* pid.
+ *
+ * The response already says whether anything will bring it back (`restarting` vs `stopped`); the poll only
+ * proves it. A bare `npm start` never returns, so the UI says so instead of spinning forever.
+ */
+export async function startSystemRestart(): Promise<void> {
+  const previousPid = store.system?.process.pid ?? 0;
+  store.systemOperationError = null;
+  store.restart = null;
+  try {
+    const operation = await api.startRestart();
+    store.restart =
+      operation.state.name === "stopped"
+        ? { state: "stopping", since: Date.now() }
+        : { state: "waiting", previousPid, since: Date.now() };
+    if (store.restart.state === "waiting") waitForRestart(previousPid);
+  } catch (error) {
+    store.systemOperationError = systemMessageOf(error);
+  }
+}
+
+async function restartTick(previousPid: number, since: number): Promise<void> {
+  try {
+    const snapshot = await api.system();
+    store.system = snapshot;
+    if (snapshot.process.pid === previousPid) return;
+    const last = snapshot.last;
+    const downtimeMs =
+      last?.state.name === "done" && last.state.outcome.kind === "restart"
+        ? last.state.outcome.downtimeMs
+        : null;
+    store.restart = { state: "returned", downtimeMs };
+    store.systemOperationError = null;
+    if (restartTimer !== undefined) {
+      window.clearInterval(restartTimer);
+      restartTimer = undefined;
+    }
+    // The WebSocket reconnects on its own; the thread list and its activity are reloaded here.
+    await loadSessions();
+  } catch {
+    if (Date.now() - since > 20_000) {
+      if (restartTimer !== undefined) {
+        window.clearInterval(restartTimer);
+        restartTimer = undefined;
+      }
+      store.restart = { state: "missed", since: Date.now() };
+    }
+  }
+}
+
+function waitForRestart(previousPid: number): void {
+  if (restartTimer !== undefined) window.clearInterval(restartTimer);
+  const since = Date.now();
+  restartTimer = window.setInterval(() => {
+    void restartTick(previousPid, since);
+  }, 500);
+}
+
 

@@ -34,10 +34,11 @@ animation half). Phases 7–9 not started.**
 | Agent & group identity (colour + emoji) | **Done** |
 | Live "replying" indicator, per session | **Done** |
 | Responsive layout + design system | **Done** — 5 viewport tiers in the screenshot gate |
-| E2E suite (faux provider, deterministic) | **14 scenarios passing** |
+| E2E suite (faux provider, deterministic) | **15 scenarios passing** |
 | Image and document attachments | **Done** — bytes live in the entry the model was given |
 | Live activity indicator (phase, calls, elapsed) | **Done** — derived from `pi.live`, never a guess |
 | Storage: size report, cleanup, purge | **Done** — the `#/usage` panel prints the bytes the cleanup actually gave back |
+| System panel: update + restart | **Done** — `#/system` reports the loaded versions, the sandbox and the supervisor; Update installs packages only where the repo is writable, and reloads the live tools where it is read-only |
 | The `question` tool + keyless web search | **Done** — a durable `chat.question` with option buttons; DuckDuckGo's HTML endpoint, no key |
 | Hyperlinks and mermaid diagrams in an answer | **Done** — external links open away, a diagram fetches its library only when it is there |
 | Code mode | **Done, agent-selected** — `codemode` is registered only for an agent whose tool list names it, so a fresh default thread answers `Tool codemode is not available` and keeps going (see [docs/roadmap.md](docs/roadmap.md)) |
@@ -49,10 +50,10 @@ Latest verified run:
 | Check | Result |
 | --- | --- |
 | `npm run check` | `tsc` clean · `svelte-check` **0 errors, 2 warnings** (both in `Dialog.svelte`, untouched) · `lint:lang` clean |
-| `npm run e2e` | **14 passed, 0 failed** (`activity`, `attachments`, `codemode`, `identity`, `live-activity`, `memory`, `models`, `permissions`, `questions`, `search`, `sessions`, `steering`, `storage`, `tools`) |
-| `npm run build` | entry **71.86 kB JS** + **7.70 kB CSS** gzip (budget 100 kB); mermaid and its layout engines stay in their own chunks (`mermaid.core` 29.31 kB, `elk` 455.84 kB gzip), fetched only when a diagram renders |
+| `npm run e2e` | **15 passed, 0 failed** (`activity`, `attachments`, `codemode`, `identity`, `live-activity`, `memory`, `models`, `permissions`, `questions`, `search`, `sessions`, `steering`, `storage`, `system`, `tools`) |
+| `npm run build` | entry **73.86 kB JS** + **7.98 kB CSS** gzip (budget 100 kB); mermaid and its layout engines stay in their own chunks (`mermaid.core` 29.31 kB, `elk` 455.84 kB gzip), fetched only when a diagram renders |
 | `npm run shots:replying` | 11 screenshots |
-| `npm run shots` | not re-run in this session — the last full pass (8 routes × 5 viewports) lives in `docs/ui-review/2026-10-17/` |
+| `npm run shots` | **45 screenshots** (9 routes × 5 viewports) in `docs/ui-review/2026-10-19/`, including the new `#/system` |
 | `#/usage` Storage panel | 2 screenshots + the rendered DOM checked (6 rows, no wrapping or overflow at 1440×900 and 390×844, the cleanup line read back after a click) — see [`docs/ui-review/`](docs/ui-review/) |
 
 The plan of record, with the evidence for each phase, lives in [`docs/roadmap.md`](docs/roadmap.md).
@@ -517,7 +518,7 @@ systemd user unit and the iOS/Android install — is in [`docs/tailscale.md`](do
 | `npm run check` | `tsc` (server) + `svelte-check` (web) + `lint:lang` |
 | `npm run e2e` | Every E2E scenario against a throwaway server |
 | `npm run e2e:real` | Also run the optional real-model scenario |
-| `npm run shots` | 8 routes × 5 viewports → `docs/ui-review/<date>/` |
+| `npm run shots` | 9 routes × 5 viewports → `docs/ui-review/<date>/` |
 | `npm run shots:replying` | The replying indicator, the attachment cards, each activity phase and the Full Access control, on a throwaway E2E server |
 | `npm run smoke` | Harness + storage + one real question to the model |
 | `npm run smoke:image` | The same, with an image attachment: proves a real model sees it |
@@ -532,6 +533,7 @@ systemd user unit and the iOS/Android install — is in [`docs/tailscale.md`](do
 | `#/s/<id>` | Chat — plain thread, agent thread, or a group with the mode switch |
 | `#/groups` | Create a group + the group list |
 | `#/usage` | Usage graphs, the Storage panel and the cleanup |
+| `#/system` | Loaded tool versions, the sandbox and the supervisor, plus Update and Restart |
 | `#/agents`, `#/agents/new`, `#/agents/<id>` | Agent list + the `AGENT.md`/`SOUL.md` editor |
 | `#/providers` | Provider credential status + API key entry |
 
@@ -540,6 +542,8 @@ systemd user unit and the iOS/Android install — is in [`docs/tailscale.md`](do
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/api/health` | Liveness |
+| `GET` | `/api/system` | The app's own facts and the current/last operation |
+| `POST` | `/api/system/{update,restart}` | Start (or join) an update / record a restart and leave after the reply is flushed |
 | `GET` `POST` `PATCH` `DELETE` | `/api/sessions[/:id]` | `?includeDeleted=1` lists soft-deleted threads |
 | `POST` | `/api/sessions/:id/{restore,move,restart,abort}` | Restore, move to another agent, fresh context, abort |
 | `POST` | `/api/sessions/:id/permissions` | Grant or revoke Full Access for that thread alone |

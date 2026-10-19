@@ -29,6 +29,7 @@ This document is binding. Change the plan here first.
 | Screenshots | Required for every UI step: `npm run shots` → `docs/ui-review/<date>/` + `findings.md` (at most 2 polish rounds per step). |
 | Testing | **E2E only.** No unit tests. Deterministic E2E uses the official faux provider (`fauxProvider()`, `fauxToolCall()`, `FauxModelDefinition.input`) plus a `PI_E2E` control endpoint; one optional smoke test hits the real model. UI E2E uses `puppeteer-core` with the system Chromium. |
 | Code mode | `codemode` is registered only for an agent whose tool list names it (`installCodemode()` in `harness.ts`, through a synchronous `require`). An ownerless thread resolves to every *installed* tool, so a fresh default thread has no code mode: the model gets `Tool codemode is not available` and the turn still answers. Owner-approved consequence, taken for the behaviour, **not** for the ~1.5 MB it saves. The registry is process-wide, so a thread created after any agent used it gets it back until the process restarts. |
+| Self-update | The boundary chooses the operation, never the caller: `packages` + `npm run build` only when the repo is writable, an in-process `reloadTools()` + `rebindAgent()` under the read-only unit. Restart records the intent, flushes the reply, then exits; systemd returns it, `dev.mjs` respawns only the server from a sentinel file, bare `npm start` stops and the UI says so. |
 | Security | Bind `127.0.0.1`, require `X-PI-Token` (or `?token=` for WS), allowlist `Host`, no permissive CORS. |
 
 ## Phases
@@ -370,14 +371,28 @@ Two facts the new E2E proved that reading the source could not:
 | Check | Result |
 | --- | --- |
 | `npm run check` | `tsc` clean + `svelte-check` **0 errors, 2 warnings** (both in `Dialog.svelte`, untouched) + `lint:lang` clean |
-| `npm run e2e` | **13 passed, 0 failed** (`activity`, `attachments`, `identity`, `live-activity`, `memory`, `models`, `permissions`, `questions`, `search`, `sessions`, `steering`, `storage`, `tools`) |
-| `npm run build` | entry **71.86 kB JS** + **7.70 kB CSS** gzip (limit 120 kB); the entry grew by 1.12 kB over the pre-panel tree (70.74 kB), and mermaid/`elk` stay in their own chunks |
+| `npm run e2e` | **15 passed, 0 failed** (`activity`, `attachments`, `codemode`, `identity`, `live-activity`, `memory`, `models`, `permissions`, `questions`, `search`, `sessions`, `steering`, `storage`, `system`, `tools`) |
+| `npm run build` | entry **73.86 kB JS** + **7.98 kB CSS** gzip (limit 120 kB); mermaid/`elk` stay in their own chunks |
 | `npm run shots:replying` | 11 screenshots |
 | `#/usage` Storage panel | 2 screenshots (1440×900, 390×844) + the rendered DOM read back: 6 rows, no wrapped value, no clipped note, no horizontal overflow at either tier, and the cleanup line checked after a real click — including a second run reporting `0 B reclaimed` |
 
 The panel found one defect while it was being reviewed, and it was the panel's own: `GET /api/storage`
 wraps its report (`{ storage: {…} }`), and reading it as the report itself rendered `undefined B` for every
 part with a `NaN%` bar. The screenshot is what caught it; `svelte-check` was clean either way.
+
+### Phase 11 — System panel and the display pass (DONE)
+
+- [x] `packages/server/src/system.ts`: one owner for the process facts and one operation at a time.
+      `GET /api/system`, `POST /api/system/{update,restart}`; a terminal record in `data/system.json`,
+      reconciled at boot (`running` → `interrupted`, `restarting` → `done` with the measured downtime).
+- [x] Update is chosen by the boundary, never by the caller: `npm update` + `npm run build` on a writable
+      checkout; `reloadTools()` + `rebindAgent()` under the read-only unit, with the reason in the log.
+- [x] Restart records the intent, flushes the reply, then exits; systemd returns it, `dev.mjs` respawns only
+      the server child from a sentinel file, bare `npm start` stops and the UI says so.
+- [x] `#/system` shows the loaded versions, the boundary and the supervisor. The `system` E2E proves the
+      reload path, the stopped restart and the cross-process `restarting` → `done` reconciliation.
+- [x] Display pass: four-tab footer, the status dot in the head, search on demand, no per-row marker, one
+      mode chip instead of three buttons, user labels removed, the editor's policy behind one disclosure.
 
 ## Known gaps (do not claim these are done)
 
@@ -403,7 +418,7 @@ part with a `NaN%` bar. The screenshot is what caught it; `svelte-check` was cle
   conversation would keep its own copy of the bytes.
 - A purge has no UI: `POST /api/sessions/:id/purge` is the only way to remove a thread's rows for good, and
   the thread menu's delete stays a soft delete. The Storage panel states the difference without offering the
-  button. `#/usage` is also not in the `npm run shots` route list (8 routes), so the panel was reviewed with
+  button. `#/usage` is also not in the `npm run shots` route list (9 routes), so the panel was reviewed with
   a throwaway DevTools-protocol script instead of the committed gate.
 - Web search follows DuckDuckGo's HTML endpoint: keyless and dependency-free, but a shape dependency, so the
   `search` E2E asserts its parser and failure paths against a stubbed page rather than the live one.

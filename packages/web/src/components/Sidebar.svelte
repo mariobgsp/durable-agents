@@ -25,6 +25,12 @@
   const MODE_LABEL: Record<string, string> = { nyahut: "Nyahut", moderator: "Moderator", silent: "Silent" };
 
   let query = $state("");
+  let searchOpen = $state(false);
+  let searchInput = $state<HTMLInputElement | undefined>(undefined);
+
+  $effect(() => {
+    if (searchOpen) searchInput?.focus();
+  });
   let collapsed = $state<Record<string, boolean>>(readCollapsed());
   let menu = $state<string | null>(null);
   let renaming = $state<Session | null>(null);
@@ -114,16 +120,36 @@
 </script>
 
 <div class="sidebar__block">
-  <button class="btn btn--primary btn--block" onclick={newPlainThread} data-testid="new-thread">
-    New thread<span class="btn__icon">+</span>
-  </button>
-  <input
-    class="search"
-    type="search"
-    placeholder="Search threads…"
-    bind:value={query}
-    data-testid="thread-search"
-  />
+  <div class="sidebar__tools">
+    <button class="btn btn--primary btn--block" onclick={newPlainThread} data-testid="new-thread">
+      New thread<span class="btn__icon">+</span>
+    </button>
+    <button
+      class="icon-btn sidebar__search-toggle"
+      title={searchOpen ? "Hide search" : "Search threads"}
+      aria-label={searchOpen ? "Hide search" : "Search threads"}
+      aria-expanded={searchOpen}
+      onclick={() => {
+        searchOpen = !searchOpen;
+        if (!searchOpen) query = "";
+      }}
+    >
+      <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+        <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+      </svg>
+    </button>
+  </div>
+  {#if searchOpen}
+    <input
+      class="search"
+      type="search"
+      placeholder="Search threads…"
+      bind:this={searchInput}
+      bind:value={query}
+      data-testid="thread-search"
+    />
+  {/if}
 </div>
 
 <nav class="sections" data-testid="sidebar-sections">
@@ -135,9 +161,11 @@
           <span class="caret" class:caret--closed={collapsed[section.agent.id]}>▾</span>
           <AgentAvatar {identity} size="md" />
           <span class="section__name">{identity.label}</span>
-          <span class="section__meta" data-testid="agent-status">
-            {section.agent.enabled === false ? "disabled" : "active"} · {section.threads.length}
-          </span>
+          {#if section.agent.enabled === false}
+            <span class="section__meta">off</span>
+          {:else if section.threads.length > 0}
+            <span class="section__meta">{section.threads.length}</span>
+          {/if}
         </button>
         <button
           class="icon-btn"
@@ -203,7 +231,6 @@
         <span class="section__name">Groups</span>
         <span class="section__meta">{groups.length}</span>
       </button>
-      <button class="icon-btn" title="New group" onclick={() => go("#/groups")}>+</button>
     </header>
     {#if !collapsed["groups"]}
       <div class="threads">
@@ -277,8 +304,6 @@
         <span class="thread__slot">
           {#if isReplying(thread.id)}
             <ActivityIndicator size="xs" label={thread.title + " is replying"} />
-          {:else}
-            <span class="marker" style="--author: {color}"></span>
           {/if}
         </span>
         <span class="thread__title">{thread.title}</span>

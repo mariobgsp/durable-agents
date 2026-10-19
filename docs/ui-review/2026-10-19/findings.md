@@ -83,3 +83,40 @@ this panel.
 - **Not photographed**: the `starting` phase (the window between accepting a message and the first block is
   under a publish interval, so a deterministic shot is not available), and the `queued` label (it needs a
   second message posted mid-round, which the E2E scenario asserts instead of a screenshot).
+
+## System panel and the display pass (added later the same day)
+
+`npm run shots` now covers **9 routes × 5 viewports** (the new `#/system` is `09-system-*`).
+
+| File | State it proves |
+| --- | --- |
+| `09-system-1440x900.png` | the facts card (tools, boundary, supervisor), the idle job line and the two actions with their honest hints |
+| `09-system-390x844.png` | the same at the phone tier: facts stack, both actions full width, no overflow |
+| `01-home-1440x900.png`, `01-home-390x844.png` | the hero is one sentence and one action |
+| `03-chat-filled-1440x900.png` | no role label on user bubbles, no model/agent chip in the header, the short placeholder; the model moved to the context bar |
+
+Findings and fixes (round 1, both fixed and re-shot):
+
+1. **The search toggle was a tiny fallback glyph** — `⌕` rendered as a small mark beside the primary button.
+   Fix: an inline 15 px SVG magnifier in `Sidebar.svelte`, inside the existing `.icon-btn` box.
+2. **The System cards stretched to the full content width** at 1440, leaving a sparse right half.
+   Fix: `max-width: 760px` on `.facts`, `.job` and `.system__actions`; the phone tier still fills the column
+   and the facts stack to one column under 720 px.
+
+Rubric notes:
+
+- **Item 10 (animation)**: the only motion is the existing `ActivityIndicator` while the server reports
+  `running`. `restarting` and `stopped` are static text, because the process that would report activity is
+  gone (rule 4). There is no percentage or progress shape anywhere.
+- **Item 11 (consistency)**: no new colour, radius or font. The panel uses `--panel`, `--line`, `--r-md`,
+  `--r-sm`, `--muted`, `--accent` and the existing `.page`/`.btn` atoms; the only new classes are layout.
+- **Item 1 (hierarchy)**: title, facts, one state line, two actions. No second heading, no card inside a card.
+- **Item 4 (empty states)**: `Nothing has run since this server started.` is the idle state and points at the
+  two buttons; the thread sections keep their `No threads yet.` lines.
+- **Counts**: 45 screenshots, 0 failures; `npm run check` 0 errors (2 pre-existing `Dialog.svelte` warnings);
+  `npm run e2e` 14/14; entry 73.65 kB gzip (budget 100 kB).
+
+The pi-lens session cache again reported **stale** errors for `System.svelte` and `App.svelte` after their
+dependency files were saved (`types.ts`, `state.svelte.ts`, `router.svelte.ts`). Verified false with
+`npm run check`, a fresh `source: lsp` probe (2 files confirmed clean) and `grep` on the files; see the
+Known gaps note in `docs/roadmap.md`. Nothing was "fixed" by adding duplicate declarations.

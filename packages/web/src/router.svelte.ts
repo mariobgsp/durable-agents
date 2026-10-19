@@ -6,6 +6,7 @@ type Route =
   | { name: "agents" }
   | { name: "providers" }
   | { name: "usage" }
+  | { name: "system" }
   | { name: "agent"; id: string };
 
 function parse(): Route {
@@ -17,6 +18,7 @@ function parse(): Route {
   if (hash === "groups") return { name: "groups" };
   if (hash === "providers") return { name: "providers" };
   if (hash === "usage") return { name: "usage" };
+  if (hash === "system") return { name: "system" };
   if (hash === "agents") return { name: "agents" };
   return { name: "home" };
 }
@@ -31,3 +33,4 @@ export function go(hash: string): void {
   if (location.hash === hash) Object.assign(route, parse());
   else location.hash = hash;
 }
+

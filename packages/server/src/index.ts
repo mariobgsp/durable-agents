@@ -27,7 +27,15 @@ import { cleanupStorage, purgeConversation, storageReport } from "./storage.ts";
 import { usageReport } from "./usage.ts";
 import { enableE2E, e2eState, setE2EScript, type E2EStep } from "./e2e.ts";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, clearApiKey, models, providerStatus, setApiKey } from "./models.ts";
-import { context, harnessInstance, openHarness } from "./harness.ts";
+import {
+  OperationBusyError,
+  disposeSystem,
+  openSystem,
+  performRestart,
+  startOperation,
+  systemSnapshot,
+} from "./system.ts";
+import { context, harnessInstance, openHarness, reloadTools } from "./harness.ts";
 import { configuredToken, dataDir, host, serverPort, tokenPath } from "./paths.ts";
 import { setAgentResolver } from "./remember.ts";
 import {
@@ -100,6 +108,16 @@ for (const record of await allSessionRecords()) {
 
 const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
 
+// The app's own facts and operations. Opened before any route can read them; the hooks are the only two
+// process-shaped things this module is allowed to do.
+await openSystem({
+  reloadTools,
+  stop: async () => {
+    await app.close();
+    process.exit(0);
+  },
+});
+
 /**
  * The one route that needs more than the 2 MiB default: a message carries its own attachments.
  *
@@ -123,6 +141,50 @@ await app.register(
       defaultProvider: "opencode-go",
       sandboxed: process.env.PI_SANDBOXED === "1",
     }));
+
+    // ---------- system: the process facts, and the two operations it can perform on itself ----------
+
+    api.get("/system", async () => systemSnapshot());
+
+    /**
+     * Start an update, or join the one already running.
+     *
+     * The operation is owned by `system.ts`; this route only turns a busy refusal into a readable 409.
+     */
+    api.post("/system/update", async (_request, reply) => {
+      try {
+        return startOperation("update");
+      } catch (error) {
+        if (error instanceof OperationBusyError) {
+          await reply.code(409).send({ code: "operation-in-progress", operation: error.operation });
+          return;
+        }
+        throw error;
+      }
+    });
+
+    /**
+     * Restart the process.
+     *
+     * The operation is recorded as terminal before the reply, then the leave happens on the response's own
+     * `finish` event: the client gets the operation, not a dropped connection. Under systemd the unit's
+     * `Restart=always` brings it back; under `npm run dev` a sentinel file asks `dev.mjs` to respawn it.
+     */
+    api.post("/system/restart", async (_request, reply) => {
+      try {
+        const operation = startOperation("restart");
+        reply.raw.once("finish", () => {
+          void performRestart();
+        });
+        return operation;
+      } catch (error) {
+        if (error instanceof OperationBusyError) {
+          await reply.code(409).send({ code: "operation-in-progress", operation: error.operation });
+          return;
+        }
+        throw error;
+      }
+    });
 
     api.get("/sessions", async (request) => {
       const query = (request.query ?? {}) as { includeDeleted?: string };
@@ -589,6 +651,8 @@ if (existsSync(resolve(webDist, "index.html"))) {
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
+    // Never leave an npm child writing node_modules while the next process starts another.
+    disposeSystem();
     void app.close().then(() => process.exit(0));
   });
 }

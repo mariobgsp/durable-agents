@@ -33,7 +33,7 @@ for (const file of files) {
   const started = Date.now();
   let server;
   try {
-    server = await startServer({ real: scenario.real === true });
+    server = await startServer({ real: scenario.real === true, env: scenario.env });
     await scenario.run(server);
     passed += 1;
     console.log("PASS " + scenario.name + " (" + (Date.now() - started) + "ms)");
