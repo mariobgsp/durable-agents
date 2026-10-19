@@ -28,21 +28,45 @@ let instance: Harness | undefined;
  * The one image processor this process uses: `read` needs it, and so does an attachment upload. Sharing it
  * means one worker thread and one set of rules (decode, honour EXIF, resize to the model's own limits).
  */
-let images: ImageProcessor | undefined;
+/**
+ * The image processor, built the first time an image actually needs one.
+ *
+ * Photon loads a WebAssembly module and starts a worker thread; doing that at boot costs about 6.5 MB measured,
+ * in a process that may never read or receive an image. The wrapper is the same interface, so the `read` tool
+ * and the upload path cannot tell the difference — and neither of them has to care whether it exists yet.
+ */
+let realImages: ImageProcessor | undefined;
+async function photon(): Promise<ImageProcessor> {
+  realImages ??= await createNodePhotonImages();
+  return realImages;
+}
+
+const lazyImages: ImageProcessor = {
+  prepare: async (bytes, mimeType, limits) => (await photon()).prepare(bytes, mimeType, limits),
+};
 
 export function imageProcessor(): ImageProcessor {
-  if (!images) throw new Error("harness not open: call openHarness() first");
-  return images;
+  return lazyImages;
 }
+
+let realSandbox: CodemodeSandbox | undefined;
+
+const lazySandbox = new Proxy({} as CodemodeSandbox, {
+  get: (_target, property) => {
+    realSandbox ??= new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 });
+    const value = Reflect.get(realSandbox as object, property);
+    return typeof value === "function" ? value.bind(realSandbox) : value;
+  },
+});
 
 export async function openHarness(): Promise<Harness> {
   if (instance) return instance;
   await mkdir(dataDir, { recursive: true });
 
-  // Tools that need async setup live here. The image processor lets `read` handle photos the way pi
-  // does: decode, honour EXIF orientation, resize to the model's limits. An attachment upload reuses it.
-  images = await createNodePhotonImages();
-  registry.install(createCodingTools({ images }));
+  // The image processor lets `read` handle photos the way pi does: decode, honour EXIF orientation, resize to
+  // the model's limits. An attachment upload reuses the same one. It is the lazy wrapper above, so nothing
+  // loads until an image does.
+  registry.install(createCodingTools({ images: lazyImages }));
 
   // Memory: one line per agent, written by the agent itself. Installed for the registry, then selected by
   // every agent in agentChangeOf() — a tool that is offered but not registered answers "not available".
@@ -53,11 +77,11 @@ export async function openHarness(): Promise<Harness> {
   registry.install(permissionsExtension());
 
   // Code mode: the model writes JavaScript that calls the conversation's tools in a QuickJS sandbox.
-  registry.install(
-    createCodemodeExtension({
-      sandbox: new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 }),
-    }),
-  );
+  //
+  // The sandbox is behind a proxy so the WebAssembly runtime loads on the first script that actually runs:
+  // constructing it at boot costs about 35 MB measured, for a tool most agents never call. The extension gets
+  // the same interface, so it cannot tell.
+  registry.install(createCodemodeExtension({ sandbox: lazySandbox }));
 
   const storage = await openNodeSqliteStorage(dbPath);
   instance = await Harness.open(
