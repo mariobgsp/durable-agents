@@ -171,10 +171,20 @@ erDiagram
     string color
     string avatar
   }
+  ENTRY {
+    string id
+    string kind "pi.user | pi.assistant | pi.tool-result | chat.user | room.*"
+    json model "the messages the provider was given"
+    json data "what the UI shows: text, author, files[]"
+  }
 ```
 
 One thread is one conversation. A group **is** a thread whose session record carries a `room`; each member
 gets its own conversation under `room.conversations`, created on first use.
+
+A user message is one `chat.user` entry. `entry.model` holds the messages the provider was given — image
+blocks included — and `entry.data.files[]` describes them, so an attachment has exactly one home and there
+is no second store to keep in step.
 
 ---
 
@@ -233,6 +243,53 @@ message-end    { text: "Ahoy, I am the pirate captain of this crew." }
 `watchEvents` also emits start/end events for **user** entries, so only `pi.assistant` entries are allowed
 to close the bubble.
 
+### Attachments live in the entry
+
+A message carries its own files: one request, one commit, one entry. The reason it can be that simple is a
+property of the durable layer — an input's entry stores the message the provider was given (`appendInput`
+builds `model: [userMessage]` for *any* entry kind that does not start with `pi.`), so the bytes the model
+saw are already durable. Copying them anywhere else would be the copy.
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant SPA as Browser
+  participant API as Fastify
+  participant H as pi-durable
+  participant LLM as Model
+
+  U->>SPA: drops a photo and a PDF
+  SPA->>SPA: lib/files.ts: base64 + a local preview
+  SPA->>API: POST /api/sessions/:id/messages { text, attachments, requestId }
+  API->>API: prepareUserMessage: shape → budget → policy → convert
+  Note over API: a refusal throws here, so nothing durable exists yet
+  API->>H: submit({ content: [text, image, docText], entry: { kind: "chat.user", data } })
+  H-->>API: submissionId — the bytes are durable now
+  API-->>SPA: { submissionId }
+  H->>LLM: the same content, as native blocks
+  SPA->>API: GET /api/sessions/:id/attachments/:entryId/:index?token=…
+  API-->>SPA: the bytes, read out of that entry
+```
+
+What that buys, and what it costs:
+
+- **No upload route, no temporary file, no garbage collection.** A file exists exactly where the model read
+  it, so a reload and a restart are trivially faithful — there is nothing to lose track of. The retrieval
+  route resolves the entry, checks it belongs to *that* conversation, and serves the block.
+- **The server normalizes, not the browser.** Images go through the same Photon processor `read` uses, to
+  the model's own `inputLimits`. One limit table instead of two, and no canvas code to re-implement EXIF
+  orientation. Photon's worker needs a plain `Uint8Array`: a Node `Buffer` makes `prepare()` return
+  `undefined`, which would silently omit every uploaded image.
+- **Documents become text**, detected by decoding rather than by extension; PDFs go to `pdftotext` on stdin
+  and never through a path. An over-long document is truncated with the same numbers shown to the model and
+  to the user, and a file that cannot be read keeps its place in the bubble with the reason.
+- **A refusal is free.** `prepareUserMessage` validates and converts before `submit`, so a 400 means the
+  draft is intact: nothing was written, no model call was spent.
+- **Groups refuse attachments** (400, readable reason). Each member conversation is its own model-visible
+  entry, so supporting it would keep one copy of every byte per member.
+- **The costs accepted:** the same photo attached twice is stored twice, `app.sqlite` grows with the images
+  it holds, and the message route declares its own 24 MiB body limit because a message carries its files.
+
 ### Who is replying
 
 The sidebar and the chat both need to know which sessions are generating, including sessions you are not
@@ -272,6 +329,42 @@ sequenceDiagram
 `waitForIdle()` is the harness's own signal, so there is no polling and no transcript scanning. The clear
 is epoch-guarded, so a waiter that resolves late cannot wipe the mark of a generation that started in
 between, and a 10-minute watchdog stops a hung provider from pinning a spinner forever.
+
+### What the indicator is allowed to say
+
+"Replying" is not enough to look at, and a fake progress bar is worse than no indicator. So the phase is
+*derived* on the server from `pi.live` and `pi.inbox`, and every row below is a signal that was actually
+observed:
+
+| Condition (first match wins) | phase |
+| --- | --- |
+| `compactions` non-empty | `compacting` |
+| `generation.retry` present | `retrying` |
+| some call is not `done` | `tool` |
+| the partial has a non-empty text block | `writing` |
+| the partial has a non-empty thinking block | `thinking` |
+| `run` present, no generation yet | `starting` |
+| nothing running | `null` — no motion at all |
+
+"Thinking" therefore requires thinking tokens and "writing" requires text: a model that emits neither says
+`starting`, which is true, instead of guessing. The phase, the calls, the counts and the queued inputs
+arrive as **one `activity` snapshot** (the same snapshot-never-diff rule as presence and the tool trace), so
+a phase and a call list that describe one round cannot disagree.
+
+Two honesty rules are worth stating because they removed features rather than adding them:
+
+- **Elapsed time comes from the run task's durable `startedAt`**, read once per run, so a reconnect reports
+the real elapsed time instead of restarting the clock at zero — and when it cannot be read, no timer is
+shown at all.
+- **There is no per-call timer.** With `toolExecution: "parallel"` a call is already `running` on the first
+publish that mentions it, so no connection can observe when it began; a stamp taken at first sight would
+really mean "since I connected". The row keeps the indeterminate sweep and the round keeps the real elapsed
+time.
+
+Motion follows the roadmap's rule: only `opacity` + `transform`, inside fixed-size clipped boxes, at most one
+sweep per row (and one round-level sweep past three calls in flight), nothing at all while the tab is
+hidden, and fully static under `prefers-reduced-motion` — where the sweep is hidden outright, because a
+frozen bar in an arbitrary position reads as progress.
 
 ### Group chat: `Nyahut`
 
