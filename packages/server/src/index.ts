@@ -23,6 +23,7 @@ import { MessageRefused, readUserFile, type UserMessageBody } from "./attachment
 import { makeAuthHook } from "./auth.ts";
 import { modelCatalog } from "./capabilities.ts";
 import { policyOf, setGrantResolver } from "./permissions.ts";
+import { cleanupStorage, purgeConversation, storageReport } from "./storage.ts";
 import { usageReport } from "./usage.ts";
 import { enableE2E, e2eState, setE2EScript, type E2EStep } from "./e2e.ts";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, clearApiKey, models, providerStatus, setApiKey } from "./models.ts";
@@ -46,6 +47,7 @@ import {
   rebindAgent,
   renameSession,
   restartSession,
+  removeSessionRecord,
   restoreSession,
   sendMessage,
   setSessionGrant,
@@ -242,6 +244,35 @@ await app.register(
         return;
       }
       return updated;
+    });
+
+    // ---------- storage ----------
+
+    /** How much the data directory holds, split by what a reader would recognise. */
+    api.get("/storage", async () => ({ storage: await storageReport() }));
+
+    /**
+     * Fold the write-ahead log back into the database and reclaim what deletions left behind.
+     *
+     * Returns the sizes before and after, so the caller can say how much came back rather than claiming it did.
+     */
+    api.post("/storage/cleanup", async () => cleanupStorage());
+
+    /**
+     * Remove one conversation for good.
+     *
+     * Irreversible: the transcript is exported to data/exports/ first and the path comes back with the result.
+     * The thread is then soft-deleted, so the list reflects that it is gone.
+     */
+    api.post("/sessions/:id/purge", async (request, reply) => {
+      const { id } = request.params as { id: string };
+      if (!(await findSession(id))) {
+        await reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const result = await purgeConversation(id, await transcript(id));
+      await removeSessionRecord(id);
+      return result;
     });
 
     // ---------- agents ----------

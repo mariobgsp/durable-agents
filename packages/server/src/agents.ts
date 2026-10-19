@@ -61,7 +61,7 @@ export type AgentInput = {
   soulMd?: string;
 };
 
-const agentsDir = resolve(dataDir, "agents");
+export const agentsDir = resolve(dataDir, "agents");
 
 /** What a new agent gets: the same tool set pi ships with, including code mode. */
 export const DEFAULT_AGENT_TOOLS = ["read", "write", "edit", "bash", "codemode"] as const;

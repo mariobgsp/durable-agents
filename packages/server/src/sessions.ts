@@ -165,6 +165,22 @@ export async function setSessionGrant(id: string, grant: "full" | null): Promise
   return updated ? toWireSession(updated) : null;
 }
 
+/**
+ * Remove a thread's record for good.
+ *
+ * A purge is not a soft delete: the rows are already gone, so hiding the record would offer a Restore that
+ * cannot work and would leave a thread answering 200 with an empty transcript.
+ */
+export async function removeSessionRecord(id: string): Promise<boolean> {
+  return serialize(async () => {
+    const sessions = await readIndex();
+    const remaining = sessions.filter((session) => session.id !== Number(id));
+    if (remaining.length === sessions.length) return false;
+    await writeIndex(remaining);
+    return true;
+  });
+}
+
 /** Point one thread at another agent: reconfigure the conversation, then update the record. */
 export async function moveSession(id: string, agentId: string): Promise<WireSession | null> {
   const files = await readAgent(agentId);
