@@ -15,6 +15,7 @@
     "start": "node packages/server/src/index.ts",
     "build": "npm -w @durable-agents/web run build",
     "smoke": "npm -w @durable-agents/server run smoke",
+    "smoke:image": "npm -w @durable-agents/server run smoke:image",
     "seed": "node packages/server/scripts/seed-demo.ts",
     "shots": "node packages/web/scripts/shots.mjs",
     "shots:replying": "node packages/web/scripts/shots-replying.mjs",

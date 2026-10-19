@@ -429,8 +429,9 @@ systemd user unit and the iOS/Android install — is in [`docs/tailscale.md`](do
 | `npm run e2e` | Every E2E scenario against a throwaway server |
 | `npm run e2e:real` | Also run the optional real-model scenario |
 | `npm run shots` | 8 routes × 5 viewports → `docs/ui-review/<date>/` |
-| `npm run shots:replying` | The replying indicator, on a throwaway E2E server |
+| `npm run shots:replying` | The replying indicator, the attachment cards and each activity phase, on a throwaway E2E server |
 | `npm run smoke` | Harness + storage + one real question to the model |
+| `npm run smoke:image` | The same, with an image attachment: proves a real model sees it |
 | `npm run seed` | Seed demo threads (no model calls) |
 | `npm run lint:lang` | Fail on Indonesian text in system files |
 

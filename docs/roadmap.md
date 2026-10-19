@@ -294,6 +294,7 @@ Verified green at that point:
 | `npm run e2e` | `PASS sessions` (1 passed, 0 failed) |
 | `npm run build` | JS 53.34 kB gzip, CSS 3.19 kB gzip |
 | `npm run smoke` | real model answers, credentials still resolve from `~/.pi/agent/auth.json` |
+| `npm run smoke:image` | **1 real image block, 0 placeholders** in the request, and `deepseek-v4.1-flash` named the image's colour |
 
 Two real bugs the new E2E caught immediately, both worth remembering:
 
@@ -334,6 +335,11 @@ Two facts the new E2E proved that reading the source could not:
 - The error state has still not been photographed (it needs interaction). Streaming is verified separately
   through `scripts/ws-probe.mjs`; the `starting` and `queued` states are asserted in
   `scripts/e2e/scenarios/live-activity.mjs` instead, because their windows are too short to hold open.
+- **An agent with `read` may go looking for a file named like an attachment.** `npm run smoke:image` first
+  answered "White" because the model called `read sample.png` and found an unrelated file with that name
+  (`/usr/share/cups/doc/images/sample-image.png`). The image was in the request the whole time. The smoke
+  test now disables tools to isolate the picture, but the real fix would be to tell the model in the prompt
+  that the attachment is already provided — worth doing if a real agent ever reads the wrong file.
 - Attachments cannot be sent in a group thread: refused with a readable reason, because every member
   conversation would keep its own copy of the bytes.
 - The Tauri shell has never been compiled, and `tauri-plugin-single-instance` is not installed: do not
