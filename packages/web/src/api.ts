@@ -109,6 +109,12 @@ export const api = {
   deleteSession: (id: string) => req<{ ok: boolean }>(`/api/sessions/${id}`, { method: "DELETE" }),
   restoreSession: (id: string) =>
     req<{ ok: boolean }>(`/api/sessions/${id}/restore`, { method: "POST", body: "{}" }),
+  /** Grant or revoke Full Access for one thread. Per-thread: the agent's own tier is untouched. */
+  setSessionGrant: (id: string, grant: "full" | null) =>
+    req<Session>(`/api/sessions/${id}/permissions`, {
+      method: "POST",
+      body: JSON.stringify({ grant }),
+    }),
   moveSession: (id: string, agentId: string) =>
     req<Session>(`/api/sessions/${id}/move`, { method: "POST", body: JSON.stringify({ agentId }) }),
   restartSession: (id: string, handoff?: string) =>

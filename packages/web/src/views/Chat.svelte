@@ -10,6 +10,7 @@
     restartThread,
     send,
     setAgentEnabled,
+    setThreadGrant,
     store,
     updateRoomMode,
   } from "../state.svelte.ts";
@@ -47,6 +48,8 @@
     session?.agent ? (store.agents.find((entry) => entry.id === session.agent) ?? null) : null,
   );
   const agentDisabled = $derived(agent !== null && agent.enabled === false);
+  /** Whether this thread has been granted Full Access. Per-thread, so it dies with the thread. */
+  const granted = $derived(session?.grant === "full");
   /**
    * The composer hint has to fit on one line: at phone width the long placeholder was clipped mid-sentence,
    * which reads as a broken field rather than a hidden tip.
@@ -173,6 +176,26 @@
     await renameThread(target.id, next);
   }
 
+  /**
+   * Grant or revoke Full Access for this thread.
+   *
+   * Confirmed on grant only: the consequence is worth one click of friction, and revoking is always safe.
+   */
+  async function toggleGrant(): Promise<void> {
+    const target = session;
+    if (!target) return;
+    if (granted) {
+      await setThreadGrant(target.id, null);
+      return;
+    }
+    const ok = window.confirm(
+      "Give this thread Full Access?\n\n" +
+        "It will run as you: it can read your SSH keys, your browser profile, and every file you can. " +
+        "The grant applies to this thread only, and you can revoke it right here.",
+    );
+    if (ok) await setThreadGrant(target.id, "full");
+  }
+
   async function enableAgent(): Promise<void> {
     if (!agent) return;
     await setAgentEnabled(agent.id, true);
@@ -263,6 +286,19 @@
       {:else if session?.agent}
         <button class="chip chip--link" onclick={() => go("#/agents/" + session?.agent)} data-testid="agent-chip">
           @{session.agent}
+        </button>
+      {/if}
+      {#if session?.agent}
+        <button
+          class="chip chip--link"
+          class:chip--danger={granted}
+          title={granted
+            ? "This thread may run anything you can. Click to revoke."
+            : "Let this thread run anything you can. It runs as you, and you can revoke it here."}
+          data-testid="grant-chip"
+          onclick={toggleGrant}
+        >
+          {granted ? "Full Access (this thread)" : "Full Access: off"}
         </button>
       {/if}
       {#if session?.model}

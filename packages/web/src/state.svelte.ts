@@ -367,6 +367,21 @@ export async function restoreThread(id: string): Promise<void> {
   }
 }
 
+/**
+ * Grant or revoke Full Access for one thread.
+ *
+ * The list is reloaded so the chip follows the record, and nothing touches the agent: the grant lives on the
+ * thread, so the next thread this agent starts is back at the agent's own tier.
+ */
+export async function setThreadGrant(id: string, grant: "full" | null): Promise<void> {
+  try {
+    await api.setSessionGrant(id, grant);
+    await loadSessions();
+  } catch (err) {
+    report(err);
+  }
+}
+
 export async function moveThread(id: string, agentId: string): Promise<void> {
   try {
     await api.moveSession(id, agentId);

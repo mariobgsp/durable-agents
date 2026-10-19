@@ -802,6 +802,12 @@ button {
   background: transparent;
 }
 
+/* A granted thread is not a link like the others: it is the one control that widens what the agent can do. */
+.chip--danger {
+  color: var(--danger);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
 .chip--link:hover {
   color: var(--text);
 }

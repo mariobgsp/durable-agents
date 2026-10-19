@@ -27,6 +27,8 @@ export type Session = {
   agent?: string;
   kind?: "plain" | "agent" | "group";
   room?: RoomConfig;
+  /** Full Access granted to this thread alone; absent means the agent's own tier applies. */
+  grant?: "full";
   /** Soft delete: set when the thread is hidden but its transcript is still in SQLite. */
   deletedAt?: number;
 };

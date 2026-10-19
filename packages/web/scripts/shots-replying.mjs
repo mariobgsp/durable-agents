@@ -313,6 +313,41 @@ try {
     console.log((shot.code === 0 && exists(file) ? "ok   " : "FAIL ") + " " + file.replace(ROOT + "/", ""));
   }
   toolPhase.close();
+
+  // The per-thread Full Access control, off and on. It is the thread's own record that changes, so the same
+  // thread is photographed twice rather than two threads compared.
+  const grantAgent = (
+    await api("/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Grant demo",
+        provider: "e2e",
+        modelId: "faux-text",
+        tools: ["read"],
+        permissions: "standard",
+      }),
+    })
+  ).body;
+  const grantThread = (
+    await api("/api/sessions", {
+      method: "POST",
+      body: JSON.stringify({ title: "Grant demo", agentId: grantAgent.record.id }),
+    })
+  ).body;
+  for (const [state, shot] of [
+    ["off", "13-grant-off-1440x900.png"],
+    ["on", "13-grant-on-1440x900.png"],
+  ]) {
+    if (state === "on") {
+      await api("/api/sessions/" + grantThread.id + "/permissions", {
+        method: "POST",
+        body: JSON.stringify({ grant: "full" }),
+      });
+    }
+    const file = resolve(OUT, shot);
+    const result = await shoot(base + "/#/s/" + grantThread.id, "1440,900", file);
+    console.log((result.code === 0 && exists(file) ? "ok   " : "FAIL ") + " " + file.replace(ROOT + "/", ""));
+  }
 } catch (error) {
   problems.push(String(error));
 } finally {
