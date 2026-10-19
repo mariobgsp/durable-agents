@@ -22,7 +22,7 @@ import { activeIds, subscribe as subscribeActivity } from "./activity.ts";
 import { MessageRefused, readUserFile, type UserMessageBody } from "./attachments.ts";
 import { makeAuthHook } from "./auth.ts";
 import { modelCatalog } from "./capabilities.ts";
-import { policyOf } from "./permissions.ts";
+import { policyOf, setGrantResolver } from "./permissions.ts";
 import { usageReport } from "./usage.ts";
 import { enableE2E, e2eState, setE2EScript, type E2EStep } from "./e2e.ts";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, clearApiKey, models, providerStatus, setApiKey } from "./models.ts";
@@ -48,6 +48,7 @@ import {
   restartSession,
   restoreSession,
   sendMessage,
+  setSessionGrant,
   setSessionModel,
   trackIfBusy,
   transcript,
@@ -83,6 +84,10 @@ for (const agent of await listAgents()) {
   await ensureAgentTmp(agent.id);
 }
 setAgentResolver(agentForConversation);
+
+// A thread's own grant, so Full Access can be given for one conversation and revoked there. The resolver is
+// wired here rather than imported by the hook, which would close a module cycle through the harness.
+setGrantResolver(async (conversationId) => (await findSession(conversationId))?.grant);
 
 // Warm start: `resume()` inside openHarness() may have rescheduled work that began before this process
 // started, which nobody marked. Each check marks a session only if it is still busy after a short grace
@@ -220,6 +225,23 @@ await app.register(
         return;
       }
       return { ok: true };
+    });
+
+    /**
+     * Grant or revoke Full Access for this thread.
+     *
+     * Per-thread and non-sticky: the agent's own tier is untouched, a new thread starts without it, and the
+     * decision is visible in the thread's own record. Revoking is the same call with no grant.
+     */
+    api.post("/sessions/:id/permissions", async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = (request.body ?? {}) as { grant?: unknown };
+      const updated = await setSessionGrant(id, body.grant === "full" ? "full" : null);
+      if (!updated) {
+        await reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      return updated;
     });
 
     // ---------- agents ----------

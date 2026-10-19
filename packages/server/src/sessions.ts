@@ -30,6 +30,14 @@ export type SessionRecord = {
   kind?: "plain" | "agent" | "group";
   /** Group configuration; present only when kind === "group". */
   room?: RoomConfig;
+  /**
+   * Full Access granted to this thread alone.
+   *
+   * Per-thread and non-sticky on purpose: full access is a decision about a task, not about a persona, so it
+   * lives on the thread that was granted it rather than on the agent, and a new thread starts at the agent's
+   * own tier. The transcript is then the record of when it was allowed.
+   */
+  grant?: "full";
   /** Soft delete: set when the thread is hidden. The durable rows stay in SQLite until a purge. */
   deletedAt?: number;
 };
@@ -44,6 +52,7 @@ export type WireSession = {
   agent?: string;
   kind?: "plain" | "agent" | "group";
   room?: RoomConfig;
+  grant?: "full";
   deletedAt?: number;
 };
 
@@ -105,6 +114,7 @@ function toWireSession(record: SessionRecord): WireSession {
     ...(record.agent ? { agent: record.agent } : {}),
     ...(record.kind ? { kind: record.kind } : {}),
     ...(record.room ? { room: record.room } : {}),
+    ...(record.grant ? { grant: record.grant } : {}),
     ...(record.deletedAt ? { deletedAt: record.deletedAt } : {}),
   };
 }
@@ -142,6 +152,17 @@ export async function deleteSession(id: string): Promise<boolean> {
 export async function restoreSession(id: string): Promise<boolean> {
   const updated = await updateSessionRecord(Number(id), { deletedAt: undefined });
   return updated !== null;
+}
+
+/**
+ * Grant or revoke Full Access for one thread.
+ *
+ * Nothing here touches the agent's own tier, which is what makes the grant non-sticky: the next thread the
+ * agent starts is back at Standard (or Custom), and this thread carries the decision until it is revoked.
+ */
+export async function setSessionGrant(id: string, grant: "full" | null): Promise<WireSession | null> {
+  const updated = await updateSessionRecord(Number(id), { grant: grant ?? undefined });
+  return updated ? toWireSession(updated) : null;
 }
 
 /** Point one thread at another agent: reconfigure the conversation, then update the record. */

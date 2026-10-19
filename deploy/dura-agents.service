@@ -9,13 +9,13 @@
 # /api request answers 403 "Host not allowed". See docs/tailscale.md.
 [Unit]
 Description=dura-agents server
-Documentation=file://%h/dura-agents/docs/tailscale.md
+Documentation=file://%h/Projects/mariobgsp/durable-agents/docs/tailscale.md
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/dura-agents
+WorkingDirectory=%h/Projects/mariobgsp/durable-agents
 
 # Loopback only. TLS and the public name are handled by `tailscale serve`, never by this process.
 Environment=PI_SERVER_PORT=8787
@@ -25,6 +25,10 @@ Environment=PI_HOST=127.0.0.1
 Environment=PI_ALLOWED_HOSTS=.ts.net
 # Small machines: keep the heap modest so a 4 GB box does not swap itself to death.
 Environment=NODE_OPTIONS=--max-old-space-size=768
+
+# Agent scratch space, inside the boundary. It defaults to ~/tmp/<id>, which ProtectHome=read-only below
+# would refuse — and granting write access to all of ~/tmp to keep the default would defeat the point.
+Environment=PI_AGENT_TMP_DIR=%h/Projects/mariobgsp/durable-agents/data/tmp
 
 # The token is data/token (mode 600), created on first start and reused afterwards.
 ExecStart=/usr/bin/env node packages/server/src/index.ts
@@ -48,7 +52,7 @@ Environment=PI_SANDBOXED=1
 # Read-only everywhere except the data directory. Keep ReadWritePaths in step with WorkingDirectory above.
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/dura-agents/data
+ReadWritePaths=%h/Projects/mariobgsp/durable-agents/data
 # An agent whose cwd is outside the data directory cannot write there unless its root is listed too. Add one
 # line per root you actually use, rather than opening the whole home directory:
 # ReadWritePaths=%h/scratch

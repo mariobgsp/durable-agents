@@ -129,5 +129,45 @@ export default {
       /not available to a Standard agent/,
       "an agent that already had bash must keep it (and be labelled full, not silently downgraded)",
     );
+    // 6. Full Access can be granted to one thread, and it dies with that thread.
+    const granted = await agent("Perm granted", { permissions: "standard" });
+    const grantedThread = await thread(granted);
+    const firstRefusal = await callTool(grantedThread, {
+      name: "bash",
+      arguments: { command: "touch " + canary },
+    });
+    assert.match(firstRefusal.text, /not available to a Standard agent/, "a fresh thread starts Standard");
+
+    const grant = await server.api("/api/sessions/" + grantedThread + "/permissions", {
+      method: "POST",
+      body: JSON.stringify({ grant: "full" }),
+    });
+    assert.equal(grant.status, 200, "granting should succeed");
+    assert.equal(grant.body.grant, "full", "the grant is recorded on the thread");
+    await callTool(grantedThread, { name: "bash", arguments: { command: "touch " + canary } });
+    assert.ok(existsSync(canary), "a granted thread may run the shell");
+    await rm(canary, { force: true });
+
+    // Revoking is the same call with no grant, and the refusal comes back.
+    const revoked = await server.api("/api/sessions/" + grantedThread + "/permissions", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    assert.equal(revoked.body.grant, undefined, "revoking removes the grant");
+    const refusedAgain = await callTool(grantedThread, {
+      name: "bash",
+      arguments: { command: "touch " + canary },
+    });
+    assert.match(refusedAgain.text, /not available to a Standard agent/, "a revoked thread is refused again");
+    assert.ok(!existsSync(canary), "and the refusal leaves no side effect");
+
+    // Non-sticky: another thread of the same agent never had the grant.
+    const freshThread = await thread(granted);
+    const freshRefusal = await callTool(freshThread, { name: "bash", arguments: { command: "echo hi" } });
+    assert.match(
+      freshRefusal.text,
+      /not available to a Standard agent/,
+      "a grant must not stick to the agent, only to the thread that was granted it",
+    );
   },
 };

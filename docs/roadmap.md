@@ -332,6 +332,12 @@ Two facts the new E2E proved that reading the source could not:
   `createRoom`" when it is at line 69, or "Session has no `kind`" when it is at types.ts:25). Verified
   false with `grep`, `npx tsc -p packages/web/tsconfig.json --noEmit`, `svelte-check` (0 errors) and
   `npm run build`. Trust those four, not the checker's cache.
+  **Worst case seen so far (2026-10-19):** after the permission fields were added, the session cache *and* a
+  fresh `source: lsp` probe both insisted that `api.health()` lacked `sandboxed` and that `AgentFiles` lacked
+  `policy` — while `svelte-check` reported 0 errors and `grep` showed all four declarations on disk
+  (`api.ts:101`, `types.ts:188/190/193`). The probe was quoting the *pre-edit* shapes, so the language
+  server was holding stale in-memory copies; `touch`ing the files did not clear it. Do not "fix" these by
+  adding duplicate declarations — that would be a real error.
 - The error state has still not been photographed (it needs interaction). Streaming is verified separately
   through `scripts/ws-probe.mjs`; the `starting` and `queued` states are asserted in
   `scripts/e2e/scenarios/live-activity.mjs` instead, because their windows are too short to hold open.

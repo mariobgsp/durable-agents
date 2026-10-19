@@ -59,6 +59,31 @@ export function policyOf(record: Pick<AgentRecord, "permissions" | "tools" | "bl
 export type PermissionDenial = { reason: string };
 
 /**
+ * A grant lifts one conversation to Full Access, and only that conversation.
+ *
+ * Non-sticky by construction: nothing here writes to the agent, and the record it reads belongs to a single
+ * thread, so the next thread the agent starts is back at the agent's own tier.
+ */
+export function withGrant(policy: PermissionPolicy, granted: "full" | undefined): PermissionPolicy {
+  return granted === "full" ? { ...policy, tier: "full" } : policy;
+}
+
+/**
+ * Where a conversation's grant comes from.
+ *
+ * Set by the server at boot (`index.ts`) rather than imported: this module is installed into the harness, and
+ * reaching into the session index from here would close a module cycle through `attachments` and `harness`.
+ * It is the same pattern `remember.ts` uses to find the owning agent.
+ */
+let resolveGrant: ((conversationId: string) => Promise<"full" | undefined>) | undefined;
+
+export function setGrantResolver(
+  resolver: (conversationId: string) => Promise<"full" | undefined>,
+): void {
+  resolveGrant = resolver;
+}
+
+/**
  * Whether this call may run, and if not, the sentence the user will read.
  *
  * Pure: the caller supplies the policy and the roots, so the rules can be reasoned about — and tested —
@@ -142,7 +167,8 @@ export function permissionsExtension(): Extension {
           if (!agentId) return undefined;
           const files = await readAgent(agentId);
           if (!files) return undefined;
-          const denial = denialFor(policyOf(files.record), call, files.record);
+          const granted = resolveGrant ? await resolveGrant(String(api.conversationId)) : undefined;
+          const denial = denialFor(withGrant(policyOf(files.record), granted), call, files.record);
           return denial === undefined ? undefined : { block: denial.reason };
         },
       }),

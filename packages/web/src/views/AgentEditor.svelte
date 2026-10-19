@@ -25,10 +25,26 @@
   /** Whether the server is inside the hardened unit. The tiers are policy; that unit is the boundary. */
   let sandboxed = $state(true);
 
+  /**
+   * Read one field out of an API response.
+   *
+   * The web types are a hand-maintained mirror of the wire contract, so a boundary read is written to the
+   * shape this screen needs rather than to the mirror's current contents — the same rule the server follows
+   * when it parses an untrusted body.
+   */
+  function field(source: unknown, key: string): unknown {
+    if (typeof source !== "object" || source === null) return undefined;
+    return (source as Record<string, unknown>)[key];
+  }
+
+  function stringsOf(value: unknown): string[] {
+    return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+  }
+
   $effect(() => {
     void api
       .health()
-      .then((health) => (sandboxed = health.sandboxed))
+      .then((health) => (sandboxed = field(health, "sandboxed") === true))
       .catch(() => undefined);
   });
   let color = $state<string>(PALETTE[0]!);
@@ -96,9 +112,13 @@
       cwd = files.record.cwd ?? "";
       // The effective tier, not the stored one: a record written before tiers existed has none, and the
       // server infers it (an agent that already had bash runs as full until you choose otherwise).
-      permissions = files.policy?.tier ?? "standard";
-      blockedTools = (files.record.blockedTools ?? []).join(", ");
-      allowedPaths = (files.record.allowedPaths ?? []).join(", ");
+      // The effective tier, not the stored one: a record written before tiers existed has none, and the
+      // server infers it (an agent that already had bash runs as full until you choose otherwise).
+      const tier = field(field(files, "policy"), "tier");
+      permissions = tier === "custom" || tier === "full" ? tier : "standard";
+      const record = field(files, "record");
+      blockedTools = stringsOf(field(record, "blockedTools")).join(", ");
+      allowedPaths = stringsOf(field(record, "allowedPaths")).join(", ");
       color = files.record.color ?? PALETTE[0]!;
       avatar = files.record.avatar ?? "";
       provider = files.record.provider;
