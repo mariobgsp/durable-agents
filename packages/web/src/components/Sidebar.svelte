@@ -15,7 +15,7 @@
   import type { Session } from "../types.ts";
   import AgentAvatar from "./AgentAvatar.svelte";
   import Dialog from "./Dialog.svelte";
-  import TypingDots from "./TypingDots.svelte";
+  import ActivityIndicator from "./ActivityIndicator.svelte";
 
   // Thread rows deliberately carry no avatar: the section header owns the agent's identity, and the
   // spine below it ties each row back to that one avatar.
@@ -232,7 +232,7 @@
                 : ""}
             >
               {#if isReplying(group.id)}
-                <TypingDots size="xs" label={identity.label + " is replying"} />
+                <ActivityIndicator size="xs" label={identity.label + " is replying"} />
               {:else}
                 {group.room ? group.room.members.length + " · " + (MODE_LABEL[group.room.mode] ?? "") : ""}
               {/if}
@@ -276,7 +276,7 @@
       >
         <span class="thread__slot">
           {#if isReplying(thread.id)}
-            <TypingDots size="xs" label={thread.title + " is replying"} />
+            <ActivityIndicator size="xs" label={thread.title + " is replying"} />
           {:else}
             <span class="marker" style="--author: {color}"></span>
           {/if}

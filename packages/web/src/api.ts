@@ -6,6 +6,7 @@ import type {
   ContextInfo,
   ModelInfo,
   Msg,
+  Outgoing,
   ProviderRow,
   RoomConfig,
   Session,
@@ -19,6 +20,7 @@ export type {
   ContextInfo,
   ModelInfo,
   Msg,
+  Outgoing,
   ProviderRow,
   Role,
   RoomConfig,
@@ -42,6 +44,24 @@ const boot: Boot = (globalThis as unknown as { __PI_BOOT__?: Boot }).__PI_BOOT__
 
 export const token = boot.token;
 
+/**
+ * A refusal the server explained.
+ *
+ * `code` is stable, so a caller can branch on it; `message` is the sentence to show the user, written by the
+ * server that refused. Keeping them apart is what stops the UI from inventing its own wording for a limit.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string | undefined;
+
+  constructor(status: number, message: string, code?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(boot.apiBase + path, {
     ...init,
@@ -52,10 +72,29 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
     },
   });
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText}${body ? `: ${body.slice(0, 300)}` : ""}`);
+    const text = await res.text().catch(() => "");
+    let code: string | undefined;
+    let message = `${res.status} ${res.statusText}`;
+    try {
+      const body = JSON.parse(text) as { code?: unknown; error?: unknown };
+      if (typeof body.code === "string") code = body.code;
+      if (typeof body.error === "string" && body.error.length > 0) message = body.error;
+    } catch {
+      if (text.length > 0) message = text.slice(0, 300);
+    }
+    throw new ApiError(res.status, message, code);
   }
   return (await res.json()) as T;
+}
+
+/**
+ * The URL for one file of a user message.
+ *
+ * The token rides in the query because an `<img>` tag cannot send a header; every /api route already accepts
+ * it that way for the WebSocket handshake. Entries are immutable, so the browser can cache the result hard.
+ */
+export function attachmentUrl(sessionId: string, entryId: string, index: number): string {
+  return `${boot.apiBase}/api/sessions/${sessionId}/attachments/${entryId}/${index}?token=${encodeURIComponent(boot.token)}`;
 }
 
 export const api = {
@@ -78,10 +117,10 @@ export const api = {
       body: JSON.stringify({ handoff }),
     }),
   messages: (id: string) => req<{ entries: Msg[] }>(`/api/sessions/${id}/messages`),
-  send: (id: string, text: string, whenBusy?: "steer" | "followUp") =>
+  send: (id: string, outgoing: Outgoing) =>
     req<{ submissionId: string }>(`/api/sessions/${id}/messages`, {
       method: "POST",
-      body: JSON.stringify({ text, ...(whenBusy ? { whenBusy } : {}) }),
+      body: JSON.stringify(outgoing),
     }),
   abort: (id: string) => req<{ ok: true }>(`/api/sessions/${id}/abort`, { method: "POST" }),
   context: (id: string) => req<ContextInfo>(`/api/sessions/${id}/context`),

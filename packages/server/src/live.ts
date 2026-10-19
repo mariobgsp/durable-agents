@@ -86,14 +86,14 @@ function errorDiagnostic(value: unknown): boolean {
  * The calls of the current round, read from `pi.live` alongside the partial text.
  *
  * Only top-level calls are published: a code-mode script can make thousands of nested calls, which is a
- * count on the parent, not a thousand rows. `since` is when *this connection* first saw the call, so a
- * connection that attached mid-call reports no elapsed time instead of inventing one.
+ * count on the parent, not a thousand rows.
+ *
+ * There is deliberately no per-call start time. With `toolExecution: "parallel"` a call is already `running`
+ * on the first publish that mentions it, so no connection can observe when it began — and a "start" stamped
+ * at first sight would really be "how long since I connected", a different fact wearing the same label. The
+ * round's own elapsed time is real (it comes from the run task) and lives in the header instead.
  */
-export function liveTools(
-  view: LiveView,
-  seen: Map<string, number>,
-  now: number,
-): WireTool[] {
+export function liveTools(view: LiveView): WireTool[] {
   const live = liveDoc(view);
   const slots = Array.isArray(live?.tools) ? (live.tools as LiveSlot[]) : [];
   const nested = Array.isArray(live?.nestedTools) ? (live.nestedTools as LiveSlot[]) : [];
@@ -108,10 +108,8 @@ export function liveTools(
   for (const slot of slots) {
     if (typeof slot.callId !== "string" || typeof slot.name !== "string") continue;
     const status = slot.status === "running" || slot.status === "done" ? slot.status : "pending";
-    if (status !== "done" && !seen.has(slot.callId)) seen.set(slot.callId, now);
     const counted = nestedByParent.get(slot.callId) ?? 0;
     const output = typeof slot.output === "string" ? slot.output.slice(-OUTPUT_TAIL) : "";
-    const since = seen.get(slot.callId);
     tools.push({
       callId: slot.callId,
       name: slot.name,
@@ -119,13 +117,8 @@ export function liveTools(
       ...(output ? { output } : {}),
       ...(errorDiagnostic(slot.diagnostics) ? { isError: true } : {}),
       ...(counted > 0 ? { nested: counted } : {}),
-      ...(status !== "done" && since !== undefined ? { since } : {}),
     });
   }
-
-  // Forget calls that left the round, so a long session's map cannot grow without bound.
-  const live_calls = new Set(tools.map((tool) => tool.callId));
-  for (const callId of seen.keys()) if (!live_calls.has(callId)) seen.delete(callId);
   return tools;
 }
 
@@ -161,13 +154,9 @@ export function runTaskId(view: LiveView): TaskId | undefined {
  * `runStart` is the run task's own durable `startedAt`, resolved by the caller once per run: null when it
  * could not be read, in which case the UI shows no elapsed time rather than a number nobody observed.
  */
-export function liveActivity(
-  view: LiveView,
-  seen: Map<string, number>,
-  input: { now: number; runStart: number | null },
-): WireActivity {
+export function liveActivity(view: LiveView, input: { runStart: number | null }): WireActivity {
   const live = liveDoc(view);
-  const calls = liveTools(view, seen, input.now);
+  const calls = liveTools(view);
   const counts = {
     pending: calls.filter((call) => call.status === "pending").length,
     running: calls.filter((call) => call.status === "running").length,

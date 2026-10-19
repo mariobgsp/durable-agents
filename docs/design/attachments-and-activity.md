@@ -24,7 +24,10 @@ Three facts decide the design, all verified in `pi-durable` 1.3.0 and `pi-ai`:
    (`harness/context.js:163`). Nothing keys on `pi.user`.
 3. `ImageProcessor.prepare()` from `@earendil-works/pi-durable/images/node` **returns `undefined` for a
    Node `Buffer`** and works for a plain `Uint8Array` (measured on this machine: 5565-byte PNG →
-   `undefined` for a Buffer, `image/png` for `new Uint8Array(...)`). The upload path must copy.
+   `undefined` for a Buffer, `image/png` for `new Uint8Array(...)`). The upload path must copy. `read` is not
+   affected: its bytes come from the execution environment as plain `Uint8Array` chunks.
+4. A queued or steered input is copied into `pi.inbox.items[].content` until the boundary places it, so
+   "the bytes exist exactly once" holds for a *placed* message, not for one still in the queue.
 
 So there is no conflict between "the model sees the image" and "the UI shows the image": they are two
 views of one immutable record.
@@ -69,9 +72,11 @@ type FileRef = { name: string; kind: "image" | "document";
 type UserEntryData = { requestId: string; text: string; author: string | null; files: FileRef[] };
 ```
 
-`data.files[i]` describes *that same entry's* `i`-th file block. Byte size, mime type and character
-count are **derived** from the block rather than stored, so nothing can drift. Content layout, written
-by exactly one function:
+`data.files[i]` describes *that same entry's* `i`-th file block, and it says **which block** by index. Byte
+size, mime type and character count are derived from that block rather than stored, so those cannot drift;
+the block index is stored because deriving it would mean parsing text we generated ourselves (the typed line,
+a document's header, an image's marker are all text blocks). Both are written once, by one function, into an
+immutable record, so "stored" here means "named", not "kept in sync". Content layout:
 
 ```text
 content = [ text?, (document header + extracted text + truncation marker)*, "[attached image: name]"?*, ImageContent* ]
@@ -79,8 +84,8 @@ content = [ text?, (document header + extracted text + truncation marker)*, "[at
 
 The marker line per image is a graft from the losing candidate: compaction serializes only text blocks
 (`harness/compaction.js:299-330`), so without it a compacted thread silently forgets that an image was
-ever attached. `blockOfFile()` counts *file* blocks (image blocks, and the text block that follows a
-document header), so markers do not disturb the index.
+ever attached. Because markers are text blocks, `blockOfFile` cannot tell them from a document's text by
+scanning — which is why the file names its block index instead.
 
 `chat.user` is the only kind a user message is placed as, in a direct thread and in a group alike. The
 group path writes `{requestId, text, author: null, files: []}` through the same constructor and still
@@ -90,8 +95,9 @@ carries no model content (a model-bearing entry in a room conversation would try
 
 `GET /api/sessions/:id/attachments/:entryId/:index?token=` — the token is already accepted on every
 `/api` route (`auth.ts:tokenOf`), so `<img>` needs no new auth scheme. The route resolves the entry
-through `tx.entry(entryId)`, derives the block, and serves image bytes or extracted document text with
-`immutable` caching (entries are immutable, so that is a true statement).
+through `tx.entry(entryId)`, checks that the entry belongs to **that** conversation (`tx.entry` is a global
+lookup, so `:id` would otherwise be decorative), derives the block, and serves image bytes or extracted
+document text with `immutable` caching (entries are immutable, so that is a true statement).
 
 ### Documents
 
@@ -115,9 +121,12 @@ Derived server-side from `pi.live` in `live.ts`, in this order, each row an *obs
 | nothing running | `null` |
 
 "Thinking" requires observed thinking tokens; "writing" observed text. Elapsed time comes from the run
-task's durable `startedAt` (`types.d.ts:502`), so `resume()` does not reset it; per-call elapsed is
-reported only for a call this connection watched start (`since` absent otherwise — absence is the honest
-answer). `queued` carries `pi.inbox` items' `requestId` and `mode`, never their content. A group has no
+task's durable `startedAt` (`types.d.ts:502`), so `resume()` does not reset it, and it is `null` when the
+record cannot be read — the UI then shows no timer rather than a number nobody observed. That is the *only*
+elapsed time in the system: there is deliberately no per-call timer, because with
+`toolExecution: "parallel"` a call is already `running` on the first publish that mentions it, so no
+connection can observe when it began, and a stamp taken at first sight would really mean "since I
+connected". `queued` carries `pi.inbox` items' `requestId` and `mode`, never their content. A group has no
 `pi.live`, so its phase is `null` and it keeps the presence + `chat.typing` indicator it has today.
 
 One `activity` frame replaces the old `tools` frame (snapshot, never diff — the rule the tool trace and
@@ -166,8 +175,9 @@ Two candidates were designed independently from the same grounding.
   where that becomes visible.
 - **A 24 MiB body limit on one route** (`POST /api/sessions/:id/messages`), in exchange for the message
   being one atomic commit with no uploaded-but-unreferenced state.
-- **No per-call elapsed time after a reconnect** — the row shows the sweep and no number, rather than a
-  number the server did not observe.
+- **No per-call elapsed time at all**, rather than a number that would mean "since I connected": with
+  parallel tool execution the start of a call is not observable. The round's own elapsed time is real and is
+  shown in the strip and the phase bubble.
 - **`pi.user` is no longer written**; the read path keeps rendering existing entries. The alternative
   (two kinds, one with attachments) is two ways to write a user message.
 - **Group attachments are refused** rather than copied per member conversation.

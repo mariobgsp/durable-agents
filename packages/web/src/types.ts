@@ -40,6 +40,78 @@ export type ToolLine = {
   nested?: number;
 };
 
+/** One tool call of the round in flight, as the trace renders it. Mirrors wire.ts. */
+export type ToolCall = {
+  callId: string;
+  name: string;
+  status: "pending" | "running" | "done";
+  /** Retained running output; absent for a call that has produced none yet. */
+  output?: string;
+  /** An error-severity diagnostic on this call. */
+  isError?: boolean;
+  /** Nested calls this one made through code mode. */
+  nested?: number;
+};
+
+/** What the conversation is doing right now, derived on the server from `pi.live`. Mirrors wire.ts. */
+export type RunPhase = "starting" | "thinking" | "writing" | "tool" | "compacting" | "retrying";
+
+export type Activity = {
+  /** null means nothing is running, so nothing moves. */
+  phase: RunPhase | null;
+  /** The run task's durable start time, or null when it could not be read (then no elapsed is shown). */
+  since: number | null;
+  calls: ToolCall[];
+  counts: { pending: number; running: number; done: number; nested: number };
+  /** Inputs waiting for the next boundary: ids and modes only. */
+  queued: { requestId: string; mode: "steer" | "followUp" }[];
+  attempt?: number;
+  retryAt?: number;
+};
+
+/** Nothing is running. The one value the store starts from and returns to. */
+export const IDLE_ACTIVITY: Activity = {
+  phase: null,
+  since: null,
+  calls: [],
+  counts: { pending: 0, running: 0, done: 0, nested: 0 },
+  queued: [],
+};
+
+/** One file of a user message, derived on the server from the entry the model was given. Mirrors wire.ts. */
+export type Attachment = {
+  name: string;
+  kind: "image" | "document";
+  state: "included" | "truncated" | "omitted";
+  /** Stable identifier for why a file is not fully there. Never match on `reason`, which is prose. */
+  code?: string;
+  reason?: string;
+  mimeType?: string;
+  bytes?: number;
+  chars?: number;
+};
+
+/** A message on its way out: the request id is what the durable entry echoes back. */
+export type Outgoing = {
+  text: string;
+  requestId: string;
+  attachments: { name: string; mimeType: string; data: string }[];
+  whenBusy?: "steer" | "followUp";
+};
+
+/** A file the user picked, before it is sent: the composer's draft, never durable. */
+export type DraftFile = {
+  /** Identity inside the composer, so a chip can be removed and a preview released. */
+  key: string;
+  name: string;
+  mimeType: string;
+  /** The file's own bytes, base64: what the endpoint takes. */
+  base64: string;
+  bytes: number;
+  /** Images only: an object URL for the optimistic bubble. Released once the draft is gone. */
+  previewUrl?: string;
+};
+
 /** One measured row of the usage report. */
 export type UsageBucket = {
   turns: number;
@@ -75,6 +147,10 @@ export type Msg = {
   author?: string | null;
   /** Present on role "tool": the call this line summarizes. */
   tool?: ToolLine;
+  /** On user messages: the request that produced this entry, so a local echo is dropped exactly once. */
+  requestId?: string;
+  /** On user messages: the files the model was given. */
+  files?: Attachment[];
   data?: unknown;
 };
 

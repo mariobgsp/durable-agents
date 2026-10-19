@@ -205,14 +205,24 @@ Done:
 
 Not done:
 
-- [ ] Image attachments end to end: `{ text, attachments }` → content blocks, client-side downscale,
-      rendering in bubbles, byte budget
-- [ ] Vision pre-flight: refuse (400) an image for a model that cannot see it, instead of letting pi-ai
-      silently write `"(image omitted: model does not support images)"`
-- [ ] `GET /api/models?provider=` route and the model picker in the agent editor (per-agent model with
-      capability badges and a "Test model" button); the server already stores provider/modelId per agent
 - [ ] `agent-extension.ts` (one extension per agent for codemode + hooks + MCP + an optional custom
       `extension.ts`), `blockedTools`, `instructionsSuffix`, `autoContinue`
+- [ ] The model picker in the agent editor with capability badges and a "Test model" button (`GET
+      /api/models?provider=` exists and the badges read from it); the server already stores provider/modelId
+      per agent
+
+Done in the session that added attachments:
+
+- [x] Image attachments end to end: `{ text, attachments }` → native content blocks, rendered in bubbles,
+      per-message byte and count budgets. **Deviation:** normalization runs on the server with the Photon
+      processor `read` already loads, not in the browser — one limit table instead of two, and no canvas
+      code (see the *Image normalization* row in the locked decisions)
+- [x] Vision pre-flight: a 400 with a stable code, before anything is durable, plus the agent's own
+      `vision: "off"` switch finally enforced (`capabilities.imagePolicy`)
+- [x] Documents: text inlined under its own header, PDFs through `pdftotext` on stdin, truncation stated to
+      the model and to the user with the same numbers
+- [x] `npm run e2e` scenario `attachments`: the model's own view (`echo: "images"`), the entry's own bytes
+      (a SQLite read), a restart, the 400, the budgets, and a deterministic missing-converter branch
 
 - [ ] `capabilities.ts`: `canSeeImages(model)` from `model.input.includes("image")`, `imageLimits(model)`
       from `inputLimits.images.resize`, `modelCatalog()` for editor badges; `GET /api/models?provider=`
@@ -223,10 +233,11 @@ Not done:
 - [ ] `agent-extension.ts`: one extension `agent:<id>` per agent (codemode + skills section + quick hooks +
       MCP + optional `extension.ts`), selected per conversation through `configure({ extensions })`
 - [ ] Enable/disable agents: hidden from pickers, existing threads keep working behind a warning chip
-- [ ] Image attachments: `{ text, attachments: [{ mimeType, data }] }` → content blocks, **pre-flight 400**
-      when the model cannot see images (pi-ai silently writes `"(image omitted: model does not support
-      images)"` — `transform-messages.js:1`), attachments rendered in bubbles with a warning chip for that placeholder
-- [ ] UI: attach button, paste, drag-drop, client-side downscale (1568 px, JPEG q0.82), byte budget
+- [x] Image attachments: `{ text, attachments: [{ name, mimeType, data }] }` → content blocks, **pre-flight
+      400** when the model cannot see images, attachments rendered in bubbles with the server's own sentence
+      for a file it could not read
+- [x] UI: attach button, paste, drag-drop, byte budget. **Deviation:** no client-side downscale; the server
+      normalizes with the model's own limits
 - [ ] Agent editor: model picker per agent with capability badges, thinking levels limited to
       `model.thinkingLevelMap`, "Test model" button, vision toggle driven by the model
 
@@ -263,8 +274,11 @@ Not done:
 
 ### Phase 10 — animation and responsiveness (APPROVED, NOT STARTED)
 
-- [ ] Animated typing bubble (avatar + coloured name + three dots using `transform`/`opacity`) for both
-      groups and private threads; static under `prefers-reduced-motion`
+- [x] Honest activity indicator: the run's phase (starting → thinking → writing → tool), the queue depth,
+      elapsed time and the calls of the round, from `activity` frames the server derives out of `pi.live`.
+      One indeterminate sweep per row, or one round-level sweep past three calls in flight, fully static
+      under `prefers-reduced-motion`. The three-dot placeholder remains for a thread whose phase the server
+      cannot see (a group, or a socket still connecting)
 - [ ] Responsive pass following `redesign-existing-projects`: 64 px icon rail below 1024 px, off-canvas
       drawer below 720 px, `min-height: 100dvh`, sticky composer with safe-area insets, scrollable chat
       header, ≥44×44 px targets, `:focus-visible` rings, skeleton loaders, `text-wrap: balance`,
@@ -289,9 +303,27 @@ Two real bugs the new E2E caught immediately, both worth remembering:
 2. **A harness that sends `content-type: application/json` on an empty body gets 400 from Fastify.**
    `DELETE` looked broken until the harness only announced a JSON body when it had one.
 
-Remaining phases, in the order I would do them: finish phase 6 (attachments + pre-flight + model picker),
-phase 10 (animation + responsive, which is what makes the UI usable on a phone), phase 9 (voice + video),
-phase 7 (MCP + hooks), phase 8 (skills + curator), then the phase 6.0 leftovers (purge, UI E2E).
+Remaining phases, in the order I would do them: phase 10's responsive pass (the animation half is done),
+phase 9 (voice + video), phase 7 (MCP + hooks), phase 8 (skills + curator), then the phase 6.0 leftovers
+(purge, UI E2E) and the agent editor's model picker.
+
+## Status snapshot (end of the session that added attachments and the live activity frame)
+
+| Check | Result |
+| --- | --- |
+| `npm run check` | `tsc` clean + `svelte-check` 0 errors + `lint:lang` clean |
+| `npm run e2e` | **9 passed, 0 failed**, including the new `attachments` and `live-activity` scenarios |
+| `npm run build` | JS **65.53 kB gzip**, CSS 7.29 kB gzip (limit: < 120 kB) |
+| `npm run shots:replying` | 9 screenshots + `docs/ui-review/2026-10-19/findings.md`, 4 findings fixed |
+
+Two facts the new E2E proved that reading the source could not:
+
+1. **A per-call start time is not observable.** With `toolExecution: "parallel"` a call is already `running`
+   on the first publish that mentions it, so no connection can know when it began. The per-call timer was
+   removed rather than faked; the round's own elapsed time comes from the run task and survives a reconnect
+   (asserted by two sockets reporting the same `since`).
+2. **`pi.live.tools` is emptied when the round's tool phase ends**, so a `done` row is not guaranteed to be
+   observable at all. The durable `pi.tool-result` line in the transcript is what records a finished call.
 
 ## Known gaps (do not claim these are done)
 
@@ -299,9 +331,11 @@ phase 7 (MCP + hooks), phase 8 (skills + curator), then the phase 6.0 leftovers 
   `createRoom`" when it is at line 69, or "Session has no `kind`" when it is at types.ts:25). Verified
   false with `grep`, `npx tsc -p packages/web/tsconfig.json --noEmit`, `svelte-check` (0 errors) and
   `npm run build`. Trust those four, not the checker's cache.
-- Error state, pending state and the streaming bubble have not been photographed (they need interaction).
-  Streaming is verified separately through `scripts/ws-probe.mjs`.
-- Image/file attachments do not exist yet (needs `createNodePhotonImages`; planned in phase 6).
+- The error state has still not been photographed (it needs interaction). Streaming is verified separately
+  through `scripts/ws-probe.mjs`; the `starting` and `queued` states are asserted in
+  `scripts/e2e/scenarios/live-activity.mjs` instead, because their windows are too short to hold open.
+- Attachments cannot be sent in a group thread: refused with a readable reason, because every member
+  conversation would keep its own copy of the bytes.
 - The Tauri shell has never been compiled, and `tauri-plugin-single-instance` is not installed: do not
   run the desktop app twice before that lands (two servers, one `app.sqlite`).
 - System notifications on turn completion (Web Notification API) are not wired up; the PWA is installable.

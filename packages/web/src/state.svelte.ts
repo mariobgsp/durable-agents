@@ -1,15 +1,21 @@
 /// <reference types="svelte" />
 import { api } from "./api.ts";
-import type { AgentRecord, ContextInfo, Msg, Session } from "./types.ts";
-import { connect, connectPresence, type Frame, type ToolCall } from "./ws.ts";
+import { releaseDrafts } from "./lib/files.ts";
+import { IDLE_ACTIVITY, type Activity, type AgentRecord, type ContextInfo, type DraftFile, type Msg, type Session } from "./types.ts";
+import { connect, connectPresence, type Frame } from "./ws.ts";
 
 export const store = $state({
   sessions: [] as Session[],
   agents: [] as AgentRecord[],
   currentId: null as string | null,
   entries: [] as Msg[],
-  /** Messages already sent whose durable entry has not arrived yet (local echo). */
-  pending: [] as { text: string; at: number }[],
+  /**
+   * Messages already sent whose durable entry has not arrived yet (local echo).
+   *
+   * Matched by `requestId`, never by text: a message can carry only files and no text at all, so there is
+   * nothing to compare.
+   */
+  pending: [] as { requestId: string; text: string; files: DraftFile[]; at: number }[],
   streamingText: "",
   /** Members currently answering in a group. */
   typing: [] as string[],
@@ -17,8 +23,13 @@ export const store = $state({
   busy: false,
   /** Session ids the server reports as generating, for every thread and not just the open one. */
   active: [] as string[],
-  /** Tool calls of the current round. The server sends whole-list snapshots, so there is nothing to diff. */
-  tools: [] as ToolCall[],
+  /**
+   * The round's status. One whole-list snapshot from the server, so there is nothing to diff and a missed
+   * start/stop pair cannot leave a row spinning.
+   */
+  activity: IDLE_ACTIVITY as Activity,
+  /** Ticked only while a phase is live: every elapsed label reads this one number. */
+  now: Date.now(),
   /** Context used against the model's window, for the caption under the composer. */
   context: null as ContextInfo | null,
   /** Models of the connected providers, grouped for the composer's picker. Loaded once per tab. */
@@ -29,6 +40,25 @@ export const store = $state({
 
 let disconnect: (() => void) | null = null;
 let openToken = 0;
+
+/**
+ * One interval for every elapsed label, running only while something is running.
+ *
+ * A status that is not moving needs no clock: an idle frame stays completely still, which is what keeps this
+ * app cheap on an OLED panel.
+ */
+let clock: number | undefined;
+function watchClock(): void {
+  const running = store.activity.phase !== null;
+  if (running && clock === undefined) {
+    clock = window.setInterval(() => {
+      store.now = Date.now();
+    }, 500);
+  } else if (!running && clock !== undefined) {
+    window.clearInterval(clock);
+    clock = undefined;
+  }
+}
 
 /** Streaming text is buffered and written to $state once per frame: that is what keeps the UI smooth. */
 let buffer = "";
@@ -49,18 +79,18 @@ function resetStream(): void {
   store.live = false;
 }
 
-/** Drop local echoes that have arrived as real entries. */
+/** Drop local echoes whose own entries have arrived, and release the previews of the ones that landed. */
 function reconcilePending(): void {
   if (store.pending.length === 0) return;
-  const texts = new Set<string>();
+  const arrived = new Set<string>();
   for (const entry of store.entries) {
-    if (entry.role === "user") texts.add(entry.text.trim());
+    if (entry.role === "user" && entry.requestId) arrived.add(entry.requestId);
   }
-  const remaining: { text: string; at: number }[] = [];
-  for (const item of store.pending) {
-    if (!texts.has(item.text.trim())) remaining.push(item);
-  }
-  if (remaining.length !== store.pending.length) store.pending = remaining;
+  if (arrived.size === 0) return;
+  const landed = store.pending.filter((item) => arrived.has(item.requestId));
+  if (landed.length === 0) return;
+  releaseDrafts(landed.flatMap((item) => item.files));
+  store.pending = store.pending.filter((item) => !arrived.has(item.requestId));
 }
 
 function setEntries(entries: Msg[]): void {
@@ -122,8 +152,9 @@ function onFrame(frame: Frame): void {
     case "presence":
       store.active = frame.active;
       break;
-    case "tools":
-      store.tools = frame.tools;
+    case "activity":
+      store.activity = frame.activity;
+      watchClock();
       break;
     default:
       break;
@@ -262,6 +293,8 @@ export async function openSession(id: string): Promise<void> {
   // Scoped to the thread we are actually looking at: switching away clears the local spinner, and
   // presence takes over for whatever is genuinely still generating.
   store.busy = false;
+  store.activity = IDLE_ACTIVITY;
+  watchClock();
   resetStream();
   try {
     const { entries } = await api.messages(id);
@@ -282,6 +315,8 @@ export function closeSession(): void {
   openToken += 1;
   store.currentId = null;
   store.busy = false;
+  store.activity = IDLE_ACTIVITY;
+  watchClock();
   store.connection = "idle";
 }
 
@@ -369,27 +404,44 @@ export async function updateRoomMode(id: string, mode: "nyahut" | "moderator" | 
 }
 
 /**
- * Send one message.
+ * Send one message, with its files.
  *
- * `whenBusy: "steer"` folds it into the run that is generating instead of queueing behind it — the composer
- * switches to that while the agent is replying, so a correction lands while it still matters.
+ * The echo is placed immediately so the composer can clear, and it is dropped by `requestId` when the durable
+ * entry arrives. On a refusal the echo is removed, the error is shown, and the error is rethrown so the
+ * composer can put the draft back where the user left it — the server wrote nothing, so nothing is lost.
+ *
+ * `whenBusy: "steer"` folds the message into the run that is generating instead of queueing behind it.
  */
-export async function send(text: string, whenBusy?: "steer" | "followUp"): Promise<void> {
+export async function send(
+  draft: { text: string; files: DraftFile[] },
+  whenBusy?: "steer" | "followUp",
+): Promise<void> {
   const id = store.currentId;
-  const value = text.trim();
-  if (!id || !value) return;
+  const value = draft.text.trim();
+  if (!id || (value.length === 0 && draft.files.length === 0)) return;
   store.error = null;
   store.busy = true;
-  store.pending = [...store.pending, { text: value, at: Date.now() }];
+  const requestId = crypto.randomUUID();
+  store.pending = [...store.pending, { requestId, text: value, files: draft.files, at: Date.now() }];
   store.sessions = store.sessions.map((session) =>
     session.id === id ? { ...session, updatedAt: Date.now() } : session,
   );
   try {
-    await api.send(id, value, whenBusy);
-  } catch (err) {
-    report(err);
+    await api.send(id, {
+      text: value,
+      requestId,
+      attachments: draft.files.map((file) => ({
+        name: file.name,
+        mimeType: file.mimeType,
+        data: file.base64,
+      })),
+      ...(whenBusy ? { whenBusy } : {}),
+    });
+  } catch (error) {
     store.busy = false;
-    store.pending = store.pending.filter((item) => item.text !== value);
+    store.pending = store.pending.filter((item) => item.requestId !== requestId);
+    report(error);
+    throw error;
   }
 }
 

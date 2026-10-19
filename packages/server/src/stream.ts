@@ -28,8 +28,7 @@ export async function openEventStream(
   let partial = "";
   let activitySignature = "";
 
-  /** When this connection first saw each running call, and the run's own durable start time. */
-  const seenCalls = new Map<string, number>();
+  /** The run's own durable start time, so an elapsed counter survives a reconnect. */
   let currentRunTask: TaskId | undefined;
   let runStart: number | null = null;
 
@@ -58,10 +57,7 @@ export async function openEventStream(
 
   /** The round's status is a whole-list snapshot, so it is only sent when it actually changed. */
   const publishActivity = async (view: LiveView): Promise<void> => {
-    const activity = liveActivity(view, seenCalls, {
-      now: Date.now(),
-      runStart: await runStartOf(view),
-    });
+    const activity = liveActivity(view, { runStart: await runStartOf(view) });
     const signature = JSON.stringify(activity);
     if (signature === activitySignature) return;
     activitySignature = signature;

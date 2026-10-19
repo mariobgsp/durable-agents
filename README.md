@@ -34,8 +34,10 @@ started.**
 | Agent & group identity (colour + emoji) | **Done** |
 | Live "replying" indicator, per session | **Done** |
 | Responsive layout + design system | **Done** — 5 viewport tiers in the screenshot gate |
-| E2E suite (faux provider, deterministic) | **4 scenarios passing** |
-| Image/file attachments, voice, video | **Not started** |
+| E2E suite (faux provider, deterministic) | **9 scenarios passing** |
+| Image and document attachments | **Done** — bytes live in the entry the model was given |
+| Live activity indicator (phase, calls, elapsed) | **Done** — derived from `pi.live`, never a guess |
+| Voice, video | **Not started** |
 | MCP servers, per-agent hooks, skills/curator | **Not started** |
 
 Latest verified run:
@@ -60,8 +62,8 @@ flowchart TB
   subgraph browser["Browser — Svelte 5 SPA · packages/web"]
     direction TB
     views["Views<br/>Chat · Agents · AgentEditor · Groups · Providers"]
-    comps["Components<br/>Sidebar · AgentAvatar · TypingDots<br/>GroupSettings · Dialog"]
-    store["state.svelte.ts<br/>runes store: sessions, entries,<br/>active, busy, streamingText"]
+    comps["Components<br/>Sidebar · AgentAvatar · ActivityIndicator<br/>ActivityStrip · Attachments · Composer · Dialog"]
+    store["state.svelte.ts<br/>runes store: sessions, entries,<br/>active, busy, streamingText, activity"]
     ident["lib/identity.ts<br/>colour + emoji identity"]
     wsc["ws.ts<br/>connect() per conversation<br/>connectPresence() for activity"]
     views --> store
@@ -356,7 +358,8 @@ systemd user unit and the iOS/Android install — is in [`docs/tailscale.md`](do
 | `GET` | `/api/health` | Liveness |
 | `GET` `POST` `PATCH` `DELETE` | `/api/sessions[/:id]` | `?includeDeleted=1` lists soft-deleted threads |
 | `POST` | `/api/sessions/:id/{restore,move,restart,abort}` | Restore, move to another agent, fresh context, abort |
-| `GET` `POST` | `/api/sessions/:id/messages` | Transcript / send. A group post runs the whole flow |
+| `GET` `POST` | `/api/sessions/:id/messages` | Transcript / send. A message carries its own attachments |
+| `GET` | `/api/sessions/:id/attachments/:entryId/:index` | One file of a message, read out of that entry |
 | `GET` `POST` `PUT` `DELETE` | `/api/agents[/:id]` | `PUT` returns `rebound`: how many threads took the new files |
 | `GET` `PUT` | `/api/providers[/:id/key]` | Credential status and key entry |
 | `GET` | `/api/models?provider=` | Capability catalog: image support, context, cost, thinking levels |
@@ -457,26 +460,28 @@ contain Indonesian, such as a keyword list.
 
 In the order I would do them:
 
-1. **Finish phase 6 — attachments.** Image input via `createNodePhotonImages`, a pre-flight that refuses
-   images when the model cannot see them, and file attachments in the composer.
-2. **Phase 9 — voice and video.** Video: the browser extracts 6 evenly spaced frames plus a duration
+1. **Phase 9 — voice and video.** Video: the browser extracts 6 evenly spaced frames plus a duration
    caption. Voice: STT with feature detection (the mic button appears only when supported, and says why when
    it is not) and TTS through `speechSynthesis`, with a per-agent `autoRead`.
-3. **Phase 7 — MCP servers and hooks per agent.**
-4. **Phase 8 — many skills per agent plus a curator**, which proposes reusable skills after a run and
+2. **Phase 7 — MCP servers and hooks per agent.**
+3. **Phase 8 — many skills per agent plus a curator**, which proposes reusable skills after a run and
    promotes them on acceptance.
-5. **Phase 10 leftovers** — skeleton loaders, `:focus-visible` rings, `text-wrap: balance`,
+4. **Phase 10 leftovers** — skeleton loaders, `:focus-visible` rings, `text-wrap: balance`,
    `tabular-nums`, ≥44 px tap targets.
-6. **Phase 6.0 leftovers** — transcript purge, and a browser-level UI E2E.
+5. **Phase 6.0 leftovers** — transcript purge, and a browser-level UI E2E.
 
-Phase 10's animation and responsive work is already partly delivered (the replying indicator and the
-five-tier responsive gate); the remaining items are polish.
+Phase 10's animation work is delivered (the phase indicator, the tool-call motion and the responsive gate);
+the remaining items are polish.
 
 ## Known gaps
 
 These are **not** done — please do not read the status table as claiming otherwise.
 
-- **Image/file attachments do not exist.** No `createNodePhotonImages` wiring in the composer yet.
+- **Attachments cannot be sent in a group thread.** Refused with a readable reason: each member
+  conversation is its own model-visible entry, so supporting it would keep one copy of every byte per
+  member.
+- **There is no per-call elapsed time.** With parallel tool execution a call is already running on its
+  first publish, so its start is not observable; the round's own elapsed time is real and is shown instead.
 - **The Tauri shell has never been compiled.** `tauri-plugin-single-instance` is not installed, so do not
   run the desktop app twice — that would start two servers over one `app.sqlite`.
 - **System notifications on turn completion are not wired up.** The PWA is installable.

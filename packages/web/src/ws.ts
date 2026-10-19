@@ -1,32 +1,23 @@
 import { token } from "./api.ts";
+import type { Activity, Msg, ToolCall } from "./types.ts";
 
-/** One tool call, in the shape the chat trace renders. Mirrors packages/server/src/wire.ts. */
-export type ToolCall = {
-  callId: string;
-  name: string;
-  status: "pending" | "running" | "done";
-  /** Retained running output; absent for a call that has produced none yet. */
-  output?: string;
-  /** An error-severity diagnostic on this call. */
-  isError?: boolean;
-  /** Nested calls this one made through code mode. */
-  nested?: number;
-};
+/** One tool call, in the shape the chat trace renders. Defined with the other wire mirrors in types.ts. */
+export type { ToolCall };
 
 export type Frame =
-  | { type: "snapshot"; entries: import("./api").Msg[] }
-  | { type: "entry"; entry: import("./api").Msg }
+  | { type: "snapshot"; entries: Msg[] }
+  | { type: "entry"; entry: Msg }
   | { type: "message-start" }
   | { type: "delta"; text: string }
   | { type: "message-end"; text: string }
   /**
-   * Tool calls of the current round. A whole-list snapshot, like presence: the client never diffs, so a
-   * missed start/stop pair cannot leave a row spinning forever.
+   * The round's status: phase, calls, counts and queued inputs, as one snapshot. A whole list, like
+   * presence — the client never diffs, so a missed start/stop pair cannot leave a row spinning.
    */
-  | { type: "tools"; tools: ToolCall[] }
+  | { type: "activity"; activity: Activity }
   | { type: "typing"; author: string; state: "start" | "stop" }
   | { type: "presence"; active: string[] }
-  | { type: "refresh"; entries: import("./api").Msg[] }
+  | { type: "refresh"; entries: Msg[] }
   | { type: "log"; text: string }
   | { type: "error"; message: string };
 

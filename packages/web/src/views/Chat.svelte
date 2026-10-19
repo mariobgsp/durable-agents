@@ -20,21 +20,24 @@
     identityOfMember,
     type Identity,
   } from "../lib/identity.ts";
-  import type { Msg, RoomMode } from "../types.ts";
+  import { activityRender } from "../lib/activity.ts";
+  import { elapsedText } from "../lib/activity.ts";
+  import { shownDrafts, shownFiles } from "../lib/attachments.ts";
+  import type { DraftFile, Msg, RoomMode } from "../types.ts";
   import AgentAvatar from "../components/AgentAvatar.svelte";
   import GroupSettings from "../components/GroupSettings.svelte";
   import ContextBar from "../components/ContextBar.svelte";
   import ToolCallRow from "../components/ToolCallRow.svelte";
-  import ToolTrace from "../components/ToolTrace.svelte";
-  import TypingDots from "../components/TypingDots.svelte";
+  import ActivityIndicator from "../components/ActivityIndicator.svelte";
+  import ActivityStrip from "../components/ActivityStrip.svelte";
+  import Attachments from "../components/Attachments.svelte";
+  import Composer from "../components/Composer.svelte";
 
   // A group bubble shows the speaker's own colour and face, so a room reads like several people talking.
 
 
   let settings = $state(false);
-  let text = $state("");
   let scroller = $state<HTMLDivElement | undefined>(undefined);
-  let area = $state<HTMLTextAreaElement | undefined>(undefined);
   let editingTitle = $state(false);
   let titleDraft = $state("");
 
@@ -84,6 +87,21 @@
   const members = $derived(
     (room?.members ?? []).map((member) => identityOfMember(member, store.agents)),
   );
+  /**
+   * Which indicator this frame gets. One decision point, so the chat can never show two at once.
+   */
+  const indicator = $derived(
+    activityRender({ replying, live: store.live, activity: store.activity, group: room !== null }),
+  );
+  /**
+   * Whether files may be attached here. A group refuses them — every member would need its own copy — so the
+   * affordance is hidden with the reason rather than offering a button that always fails.
+   */
+  const attach = $derived(
+    room
+      ? { allowed: false, reason: "A group cannot take attachments. Send it in a direct thread." }
+      : { allowed: true },
+  );
 
   const MODES: { id: RoomMode; label: string; hint: string }[] = [
     {
@@ -121,19 +139,18 @@
     return previous === undefined || previous.author !== message.author;
   }
 
-  async function submit(event: SubmitEvent) {
-    event.preventDefault();
-    const value = text.trim();
-    if (!value) return;
-    text = "";
-    // Steering folds the message into the running turn; otherwise it is an ordinary new turn.
-    await send(value, replying ? "steer" : undefined);
-  }
-
-  function onKeydown(event: KeyboardEvent) {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      area?.closest("form")?.requestSubmit();
+  /**
+   * The composer's one job: hand the draft to the store and say whether the server took it.
+   *
+   * On a refusal the store has already shown the server's own sentence, and the draft is left exactly where
+   * the user put it — the server wrote nothing, so nothing is lost by trying again.
+   */
+  async function onSend(draft: { text: string; files: DraftFile[] }): Promise<boolean> {
+    try {
+      await send(draft, replying ? "steer" : undefined);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -160,6 +177,21 @@
     if (!agent) return;
     await setAgentEnabled(agent.id, true);
     await loadSessions();
+  }
+
+  /**
+   * Re-pin the scroll when an image finishes loading.
+   *
+   * An attachment's height is only known once its bytes arrive, so a picture that loads after the entries
+   * render pushes the newest message below the fold. A `load` event does not bubble, which is why this is
+   * bound in the capture phase.
+   */
+  function onTimelineLoad(): void {
+    const el = scroller;
+    if (!el) return;
+    queueMicrotask(() => {
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 320) el.scrollTop = el.scrollHeight;
+    });
   }
 
   $effect(() => {
@@ -265,7 +297,7 @@
     </div>
   {/if}
 
-  <div class="timeline" bind:this={scroller} data-testid="timeline">
+  <div class="timeline" bind:this={scroller} onloadcapture={onTimelineLoad} data-testid="timeline">
     {#each store.entries as message, index (message.id)}
       {#if message.role === "tool" && message.tool}
         <!-- The durable half of the trace: a call that already finished, replayed from the transcript. -->
@@ -297,20 +329,31 @@
       {:else}
         <article class="msg msg--{message.role}" data-testid="msg-{message.role}">
           <div class="msg__who">{label(message)}</div>
-          <div class="msg__body">{@html render(message.text)}</div>
+          {#if message.files && session}
+            <Attachments files={shownFiles(session.id, message.id, message.files)} />
+          {/if}
+          {#if message.text}
+            <div class="msg__body">{@html render(message.text)}</div>
+          {/if}
         </article>
       {/if}
     {/each}
 
-    <ToolTrace tools={store.tools} />
+    {#if indicator === "strip"}
+      <ActivityStrip activity={store.activity} now={store.now} />
+    {/if}
 
-    {#if replying && !store.live}
+    {#if indicator === "bubble" && !store.live}
       <article class="msg msg--assistant msg--identity" data-testid="msg-typing">
         <span class="msg__spacer"></span>
         <div class="msg__stack">
           <div class="msg__who">{room ? "the group" : agentName}</div>
           <div class="msg__typing">
-            <TypingDots label={(room ? "The group" : agentName) + " is replying"} />
+            <ActivityIndicator
+              phase={room ? null : store.activity.phase}
+              label={(room ? "The group" : agentName) + " is replying"}
+              elapsed={room ? "" : elapsedText(store.activity.since, store.now)}
+            />
           </div>
         </div>
       </article>
@@ -322,17 +365,28 @@
         <div class="msg__stack">
           <div class="msg__who">
             {room ? "the group" : agentName}
-            <TypingDots size="sm" label={(room ? "The group" : agentName) + " is replying"} />
+            <ActivityIndicator
+              size="sm"
+              phase={store.activity.phase}
+              showLabel={false}
+              label={(room ? "The group" : agentName) + " is replying"}
+              elapsed={room ? "" : elapsedText(store.activity.since, store.now)}
+            />
           </div>
           <div class="msg__body">{@html render(store.streamingText)}</div>
         </div>
       </article>
     {/if}
 
-    {#each store.pending as item, index (item.at + "-" + index)}
+    {#each store.pending as item (item.requestId)}
       <article class="msg msg--user msg--pending" data-testid="msg-pending">
         <div class="msg__who">you</div>
-        <div class="msg__body">{item.text}</div>
+        {#if item.files.length > 0}
+          <Attachments files={shownDrafts(item.files)} />
+        {/if}
+        {#if item.text}
+          <div class="msg__body">{item.text}</div>
+        {/if}
       </article>
     {/each}
 
@@ -347,7 +401,7 @@
 
   {#if store.typing.length > 0}
     <p class="typing" data-testid="typing">
-      <TypingDots size="sm" label={store.typing.join(", ") + " replying"} />
+      <ActivityIndicator size="sm" label={store.typing.join(", ") + " replying"} />
       <span>{store.typing.map((name) => "@" + name).join(" · ")} replying…</span>
     </p>
   {/if}
@@ -356,17 +410,7 @@
     <p class="error" role="alert" data-testid="error">{store.error}</p>
   {/if}
 
-  <form class="composer" onsubmit={submit}>
-    <textarea
-      bind:this={area}
-      bind:value={text}
-      rows="1"
-      {placeholder}
-      data-testid="composer"
-      onkeydown={onKeydown}
-    ></textarea>
-    <button class="btn btn--primary" type="submit">{replying ? "Steer" : "Send"}</button>
-  </form>
+  <Composer {placeholder} {replying} {attach} onsend={onSend} />
 
   <!-- Under the box, not in it: context used and the model it is measured against. -->
   <ContextBar />

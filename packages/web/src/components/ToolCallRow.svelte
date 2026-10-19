@@ -6,6 +6,7 @@
     isError = false,
     durationMs,
     nested,
+    sweep = false,
     variant = "strip",
   }: {
     name: string;
@@ -15,6 +16,8 @@
     isError?: boolean;
     durationMs?: number;
     nested?: number;
+    /** Whether this row may move. The strip turns it off once many calls are in flight at once. */
+    sweep?: boolean;
     /** "strip" is a row inside the live trace; "inline" is one line in the transcript below it. */
     variant?: "strip" | "inline";
   } = $props();
@@ -67,6 +70,9 @@
   {/if}
   {#if duration}
     <span class="toolcall__time">{duration}</span>
+  {/if}
+  {#if sweep}
+    <span class="toolcall__sweep" aria-hidden="true"></span>
   {/if}
   <span class="toolcall__output" title={output}>{line}</span>
   <span class="sr-only">{spoken()}</span>

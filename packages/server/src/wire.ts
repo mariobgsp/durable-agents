@@ -57,11 +57,6 @@ export type WireTool = {
   isError?: boolean;
   /** Nested calls this one made through code mode. */
   nested?: number;
-  /**
-   * When this connection first saw the call, in ms epoch. Absent when it attached after the call started:
-   * the absence is the honest answer, and the UI then shows no elapsed time rather than inventing one.
-   */
-  since?: number;
 };
 
 /**

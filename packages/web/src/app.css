@@ -36,6 +36,8 @@
   --t: 180ms;
   --t-slow: 320ms;
   --t-slower: 700ms;
+  /* The live indicator's own duration: slow enough to read as "working", never as progress. */
+  --t-status: 1600ms;
 
   /* Alias kept so older rules render a hairline instead of a solid grey border. */
   --border: var(--line);
@@ -361,12 +363,75 @@ button {
 
 .composer {
   display: flex;
+  flex-direction: column;
   flex-shrink: 0;
   gap: 8px;
-  align-items: flex-end;
   padding: 12px 24px 18px;
   border-top: 1px solid var(--border);
   background: var(--panel);
+}
+
+.composer__row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* Dropping files anywhere on the box is the target: the whole composer accepts them. */
+.composer--dragging {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.composer__files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.composer__error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.chip--file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 4px 3px 3px;
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+  font-size: 12px;
+}
+
+.chip__thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.chip__name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip__remove {
+  padding: 0 3px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chip__remove:hover {
+  color: var(--text);
 }
 
 .composer textarea {
@@ -1617,12 +1682,15 @@ button {
 }
 
 .toolcall {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
   padding: 7px 10px;
   font-size: 12px;
+  /* The sweep moves inside this box and is clipped by it: it never reaches the text. */
+  overflow: hidden;
 }
 
 .toolcall + .toolcall {
@@ -2190,11 +2258,203 @@ button {
   gap: 7px;
 }
 
+/* ---------- the live indicator ---------- */
+
+/*
+ * One indeterminate sweep, inside a fixed-size box. It is never a percentage and its position means nothing,
+ * because nothing in `pi.live` reports how far a call has got — a shape that could be read as progress would
+ * be a lie. The roadmap's Animation rule is what allows this motion; the global reduced-motion rule below is
+ * what removes it, leaving the phase word and the elapsed text to say the same thing.
+ */
+.activity {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--accent);
+}
+
+.activity__sweep {
+  display: block;
+  flex-shrink: 0;
+  width: 26px;
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, currentColor, transparent);
+  animation: sweep var(--t-status) linear infinite;
+}
+
+.activity__label {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.activity__time {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes sweep {
+  from {
+    opacity: 0.3;
+    transform: translateX(-120%);
+  }
+
+  50% {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0.3;
+    transform: translateX(120%);
+  }
+}
+
+/* The round header: the phase, the counts, the elapsed time and anything waiting. */
+.tooltrace__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tooltrace__phase {
+  color: var(--text);
+}
+
+.tooltrace__time,
+.tooltrace__summary {
+  font-variant-numeric: tabular-nums;
+}
+
+.tooltrace__time {
+  margin-left: auto;
+}
+
+/* A running row's own sweep, clipped by the row. */
+.toolcall__sweep {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 28%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 20%, transparent),
+    transparent
+  );
+  animation: sweep-row var(--t-status) linear infinite;
+  pointer-events: none;
+}
+
+@keyframes sweep-row {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(460%);
+  }
+}
+
+.toolcall__time--live {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- attachments ---------- */
+
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.attachment--image {
+  display: block;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--line);
+  line-height: 0;
+}
+
+.attachment--image img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(320px, 100%);
+  max-height: 240px;
+}
+
+.attachment--document {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 340px;
+  padding: 9px 11px;
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* A file the model could not read keeps its place, dimmed, with the reason under its name. */
+.attachment--omitted {
+  opacity: 0.75;
+}
+
+.attachment__glyph {
+  color: var(--muted);
+}
+
+.attachment__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.attachment__name {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.attachment__meta,
+.attachment__reason {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.attachment__meta {
+  font-variant-numeric: tabular-nums;
+}
+
+/* No status motion while the tab is hidden: nobody is watching, and the compositor would work for nobody. */
+body.pi-idle .activity__sweep,
+body.pi-idle .toolcall__sweep,
+body.pi-idle .typing-dots__dot,
+body.pi-idle .toolcall--running .toolcall__dot {
+  animation-play-state: paused;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation: none !important;
     transition: none !important;
+  }
+
+  /*
+   * A sweep with its animation removed is a bar in an arbitrary position, which is exactly the shape that
+   * must never be read as progress. Hide it: the phase word, the counts and the elapsed time already say
+   * everything it was saying.
+   */
+  .activity__sweep,
+  .toolcall__sweep {
+    display: none;
   }
 }
