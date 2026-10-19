@@ -163,31 +163,23 @@ Done:
       move to another agent (dialog), restart thread (`reset()` with a generated handoff)
 - [x] Agent enable/disable (section menu) with an in-chat notice offering **Enable agent** and
       **Restart thread** when the agent behind a thread is disabled
+- [x] Storage: `GET /api/storage` reports the data directory split by what a reader recognises (database,
+      write-ahead log, shared memory, the session index, agent files, and their total), and
+      `POST /api/storage/cleanup` folds the write-ahead log back in, vacuums, and returns the sizes **before
+      and after** plus `reclaimedBytes` — so the caller reports what came back instead of claiming a win it
+      never measured
+- [x] Purge (`POST /api/sessions/:id/purge`): each table's conversation column is discovered from the schema
+      (`PRAGMA table_info`, the column matching `/conversation/i`) instead of assumed, the transcript is
+      written to `data/exports/<id>.json` **before** any row is deleted, and the session record is removed
+      rather than soft-deleted. The E2E proves the rows left the `entries` table, not just the list
+- [x] The data directory's size in the UI: the **Storage** panel in `#/usage` shows every part with its
+      share of the total, a **Cleanup** button that prints the measured result (including the honest "0 B
+      reclaimed" of a second run), and the note that a purge is per thread, irreversible and exports first
 
 Not done:
 
-- [ ] Purge (`POST /api/sessions/:id/purge`) — needs raw SQL against pi-durable's internal tables; the
-      columns are known (`conversations`, `entries`, `tasks`, `submissions`, `documents`,
-      `document_revisions`) but it deserves a verified implementation instead of a guess
 - [ ] `ui.test.mjs` (puppeteer-core) covering the sidebar grouping, the dialogs and the
       "no Indonesian in the rendered DOM" assertion; `puppeteer-core` is not installed yet
-- [ ] `app.sqlite` size display in the UI
-
-- [ ] `PI_E2E` mode: faux provider (`faux-vision` with `input: ["text","image"]`, `faux-text` text-only),
-      `POST /api/e2e/script`, `GET /api/e2e/state`, guarded by `PI_E2E` **and** the token
-- [ ] `scripts/e2e/{harness,run}.mjs`, `npm run e2e` (faux) and `npm run e2e:real` (adds the real-model smoke)
-- [ ] Sidebar grouped per agent → threads underneath, plus `No agent` and `Groups` sections, per-item
-      type markers (group: `#` + member count + mode; agent thread: agent-coloured dot + `@agent`;
-      plain thread: neutral dot), collapse state in `localStorage`, thread search
-- [ ] Rename a thread (`PATCH /api/sessions/:id`) with inline editing in the chat header
-- [ ] Delete a thread (`DELETE /api/sessions/:id`, soft delete via `deletedAt`, hidden from the list,
-      `?includeDeleted=1` to recover) with our own confirm dialog
-- [ ] Purge (`POST /api/sessions/:id/purge`): delete that conversation's rows from pi-durable's tables
-      (`conversations`, `entries`, `tasks`, `submissions`, `documents`, `document_revisions` — names from
-      `dist/storage/sqlite/schema.js:6-15`; `record_ids`/metadata untouched) + show `app.sqlite` size
-- [ ] Move a thread to another agent (`PATCH /api/sessions/:id {agentId}` → `configure` + record update)
-- [ ] "Make it work again": warning chip with **Enable agent** (`enabled: true` + `rebindAgent`) and
-      **Restart thread** (`conversation.reset(handoff)` with an automatic handoff note)
 
 ### Phase 6 — agent capabilities (PARTIAL)
 
@@ -198,18 +190,33 @@ Done:
       the thinking levels a model actually supports (`null` in `thinkingLevelMap` means unsupported)
 - [x] `read` now takes an image processor (`createNodePhotonImages()`), so agents can read photos the
       way pi does (decode, EXIF orientation, resize to the model's limits)
-- [x] Code mode installed: `createCodemodeExtension({ sandbox: new CodemodeSandbox({...}) })` with
-      `quickjs-wasi`; `@earendil-works/pi-codemode` is now a declared server dependency
+- [x] Code mode installed: `createCodemodeExtension({ sandbox: lazySandbox })` with `quickjs-wasi`;
+      `@earendil-works/pi-codemode` is a declared server dependency. The sandbox **module** is imported by the
+      first script that runs: a proxy stands in for the class and a `codemode-loader` extension wraps the
+      tool's `execute()`, so the `import()` happens before the extension's synchronous `start()` can ask for
+      the class
 - [x] New agents default to pi's tool set: `read`, `write`, `edit`, `bash`, `codemode`
 - [x] `agent.json.vision` (`"auto"` | `"off"`) stored and read back
+- [x] The model picker in the agent editor: the provider/model selects, the capability badges
+      (images, context window, cost, reasoning), the thinking levels limited to the model's own
+      `thinkingLevels`, and a **Test model** button (`GET /api/models?provider=` + `POST /api/models/test`)
+- [x] Image attachments: `{ text, attachments: [{ name, mimeType, data }] }` → content blocks, **pre-flight
+      400** when the model cannot see images, attachments rendered in bubbles with the server's own sentence
+      for a file it could not read
+- [x] UI: attach button, paste, drag-drop, byte budget. **Deviation:** no client-side downscale; the server
+      normalizes with the model's own limits
 
 Not done:
 
 - [ ] `agent-extension.ts` (one extension per agent for codemode + hooks + MCP + an optional custom
       `extension.ts`), `blockedTools`, `instructionsSuffix`, `autoContinue`
-- [ ] The model picker in the agent editor with capability badges and a "Test model" button (`GET
-      /api/models?provider=` exists and the badges read from it); the server already stores provider/modelId
-      per agent
+- [ ] `agent.json`: `voice`, `skills`, `blockedTools`, `instructionsSuffix`, `hooks`, `mcp` (`enabled`,
+      `vision` and the default tool set are in)
+- [~] Enable/disable agents: the section menu, the inline warning chip and `enabled` in `agent.json` are in,
+      but a disabled agent is still offered by the group member picker (`Groups.svelte:78` does not filter on
+      it) and `POST /api/sessions` does not refuse one
+- [ ] Agent editor: the agent's own `vision` toggle (the switch that would drive the record's `vision` field;
+      the model picker, the badges and **Test model** are already in)
 
 Done in the session that added attachments:
 
@@ -224,22 +231,48 @@ Done in the session that added attachments:
 - [x] `npm run e2e` scenario `attachments`: the model's own view (`echo: "images"`), the entry's own bytes
       (a SQLite read), a restart, the 400, the budgets, and a deterministic missing-converter branch
 
-- [ ] `capabilities.ts`: `canSeeImages(model)` from `model.input.includes("image")`, `imageLimits(model)`
-      from `inputLimits.images.resize`, `modelCatalog()` for editor badges; `GET /api/models?provider=`
-- [ ] `harness.ts`: `createCodingTools({ images: await createNodePhotonImages() })` so `read` handles images
-      like pi, plus `createCodemodeExtension({ sandbox: new CodemodeSandbox({...}) })` (`quickjs-wasi` is installed)
-- [ ] `agent.json`: `enabled`, `vision`, `voice`, `skills`, `blockedTools`, `instructionsSuffix`, `hooks`,
-      `mcp`, and default tools `read/write/edit/bash/codemode`
-- [ ] `agent-extension.ts`: one extension `agent:<id>` per agent (codemode + skills section + quick hooks +
-      MCP + optional `extension.ts`), selected per conversation through `configure({ extensions })`
-- [ ] Enable/disable agents: hidden from pickers, existing threads keep working behind a warning chip
-- [x] Image attachments: `{ text, attachments: [{ name, mimeType, data }] }` → content blocks, **pre-flight
-      400** when the model cannot see images, attachments rendered in bubbles with the server's own sentence
-      for a file it could not read
-- [x] UI: attach button, paste, drag-drop, byte budget. **Deviation:** no client-side downscale; the server
-      normalizes with the model's own limits
-- [ ] Agent editor: model picker per agent with capability badges, thinking levels limited to
-      `model.thinkingLevelMap`, "Test model" button, vision toggle driven by the model
+Done in the session that added storage, questions, search, links and diagrams:
+
+- [x] `questions.ts`: the `question` tool writes a `chat.question` entry (`{ text, author, options }`) and
+      ends the turn — the existing transcript mapper already renders it, and `QuestionOptions.svelte` draws
+      the options as buttons, answerable once
+- [x] `search.ts`: the `web-search` tool over DuckDuckGo's keyless HTML endpoint, no dependency and no key.
+      Naming the provider and reporting a failure as a failure (HTTP status, rate limit, unreadable markup)
+      is the point: a changed page must not look like "no results"
+- [x] Hyperlinks: `lib/markdown.ts` gives an external link `target="_blank"` + `rel="noreferrer noopener"`
+      after sanitizing (`javascript:` is dropped before the hook runs), while a same-page `#` link is left to
+      the in-app router
+- [x] Mermaid: a fenced ```mermaid block becomes `Mermaid.svelte`, which imports `mermaid` only when a
+      diagram is present (`securityLevel: "strict"`, pan + zoom + reset). The library and its layout engines
+      stay in their own chunks, so a thread with no diagram fetches none of it
+- [x] `npm run e2e` scenarios `questions` and `search` (the search one stubs `fetch` with the real page
+      shape, so its parser and its failure paths are asserted without the network)
+
+### Step 3 — deferring the codemode extension graph (MEASURED, REVERTED, NOT KEPT)
+
+The idea was that the codemode module graph — `@earendil-works/pi-durable/codemode` → `pi-codemode/portable`
+→ `inline` → `vm` → `quickjs-wasi` — is imported at boot for a tool most agents never call. It is **not** a
+win and **is not in the tree**:
+
+- **Idle RSS did not move outside the noise.** Deferring the registration took boot RSS 139.8 → 140.6 MB in
+  one probe run and 140.4 → 137.9 MB in another; a single state's own run-to-run spread is ~2 MB and the
+  ranges overlap, so the effect is smaller than the measurement. Directly measured import costs are
+  `pi-durable/codemode` ≈ **+1.4 MB** and `pi-codemode` ≈ **+0.5 MB**, against a ~82 MB bare harness.
+- **The earlier attribution was wrong.** The heavy graph arrives through the static `createCodemodeExtension`
+  import, not through the sandbox class: constructing the sandbox costs 0. The "~35 MB" figure this step
+  started from does not exist. What *is* deferred today is only the sandbox module (see the code-mode row
+  above), which is worth doing but is not a memory win.
+- **The deferral broke a real path.** Registration in pi-durable is synchronous and load-bearing: an
+  ownerless thread (the sidebar's "New thread", `POST /api/sessions` with no `agentId`) leaves its tool list
+  unset, which resolves to *every installed tool*. With lazy registration a fresh default thread answered
+  `Tool codemode is not available`, and `npm run e2e` passed on both states, so the regression would have
+  shipped silently. Preserving it means installing before the first generation — which is boot, or the first
+  conversation — so the ~2 MB is only ever moved, never removed.
+
+The prototype was ≈24 lines in `harness.ts` plus a synchronous `require` seam; it was reverted byte-for-byte,
+and the measurements above are the record we kept. If a future owner decides that a default thread should
+**not** get codemode, that prototype is the change to make — it is the only shape that defers anything, and
+it is a product decision rather than a performance one.
 
 ### Phase 7 — MCP and hooks per agent (APPROVED, NOT STARTED)
 
@@ -306,7 +339,7 @@ Two real bugs the new E2E caught immediately, both worth remembering:
 
 Remaining phases, in the order I would do them: phase 10's responsive pass (the animation half is done),
 phase 9 (voice + video), phase 7 (MCP + hooks), phase 8 (skills + curator), then the phase 6.0 leftovers
-(purge, UI E2E) and the agent editor's model picker.
+(the puppeteer UI E2E) and the agent editor's `vision` toggle.
 
 ## Status snapshot (end of the session that added attachments and the live activity frame)
 
@@ -325,6 +358,20 @@ Two facts the new E2E proved that reading the source could not:
    (asserted by two sockets reporting the same `since`).
 2. **`pi.live.tools` is emptied when the round's tool phase ends**, so a `done` row is not guaranteed to be
    observable at all. The durable `pi.tool-result` line in the transcript is what records a finished call.
+
+## Status snapshot (end of the session that added storage, questions, search, links and diagrams)
+
+| Check | Result |
+| --- | --- |
+| `npm run check` | `tsc` clean + `svelte-check` **0 errors, 2 warnings** (both in `Dialog.svelte`, untouched) + `lint:lang` clean |
+| `npm run e2e` | **13 passed, 0 failed** (`activity`, `attachments`, `identity`, `live-activity`, `memory`, `models`, `permissions`, `questions`, `search`, `sessions`, `steering`, `storage`, `tools`) |
+| `npm run build` | entry **71.86 kB JS** + **7.70 kB CSS** gzip (limit 120 kB); the entry grew by 1.12 kB over the pre-panel tree (70.74 kB), and mermaid/`elk` stay in their own chunks |
+| `npm run shots:replying` | 11 screenshots |
+| `#/usage` Storage panel | 2 screenshots (1440×900, 390×844) + the rendered DOM read back: 6 rows, no wrapped value, no clipped note, no horizontal overflow at either tier, and the cleanup line checked after a real click — including a second run reporting `0 B reclaimed` |
+
+The panel found one defect while it was being reviewed, and it was the panel's own: `GET /api/storage`
+wraps its report (`{ storage: {…} }`), and reading it as the report itself rendered `undefined B` for every
+part with a `NaN%` bar. The screenshot is what caught it; `svelte-check` was clean either way.
 
 ## Known gaps (do not claim these are done)
 
@@ -348,6 +395,12 @@ Two facts the new E2E proved that reading the source could not:
   that the attachment is already provided — worth doing if a real agent ever reads the wrong file.
 - Attachments cannot be sent in a group thread: refused with a readable reason, because every member
   conversation would keep its own copy of the bytes.
+- A purge has no UI: `POST /api/sessions/:id/purge` is the only way to remove a thread's rows for good, and
+  the thread menu's delete stays a soft delete. The Storage panel states the difference without offering the
+  button. `#/usage` is also not in the `npm run shots` route list (8 routes), so the panel was reviewed with
+  a throwaway DevTools-protocol script instead of the committed gate.
+- Web search follows DuckDuckGo's HTML endpoint: keyless and dependency-free, but a shape dependency, so the
+  `search` E2E asserts its parser and failure paths against a stubbed page rather than the live one.
 - The Tauri shell has never been compiled, and `tauri-plugin-single-instance` is not installed: do not
   run the desktop app twice before that lands (two servers, one `app.sqlite`).
 - System notifications on turn completion (Web Notification API) are not wired up; the PWA is installable.

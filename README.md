@@ -20,8 +20,8 @@ Open <http://localhost:5173>.
 
 ## Status — where we are right now
 
-**Phases 1–4 complete. Phase 5 partial. Phase 5.5 complete. Phases 6 and 6.0 partial. Phases 7–10 not
-started.**
+**Phases 1–4 complete. Phase 5 partial. Phase 5.5 complete. Phases 6 and 6.0 partial. Phase 10 partial (the
+animation half). Phases 7–9 not started.**
 
 | Area | State |
 | --- | --- |
@@ -34,9 +34,12 @@ started.**
 | Agent & group identity (colour + emoji) | **Done** |
 | Live "replying" indicator, per session | **Done** |
 | Responsive layout + design system | **Done** — 5 viewport tiers in the screenshot gate |
-| E2E suite (faux provider, deterministic) | **9 scenarios passing** |
+| E2E suite (faux provider, deterministic) | **13 scenarios passing** |
 | Image and document attachments | **Done** — bytes live in the entry the model was given |
 | Live activity indicator (phase, calls, elapsed) | **Done** — derived from `pi.live`, never a guess |
+| Storage: size report, cleanup, purge | **Done** — the `#/usage` panel prints the bytes the cleanup actually gave back |
+| The `question` tool + keyless web search | **Done** — a durable `chat.question` with option buttons; DuckDuckGo's HTML endpoint, no key |
+| Hyperlinks and mermaid diagrams in an answer | **Done** — external links open away, a diagram fetches its library only when it is there |
 | Voice, video | **Not started** |
 | MCP servers, per-agent hooks, skills/curator | **Not started** |
 
@@ -44,11 +47,12 @@ Latest verified run:
 
 | Check | Result |
 | --- | --- |
-| `npm run check` | `tsc` clean · `svelte-check` **0 errors** · `lint:lang` clean |
-| `npm run e2e` | **7 passed, 0 failed** (`activity`, `identity`, `memory`, `models`, `sessions`, `steering`, `tools`) |
-| `npm run build` | **62.3 kB JS** + **6.7 kB CSS** gzip (budget 100 kB) |
-| `npm run shots` | 40 screenshots across 5 viewports |
-| `npm run shots:replying` | 3 screenshots of the replying indicator |
+| `npm run check` | `tsc` clean · `svelte-check` **0 errors, 2 warnings** (both in `Dialog.svelte`, untouched) · `lint:lang` clean |
+| `npm run e2e` | **13 passed, 0 failed** (`activity`, `attachments`, `identity`, `live-activity`, `memory`, `models`, `permissions`, `questions`, `search`, `sessions`, `steering`, `storage`, `tools`) |
+| `npm run build` | entry **71.86 kB JS** + **7.70 kB CSS** gzip (budget 100 kB); mermaid and its layout engines stay in their own chunks (`mermaid.core` 29.31 kB, `elk` 455.84 kB gzip), fetched only when a diagram renders |
+| `npm run shots:replying` | 11 screenshots |
+| `npm run shots` | not re-run in this session — the last full pass (8 routes × 5 viewports) lives in `docs/ui-review/2026-10-17/` |
+| `#/usage` Storage panel | 2 screenshots + the rendered DOM checked (6 rows, no wrapping or overflow at 1440×900 and 390×844, the cleanup line read back after a click) — see [`docs/ui-review/`](docs/ui-review/) |
 
 The plan of record, with the evidence for each phase, lives in [`docs/roadmap.md`](docs/roadmap.md).
 UI review notes and screenshots live in [`docs/ui-review/`](docs/ui-review/).
@@ -61,8 +65,8 @@ UI review notes and screenshots live in [`docs/ui-review/`](docs/ui-review/).
 flowchart TB
   subgraph browser["Browser — Svelte 5 SPA · packages/web"]
     direction TB
-    views["Views<br/>Chat · Agents · AgentEditor · Groups · Providers"]
-    comps["Components<br/>Sidebar · AgentAvatar · ActivityIndicator<br/>ActivityStrip · Attachments · Composer · Dialog"]
+    views["Views<br/>Chat · Agents · AgentEditor · Groups · Providers<br/>Usage"]
+    comps["Components<br/>Sidebar · AgentAvatar · ActivityIndicator<br/>ActivityStrip · Attachments · Composer · Dialog<br/>Markdown · Mermaid · QuestionOptions"]
     store["state.svelte.ts<br/>runes store: sessions, entries,<br/>active, busy, streamingText, activity"]
     ident["lib/identity.ts<br/>colour + emoji identity"]
     wsc["ws.ts<br/>connect() per conversation<br/>connectPresence() for activity"]
@@ -84,11 +88,14 @@ flowchart TB
     stream["stream.ts<br/>conversation.watch() to frames"]
     agents["agents.ts<br/>AGENT.md + SOUL.md"]
     models["models.ts + capabilities.ts<br/>providers · model catalog"]
+    storage["storage.ts<br/>size report · checkpoint · purge"]
+    tools["questions.ts · search.ts<br/>question + web-search tools"]
     api --> auth
     api --> sess
     api --> rooms
     api --> stream
     api --> activity
+    api --> storage
     rooms --> router
     rooms --> nyahut
     rooms --> agents
@@ -101,6 +108,8 @@ flowchart TB
     db[("SQLite<br/>data/app.sqlite")]
     harness --> db
   end
+
+  harness -->|installs| tools
 
   llm["pi-ai providers<br/>opencode-go / deepseek-v4.1-flash<br/>faux provider when PI_E2E=1"]
 
@@ -125,9 +134,13 @@ flowchart TB
 | `stream.ts` | Turns `conversation.watch()` into wire frames, reading partials from `pi.live` |
 | `agents.ts` | Reads/writes `data/agents/<slug>/{agent.json,AGENT.md,SOUL.md}` |
 | `models.ts`, `capabilities.ts` | Provider credentials and the per-model capability catalog |
+| `storage.ts` | What the data directory holds, the checkpoint + vacuum, and the purge that exports before it deletes |
+| `questions.ts`, `search.ts` | The `question` tool (a durable `chat.question` entry) and the keyless DuckDuckGo `web-search` tool |
 | `wire.ts` | The server→web frame contract (mirrored in `packages/web/src/ws.ts`) |
 | `packages/web/src/state.svelte.ts` | The single runes store; the only place frames mutate state |
 | `packages/web/src/lib/identity.ts` | One normaliser for agent/group/member identity |
+| `packages/web/src/lib/markdown.ts` | Markdown → sanitized HTML, mermaid fences, and the external/internal link policy |
+| `packages/web/src/views/Usage.svelte` | The usage graphs and the Storage panel |
 | `packages/web/src/ws.ts` | Per-conversation socket plus the presence socket |
 
 ### Data model
@@ -290,6 +303,81 @@ What that buys, and what it costs:
 - **The costs accepted:** the same photo attached twice is stored twice, `app.sqlite` grows with the images
   it holds, and the message route declares its own 24 MiB body limit because a message carries its files.
 
+### Storage: report first, then give some back
+
+The data directory is not one file, and "cleanup" means three different things that are worth keeping
+apart. `storage.ts` reports the parts a reader would recognise — `app.sqlite`, its `-wal` and `-shm`
+siblings, the session index and the agents' own files — and the `#/usage` panel draws them as shares of that
+total.
+
+- **A checkpoint** folds the write-ahead log back into the database. The log grows independently of the data
+  and is pure overhead once every reader has passed it, so `POST /api/storage/cleanup` runs
+  `wal_checkpoint(TRUNCATE)` and then `VACUUM`, on a **second connection** with a short busy timeout instead
+  of reaching into the harness's own.
+- **A vacuum** rewrites the file without the space deletions left behind.
+- **A purge** removes one conversation's rows for good.
+
+The response is the point: cleanup returns `{ before, after, reclaimedBytes }`, and the panel prints the
+measured number — including the honest **`0 B reclaimed`** of a second run that had nothing to give back.
+The page never claims space it did not get.
+
+A purge is the destructive one, which is why it is not a delete:
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant API as Fastify
+  participant S as storage.ts
+  participant DB as SQLite
+  U->>API: POST /api/sessions/:id/purge
+  API->>S: purgeConversation(id, transcript)
+  S->>S: write data/exports/<id>.json — before anything is removed
+  S->>DB: PRAGMA table_info per table, then DELETE … WHERE <conversation column> = ?
+  Note over DB: the column is discovered from the schema, never assumed:<br/>a guessed name either fails or matches nothing while reporting success
+  S->>DB: write-ahead log checkpoint
+  S-->>API: { exportPath, removedRows, reclaimedBytes }
+  API->>API: remove the session record — not a soft delete
+  API-->>U: the export path and the row counts
+```
+
+Two consequences follow from that shape. The rows are the only copy of the transcript, so the export happens
+first and its path comes back with the result. And because the rows are gone, `Restore` could never work — so
+the session record is removed outright and the route 404s afterwards, instead of pretending a thread is
+hidden when it is empty. `npm run e2e storage` proves the rows left the `entries` table, not just the list.
+There is no purge control in the UI yet; the panel states what a purge would do instead of offering one.
+
+### Asking, and searching without a key
+
+Two tools exist because the model has a hole where they belong.
+
+- **`question`** asks the user and ends the turn. It writes a durable `chat.question` entry
+  (`{ text, author, options }`) instead of printing the question as model text, so the transcript mapper
+  needs no special case: the entry already has `text` and `author`, and `data.options` is what the client
+  reads to draw the buttons. The answer is an ordinary user message, which is why the tool writes nothing
+  else and tells the model its turn is over. A question is answerable once — a later user message in the
+  thread locks its buttons.
+- **`web-search`** goes to DuckDuckGo's keyless HTML endpoint over the built-in `fetch`: no MCP server, no
+  dependency, no credential, because pi-ai has no provider-native search and this machine has no search key.
+  That is a **shape dependency, not an API**, so the tool names the provider in every result and reports a
+  changed page (`… returned no recognizable results, so its markup may have changed`) or an HTTP failure as
+  a failure. A query with genuinely nothing to show is the only case that answers with no results.
+
+### Links and diagrams in an answer
+
+Markdown comes from a model, so both of these are security-relevant rather than cosmetic.
+
+- **A link is either this app or the web.** `renderMarkdown` installs a DOMPurify hook that gives every
+  external anchor `target="_blank"` with `rel="noreferrer noopener"` — after sanitizing, so raw HTML in a
+  message goes through the same rule — and strips `target`/`rel` from a same-page `#` link, which belongs to
+  the in-app router. `javascript:` never reaches the hook; DOMPurify drops the attribute first.
+- **A diagram is a component, not an image.** A fenced ```mermaid block is split out before markdown is
+  rendered and handed to `Mermaid.svelte`, which imports `mermaid` **inside** its render effect, so a thread
+  with no diagram downloads none of it (`mermaid.core` and `elk` are separate chunks).
+  `securityLevel: "strict"` is not optional when the source is a model: it keeps labels as text instead of
+  letting them inject HTML or click handlers. Pan, zoom and reset are plain transform math on a wrapper, and
+  an unclosed fence stays an ordinary code block until its closing fence arrives, so a diagram still
+  streaming in does not flash an error.
+
 ### Who is replying
 
 The sidebar and the chat both need to know which sessions are generating, including sessions you are not
@@ -429,7 +517,7 @@ systemd user unit and the iOS/Android install — is in [`docs/tailscale.md`](do
 | `npm run e2e` | Every E2E scenario against a throwaway server |
 | `npm run e2e:real` | Also run the optional real-model scenario |
 | `npm run shots` | 8 routes × 5 viewports → `docs/ui-review/<date>/` |
-| `npm run shots:replying` | The replying indicator, the attachment cards and each activity phase, on a throwaway E2E server |
+| `npm run shots:replying` | The replying indicator, the attachment cards, each activity phase and the Full Access control, on a throwaway E2E server |
 | `npm run smoke` | Harness + storage + one real question to the model |
 | `npm run smoke:image` | The same, with an image attachment: proves a real model sees it |
 | `npm run seed` | Seed demo threads (no model calls) |
@@ -442,6 +530,7 @@ systemd user unit and the iOS/Android install — is in [`docs/tailscale.md`](do
 | `#/` | Empty state + new-thread button |
 | `#/s/<id>` | Chat — plain thread, agent thread, or a group with the mode switch |
 | `#/groups` | Create a group + the group list |
+| `#/usage` | Usage graphs, the Storage panel and the cleanup |
 | `#/agents`, `#/agents/new`, `#/agents/<id>` | Agent list + the `AGENT.md`/`SOUL.md` editor |
 | `#/providers` | Provider credential status + API key entry |
 
@@ -452,13 +541,21 @@ systemd user unit and the iOS/Android install — is in [`docs/tailscale.md`](do
 | `GET` | `/api/health` | Liveness |
 | `GET` `POST` `PATCH` `DELETE` | `/api/sessions[/:id]` | `?includeDeleted=1` lists soft-deleted threads |
 | `POST` | `/api/sessions/:id/{restore,move,restart,abort}` | Restore, move to another agent, fresh context, abort |
+| `POST` | `/api/sessions/:id/permissions` | Grant or revoke Full Access for that thread alone |
+| `POST` | `/api/sessions/:id/purge` | Exports the transcript to `data/exports/<id>.json`, then deletes its rows and the session record — irreversible |
+| `GET` `POST` | `/api/sessions/:id/context` · `/api/sessions/:id/compact` | Context used against the model's window / compact now |
+| `PUT` | `/api/sessions/:id/model` | The composer's model switch (on an agent thread it moves the agent) |
 | `GET` `POST` | `/api/sessions/:id/messages` | Transcript / send. A message carries its own attachments |
 | `GET` | `/api/sessions/:id/attachments/:entryId/:index` | One file of a message, read out of that entry |
+| `GET` `POST` | `/api/storage[/cleanup]` | Sizes split by what a reader recognises / checkpoint + vacuum, returning the sizes before and after and `reclaimedBytes` |
 | `GET` `POST` `PUT` `DELETE` | `/api/agents[/:id]` | `PUT` returns `rebound`: how many threads took the new files |
 | `GET` `PUT` | `/api/providers[/:id/key]` | Credential status and key entry |
 | `GET` | `/api/models?provider=` | Capability catalog: image support, context, cost, thinking levels |
 | `POST` | `/api/models/test` | One cheap round trip to prove a model works |
 | `GET` | `/api/activity` | Which sessions are generating right now |
+| `GET` | `/api/usage` | The Usage screen's numbers, read from the durable log |
+| `POST` `PUT` | `/api/rooms[/:id]` | Create a group / change its members and mode |
+| `GET` `POST` | `/api/e2e/{state,script}` | The faux-provider script, only when `PI_E2E=1` and the token is right |
 | `GET` | `/api/ws?conversation=<id>` | That conversation's stream |
 | `GET` | `/api/ws/presence` | Activity for every session |
 
@@ -518,6 +615,12 @@ That makes the whole stack deterministic: no network, no cost, no flakes.
 | `sessions` | Create → stream deltas → rename → delete → restore → move → restart persistence |
 | `identity` | An agent's and a group's colour + emoji are stored, survive a restart, and — the point — survive a later patch that touches an unrelated field |
 | `models` | The capability catalog is served over HTTP; the model set per agent is the model that answers; switching it switches the answer |
+| `storage` | The report adds up; a purge exports the transcript first, deletes the rows (asserted against the `entries` table, not the list), leaves the thread list and 404s afterwards; cleanup reports its before/after sizes and a second run is harmless |
+| `attachments` | The model's own view of the bytes, the entry's own bytes after a restart, the 400 when the model cannot see images, the per-message budgets |
+| `live-activity` | The phase ladder (`starting`, `queued`, `tool`, `writing`), the counts and the run's durable elapsed time, including across a reconnect |
+| `questions` | The `question` tool writes a `chat.question` entry with its options and ends the turn; the answer arrives as the next user message |
+| `search` | The DuckDuckGo parser (`uddg` redirects, entities, `<b>` highlighting) and the paths that must not look like "no results": 429, unreadable markup, unreachable provider. `fetch` is stubbed, so no network is involved |
+| `permissions` | The per-thread Full Access grant: stored on the thread, enforced at submit time, and not sticky on the agent |
 | `activity` | An idle thread is not active; a thread is active while streaming and clears after; abort clears immediately; a group stays active across the whole flow; an idle thread is still not active **after a restart** |
 
 Two E2E findings worth keeping in mind, because both were real bugs the suite caught immediately:
@@ -562,7 +665,8 @@ In the order I would do them:
    promotes them on acceptance.
 4. **Phase 10 leftovers** — skeleton loaders, `:focus-visible` rings, `text-wrap: balance`,
    `tabular-nums`, ≥44 px tap targets.
-5. **Phase 6.0 leftovers** — transcript purge, and a browser-level UI E2E.
+5. **Phase 6.0 leftovers** — the browser-level UI E2E (`ui.test.mjs`; `puppeteer-core` is not installed) and
+   the agent editor's `vision` toggle.
 
 Phase 10's animation work is delivered (the phase indicator, the tool-call motion and the responsive gate);
 the remaining items are polish.
@@ -571,6 +675,18 @@ the remaining items are polish.
 
 These are **not** done — please do not read the status table as claiming otherwise.
 
+- **A purge has no UI.** `POST /api/sessions/:id/purge` is the only way to remove a thread's rows for good.
+  The thread menu's delete stays a soft delete, and the Storage panel explains the difference rather than
+  offering the button.
+- **A diagram is a large lazy download.** mermaid and its layout engines are their own chunks, fetched on the
+  first diagram a thread renders — `elk` alone is ≈456 kB gzip. The entry bundle is untouched, but the first
+  diagram is not cheap.
+- **Web search follows DuckDuckGo's HTML.** Keyless and dependency-free, but the markup is a shape
+  dependency: when it changes the tool reports a failure rather than an empty result list, and the `search`
+  E2E asserts against a stubbed page instead of the live endpoint.
+- **`#/usage` is not in the screenshot gate.** `npm run shots` photographs 8 routes; the Storage panel was
+  reviewed with a throwaway DevTools-protocol script (see `docs/ui-review/<date>/`), not by the committed
+  harness.
 - **Attachments cannot be sent in a group thread.** Refused with a readable reason: each member
   conversation is its own model-visible entry, so supporting it would keep one copy of every byte per
   member.
