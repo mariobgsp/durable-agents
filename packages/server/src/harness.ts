@@ -5,13 +5,15 @@ import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import type { ImageProcessor } from "@earendil-works/pi-durable/tools";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
-import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import type { CodemodeSandbox, CodemodeSandboxBase } from "@earendil-works/pi-codemode";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { models } from "./models.ts";
 import { permissionsExtension } from "./permissions.ts";
+import { questionTool } from "./questions.ts";
 import { rememberTool } from "./remember.ts";
+import { webSearchTool } from "./search.ts";
 import { dataDir, dbPath } from "./paths.ts";
 
 /** Extension registry shared by every session. */
@@ -49,13 +51,37 @@ export function imageProcessor(): ImageProcessor {
   return lazyImages;
 }
 
-let realSandbox: CodemodeSandbox | undefined;
+/**
+ * The QuickJS sandbox module, loaded by the first script that runs.
+ *
+ * Importing `@earendil-works/pi-codemode` pulls in the worker launcher, the inline sandbox and `quickjs-wasi`, none
+ * of which is needed until a script runs. `start()` hands back a run synchronously, so the sandbox itself cannot
+ * await an `import()`: the `codemode-loader` wrapper below loads the module before it delegates, and `start()` then
+ * finds the class ready.
+ *
+ * The type is the real `CodemodeSandboxBase`, so the forwarding proxy below is checked against the package's own
+ * interface instead of a hand-written guess.
+ */
+let SandboxClass: typeof CodemodeSandbox | undefined;
+let realSandbox: CodemodeSandboxBase | undefined;
 
-const lazySandbox = new Proxy({} as CodemodeSandbox, {
+async function loadCodemodeSandbox(): Promise<void> {
+  if (SandboxClass) return;
+  const imported = await import("@earendil-works/pi-codemode");
+  SandboxClass = imported.CodemodeSandbox;
+}
+
+function codemodeSandbox(): CodemodeSandboxBase {
+  if (!SandboxClass) throw new Error("the codemode sandbox was used before its module was loaded");
+  realSandbox ??= new SandboxClass({ memoryLimitBytes: 256 * 1024 * 1024 });
+  return realSandbox;
+}
+
+const lazySandbox: CodemodeSandboxBase = new Proxy({} as CodemodeSandboxBase, {
   get: (_target, property) => {
-    realSandbox ??= new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 });
-    const value = Reflect.get(realSandbox as object, property);
-    return typeof value === "function" ? value.bind(realSandbox) : value;
+    const sandbox = codemodeSandbox();
+    const value: unknown = Reflect.get(sandbox, property);
+    return typeof value === "function" ? value.bind(sandbox) : value;
   },
 });
 
@@ -76,12 +102,35 @@ export async function openHarness(): Promise<Harness> {
   // scoped agent inside its roots; the systemd unit is what actually contains an allowed tool.
   registry.install(permissionsExtension());
 
+  // Asking the user a question: one durable `chat.question` entry with the option buttons, then the turn ends.
+  registry.install(defineExtension({ name: "question", tools: [questionTool] }));
+
+  // Web search: keyless, because pi-ai has no provider-native search and this machine has no search credential.
+  registry.install(defineExtension({ name: "search", tools: [webSearchTool] }));
+
   // Code mode: the model writes JavaScript that calls the conversation's tools in a QuickJS sandbox.
   //
-  // The sandbox is behind a proxy so the WebAssembly runtime loads on the first script that actually runs:
-  // constructing it at boot costs about 35 MB measured, for a tool most agents never call. The extension gets
-  // the same interface, so it cannot tell.
+  // The sandbox is behind a proxy so its module loads on the first script that actually runs. `start()` is
+  // synchronous, so the tool's wrapper is what awaits the import before the original `execute()` can call it; the
+  // extension gets the same interface, so it cannot tell.
   registry.install(createCodemodeExtension({ sandbox: lazySandbox }));
+  registry.install(
+    defineExtension({
+      name: "codemode-loader",
+      wraps: [
+        {
+          tool: "codemode",
+          wrap: (tool: ToolRegistration) => ({
+            ...tool,
+            execute: async (...args: Parameters<ToolRegistration["execute"]>) => {
+              await loadCodemodeSandbox();
+              return tool.execute(...args);
+            },
+          }),
+        },
+      ],
+    }),
+  );
 
   const storage = await openNodeSqliteStorage(dbPath);
   instance = await Harness.open(

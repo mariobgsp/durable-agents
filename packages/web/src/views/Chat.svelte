@@ -1,6 +1,4 @@
 <script lang="ts">
-  import { marked } from "marked";
-  import DOMPurify from "dompurify";
   import { go } from "../router.svelte.ts";
   import {
     abort,
@@ -24,6 +22,7 @@
   import { activityRender } from "../lib/activity.ts";
   import { elapsedText } from "../lib/activity.ts";
   import { shownDrafts, shownFiles } from "../lib/attachments.ts";
+  import { isInternalLink } from "../lib/markdown.ts";
   import type { DraftFile, Msg, RoomMode } from "../types.ts";
   import AgentAvatar from "../components/AgentAvatar.svelte";
   import GroupSettings from "../components/GroupSettings.svelte";
@@ -33,6 +32,8 @@
   import ActivityStrip from "../components/ActivityStrip.svelte";
   import Attachments from "../components/Attachments.svelte";
   import Composer from "../components/Composer.svelte";
+  import Markdown from "../components/Markdown.svelte";
+  import QuestionOptions from "../components/QuestionOptions.svelte";
 
   // A group bubble shows the speaker's own colour and face, so a room reads like several people talking.
 
@@ -106,6 +107,14 @@
       : { allowed: true },
   );
 
+  /**
+   * The newest user message. A question before it has been answered: the thread moved on after it, so its
+   * options can never apply again.
+   */
+  const lastUserAt = $derived(
+    store.entries.reduce((last, entry, index) => (entry.role === "user" ? index : last), -1),
+  );
+
   const MODES: { id: RoomMode; label: string; hint: string }[] = [
     {
       id: "nyahut",
@@ -116,8 +125,37 @@
     { id: "silent", label: "Silent", hint: "only answers when called with @name" },
   ];
 
-  function render(src: string): string {
-    return DOMPurify.sanitize(marked.parse(src, { async: false }) as string);
+  /** The choices a `chat.question` message offers, or null for every other message. */
+  function questionOptions(message: Msg): string[] | null {
+    if (message.kind !== "chat.question") return null;
+    const data = message.data as { options?: unknown } | null | undefined;
+    if (!data || !Array.isArray(data.options)) return null;
+    const options = data.options.filter(
+      (option): option is string => typeof option === "string" && option.trim().length > 0,
+    );
+    return options.length > 0 ? options : null;
+  }
+
+  /**
+   * In-app navigation for links inside rendered markdown.
+   *
+   * The bubbles are injected HTML, so the anchors are not Svelte nodes and cannot carry their own handler.
+   * One delegated listener on the timeline is enough; external anchors already carry `target="_blank"` from
+   * the sanitizer, so only a hash link is intercepted and handed to the router.
+   */
+  function inAppLinks(node: HTMLElement) {
+    function onClick(event: MouseEvent): void {
+      if (event.defaultPrevented || event.button !== 0) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const href = target.closest("a[href]")?.getAttribute("href") ?? "";
+      if (!isInternalLink(href)) return;
+      event.preventDefault();
+      go(href);
+    }
+    node.addEventListener("click", onClick);
+    return { destroy: () => node.removeEventListener("click", onClick) };
   }
 
   function identityFor(message: Msg): Identity {
@@ -333,8 +371,15 @@
     </div>
   {/if}
 
-  <div class="timeline" bind:this={scroller} onloadcapture={onTimelineLoad} data-testid="timeline">
+  <div
+    class="timeline"
+    bind:this={scroller}
+    use:inAppLinks
+    onloadcapture={onTimelineLoad}
+    data-testid="timeline"
+  >
     {#each store.entries as message, index (message.id)}
+      {@const options = questionOptions(message)}
       {#if message.role === "tool" && message.tool}
         <!-- The durable half of the trace: a call that already finished, replayed from the transcript. -->
         <div class="toolhistory" data-testid="tool-line">
@@ -359,7 +404,14 @@
           {/if}
           <div class="msg__stack">
             <div class="msg__who" style="--author: {identity.color}">{label(message)}</div>
-            <div class="msg__body">{@html render(message.text)}</div>
+            <div class="msg__body"><Markdown text={message.text} /></div>
+            {#if options}
+              <QuestionOptions
+                {options}
+                answered={lastUserAt > index}
+                onanswer={(option) => onSend({ text: option, files: [] })}
+              />
+            {/if}
           </div>
         </article>
       {:else}
@@ -369,7 +421,7 @@
             <Attachments files={shownFiles(session.id, message.id, message.files)} />
           {/if}
           {#if message.text}
-            <div class="msg__body">{@html render(message.text)}</div>
+            <div class="msg__body"><Markdown text={message.text} /></div>
           {/if}
         </article>
       {/if}
@@ -409,7 +461,7 @@
               elapsed={room ? "" : elapsedText(store.activity.since, store.now)}
             />
           </div>
-          <div class="msg__body">{@html render(store.streamingText)}</div>
+          <div class="msg__body"><Markdown text={store.streamingText} /></div>
         </div>
       </article>
     {/if}
