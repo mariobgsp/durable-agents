@@ -15,6 +15,22 @@
   let tools = $state<string[]>([]);
   let thinkingLevel = $state<ThinkingLevel>("medium");
   let cwd = $state("");
+  /**
+   * What this agent may do. `standard` refuses the escape hatches (bash, codemode) and keeps file tools
+   * inside the agent's root; `full` refuses nothing. A policy boundary, not a sandbox.
+   */
+  let permissions = $state<"standard" | "custom" | "full">("standard");
+  let blockedTools = $state("");
+  let allowedPaths = $state("");
+  /** Whether the server is inside the hardened unit. The tiers are policy; that unit is the boundary. */
+  let sandboxed = $state(true);
+
+  $effect(() => {
+    void api
+      .health()
+      .then((health) => (sandboxed = health.sandboxed))
+      .catch(() => undefined);
+  });
   let color = $state<string>(PALETTE[0]!);
   let avatar = $state("");
   let provider = $state("");
@@ -78,6 +94,11 @@
       tools = [...files.record.tools];
       thinkingLevel = files.record.thinkingLevel;
       cwd = files.record.cwd ?? "";
+      // The effective tier, not the stored one: a record written before tiers existed has none, and the
+      // server infers it (an agent that already had bash runs as full until you choose otherwise).
+      permissions = files.policy?.tier ?? "standard";
+      blockedTools = (files.record.blockedTools ?? []).join(", ");
+      allowedPaths = (files.record.allowedPaths ?? []).join(", ");
       color = files.record.color ?? PALETTE[0]!;
       avatar = files.record.avatar ?? "";
       provider = files.record.provider;
@@ -137,6 +158,15 @@
       cwd,
       color,
       avatar,
+      permissions,
+      blockedTools: blockedTools
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0),
+      allowedPaths: allowedPaths
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0),
       provider,
       modelId,
     };
@@ -330,6 +360,45 @@
         <span>cwd (optional, tool working directory)</span>
         <input bind:value={cwd} placeholder="/home/artut/Projects/…" />
       </label>
+
+      <fieldset class="tools">
+        <legend>Permissions</legend>
+        <label class="check">
+          <input type="radio" value="standard" bind:group={permissions} />
+          <span>Standard — no shell or code mode, and files stay inside this agent's root</span>
+        </label>
+        <label class="check">
+          <input type="radio" value="custom" bind:group={permissions} />
+          <span>Custom — this agent's tools, minus the ones you block below</span>
+        </label>
+        <label class="check">
+          <input type="radio" value="full" bind:group={permissions} />
+          <span>Full Access — no policy at all</span>
+        </label>
+        {#if permissions === "custom"}
+          <label class="field">
+            <span>Blocked tools (comma separated, <code>*</code> allowed)</span>
+            <input bind:value={blockedTools} placeholder="bash, mcp__*" />
+          </label>
+          <label class="field">
+            <span>Extra allowed paths (comma separated)</span>
+            <input bind:value={allowedPaths} placeholder="/home/you/scratch" />
+          </label>
+        {/if}
+        {#if permissions === "full"}
+          <p class="warn">
+            Full Access refuses nothing. This agent runs as <strong>you</strong>, so it can read your SSH keys,
+            your browser profile, and every file you can. {sandboxed
+              ? "The systemd unit is still enforcing its own limits."
+              : "This server is not inside the sandboxed unit, so nothing is enforcing a limit."}
+          </p>
+        {:else if !sandboxed}
+          <p class="warn">
+            Policy only: this server is not inside the sandboxed unit, so a permitted tool still runs with your
+            permissions. The tiers decide which tools exist, not what they can reach.
+          </p>
+        {/if}
+      </fieldset>
 
       <details class="preview">
         <summary>System prompt preview</summary>

@@ -22,6 +22,7 @@ import { activeIds, subscribe as subscribeActivity } from "./activity.ts";
 import { MessageRefused, readUserFile, type UserMessageBody } from "./attachments.ts";
 import { makeAuthHook } from "./auth.ts";
 import { modelCatalog } from "./capabilities.ts";
+import { policyOf } from "./permissions.ts";
 import { usageReport } from "./usage.ts";
 import { enableE2E, e2eState, setE2EScript, type E2EStep } from "./e2e.ts";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, clearApiKey, models, providerStatus, setApiKey } from "./models.ts";
@@ -104,7 +105,17 @@ await app.register(
   async (api) => {
     api.addHook("onRequest", makeAuthHook(token));
 
-    api.get("/health", async () => ({ ok: true, defaultProvider: "opencode-go" }));
+    /**
+     * Liveness, plus whether the process is inside the hardened unit.
+     *
+     * The permission tiers are policy; the systemd unit is the boundary. The UI says which one is in force,
+     * so `sandboxed` is reported rather than assumed.
+     */
+    api.get("/health", async () => ({
+      ok: true,
+      defaultProvider: "opencode-go",
+      sandboxed: process.env.PI_SANDBOXED === "1",
+    }));
 
     api.get("/sessions", async (request) => {
       const query = (request.query ?? {}) as { includeDeleted?: string };
@@ -214,7 +225,7 @@ await app.register(
     // ---------- agents ----------
 
     api.get("/agents", async () => ({
-      agents: await listAgents(),
+      agents: (await listAgents()).map((record) => ({ ...record, policy: policyOf(record) })),
       template: { agentMd: AGENT_TEMPLATE, soulMd: SOUL_TEMPLATE },
     }));
 
@@ -235,18 +246,22 @@ await app.register(
         await reply.code(404).send({ error: "Agent not found" });
         return;
       }
-      return files;
+      // Computed here, not stored: the tier of a record written before tiers existed is inferred, and the
+      // client has to show what is actually in force rather than what the file happens to say.
+      return { ...files, policy: policyOf(files.record) };
     });
 
-    api.post("/agents", async (request) => writeAgent((request.body ?? {}) as AgentInput));
-
+    api.post("/agents", async (request) => {
+      const files = await writeAgent((request.body ?? {}) as AgentInput);
+      return { ...files, policy: policyOf(files.record) };
+    });
 
     api.put("/agents/:id", async (request) => {
       const { id } = request.params as { id: string };
       const body = (request.body ?? {}) as AgentInput;
       const files = await writeAgent({ ...body, id });
       const rebound = await rebindAgent(id);
-      return { ...files, rebound };
+      return { ...files, policy: policyOf(files.record), rebound };
     });
 
     api.post("/agents/:id/enabled", async (request, reply) => {
@@ -257,7 +272,7 @@ await app.register(
         await reply.code(404).send({ error: "Agent not found" });
         return;
       }
-      return files;
+      return { ...files, policy: policyOf(files.record) };
     });
 
     api.delete("/agents/:id", async (request, reply) => {

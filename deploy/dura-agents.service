@@ -35,5 +35,35 @@ RestartSec=3
 KillSignal=SIGTERM
 TimeoutStopSec=20
 
+# ---------- the boundary that the permission tiers are not ----------
+#
+# The tiers in the app decide which tools exist. These lines decide what a permitted tool can reach, which is
+# the only thing that actually contains a wrong or hostile action: `pi` has no sandbox of its own, and
+# neither does this process. Without them, "Standard" is a promise rather than a limit.
+#
+# The app reports which of the two is in force (`sandboxed` on /api/health, shown in the agent editor), so
+# this flag is what turns the UI's wording from "policy only" into "enforced by systemd".
+Environment=PI_SANDBOXED=1
+
+# Read-only everywhere except the data directory. Keep ReadWritePaths in step with WorkingDirectory above.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/dura-agents/data
+# An agent whose cwd is outside the data directory cannot write there unless its root is listed too. Add one
+# line per root you actually use, rather than opening the whole home directory:
+# ReadWritePaths=%h/scratch
+
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+NoNewPrivileges=yes
+# Outbound TCP for the model providers, and the loopback socket the UI talks to. Nothing else.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
 [Install]
 WantedBy=default.target

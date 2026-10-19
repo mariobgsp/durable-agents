@@ -156,6 +156,16 @@ export type Msg = {
 
 export type ThinkingLevel = "off" | "low" | "medium" | "high";
 
+/** What an agent may do. A policy boundary; the systemd unit is the security one. Mirrors permissions.ts. */
+export type PermissionTier = "standard" | "custom" | "full";
+
+/** The policy actually in force, as the server computed it (including inference for older records). */
+export type AgentPolicy = {
+  tier: PermissionTier;
+  blockedTools: string[];
+  allowedPaths: string[];
+};
+
 export type AgentRecord = {
   id: string;
   name: string;
@@ -172,9 +182,15 @@ export type AgentRecord = {
   /** Identity the user picks: a hex colour and an emoji face. */
   color?: string;
   avatar?: string;
+  /** What this agent may do; absent on older records, where the server infers the tier. */
+  permissions?: PermissionTier;
+  /** Tools a Custom agent may not call; `*` wildcards allowed. */
+  blockedTools?: string[];
+  /** Extra roots a scoped agent may reach beyond its `cwd`. */
+  allowedPaths?: string[];
 };
 
-export type AgentFiles = { record: AgentRecord; agentMd: string; soulMd: string };
+export type AgentFiles = { record: AgentRecord; policy: AgentPolicy; agentMd: string; soulMd: string };
 
 export type AgentInput = {
   name: string;
@@ -188,6 +204,9 @@ export type AgentInput = {
   tools?: string[];
   thinkingLevel?: ThinkingLevel;
   cwd?: string;
+  permissions?: PermissionTier;
+  blockedTools?: string[];
+  allowedPaths?: string[];
 };
 
 /**

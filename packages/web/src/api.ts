@@ -98,7 +98,7 @@ export function attachmentUrl(sessionId: string, entryId: string, index: number)
 }
 
 export const api = {
-  health: () => req<{ ok: true; defaultProvider: string }>("/api/health"),
+  health: () => req<{ ok: true; defaultProvider: string; sandboxed: boolean }>("/api/health"),
 
   sessions: (includeDeleted = false) =>
     req<{ sessions: Session[] }>("/api/sessions" + (includeDeleted ? "?includeDeleted=1" : "")),
