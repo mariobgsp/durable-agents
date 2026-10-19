@@ -62,8 +62,11 @@ export type ImageLimits = {
 
 /** Image limits for one model, with the same defaults pi-durable's `read` tool uses. */
 export function imageLimits(ref: ModelRefLike): ImageLimits {
-  const limits = (rawModel(ref) as { inputLimits?: { images?: { resize?: Record<string, unknown>; maxPerMessage?: unknown } } } | undefined)
-    ?.inputLimits?.images;
+  const limits = (
+    rawModel(ref) as
+      | { inputLimits?: { images?: { resize?: Record<string, unknown>; maxPerMessage?: unknown } } }
+      | undefined
+  )?.inputLimits?.images;
   const resize = limits?.resize ?? {};
   return {
     maxWidth: numbersOf(resize["maxWidth"]) ?? 1568,
@@ -72,6 +75,32 @@ export function imageLimits(ref: ModelRefLike): ImageLimits {
     jpegQuality: numbersOf(resize["jpegQuality"]) ?? 82,
     maxPerMessage: numbersOf(limits?.maxPerMessage) ?? 6,
   };
+}
+
+/** Whether this thread may send images at all, and the limits to normalize them to. */
+export type ImagePolicy =
+  | { allowed: true; limits: ImageLimits }
+  | { allowed: false; code: "images_unsupported" | "vision_off"; reason: string };
+
+/**
+ * One answer for the pre-flight and for the refusal, so the 400 and any UI hint cannot disagree.
+ *
+ * pi-ai silently replaces an image with "(image omitted: model does not support images)" instead of
+ * failing, so the refusal has to be ours and it has to happen before anything is durable. `visionOff` is
+ * the agent's own `agent.json` switch; this is what finally enforces it.
+ */
+export function imagePolicy(ref: ModelRefLike, visionOff: boolean): ImagePolicy {
+  if (visionOff) {
+    return { allowed: false, code: "vision_off", reason: "This agent is set to vision: off." };
+  }
+  if (!canSeeImages(ref)) {
+    return {
+      allowed: false,
+      code: "images_unsupported",
+      reason: `You cannot send images to ${ref.provider}/${ref.modelId}.`,
+    };
+  }
+  return { allowed: true, limits: imageLimits(ref) };
 }
 
 function thinkingLevelsOf(model: RawModel): string[] {

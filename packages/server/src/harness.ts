@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { Harness, createRegistry, defineExtension } from "@earendil-works/pi-durable";
 import type { Extension, Registry, ToolRegistration } from "@earendil-works/pi-durable";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
+import type { ImageProcessor } from "@earendil-works/pi-durable/tools";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
@@ -22,14 +23,24 @@ export const registry: Registry = createRegistry();
 export const context = BACKGROUND_CONTEXT;
 
 let instance: Harness | undefined;
+/**
+ * The one image processor this process uses: `read` needs it, and so does an attachment upload. Sharing it
+ * means one worker thread and one set of rules (decode, honour EXIF, resize to the model's own limits).
+ */
+let images: ImageProcessor | undefined;
+
+export function imageProcessor(): ImageProcessor {
+  if (!images) throw new Error("harness not open: call openHarness() first");
+  return images;
+}
 
 export async function openHarness(): Promise<Harness> {
   if (instance) return instance;
   await mkdir(dataDir, { recursive: true });
 
   // Tools that need async setup live here. The image processor lets `read` handle photos the way pi
-  // does: decode, honour EXIF orientation, resize to the model's limits.
-  const images = await createNodePhotonImages();
+  // does: decode, honour EXIF orientation, resize to the model's limits. An attachment upload reuses it.
+  images = await createNodePhotonImages();
   registry.install(createCodingTools({ images }));
 
   // Memory: one line per agent, written by the agent itself. Installed for the registry, then selected by

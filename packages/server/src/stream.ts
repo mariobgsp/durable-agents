@@ -1,98 +1,18 @@
-import type { ConversationId, EntryRecord, Harness } from "@earendil-works/pi-durable";
+import type { ConversationId, Harness, TaskId } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
+import { liveActivity, liveText, runTaskId, typingAuthors, type LiveView } from "./live.ts";
 import { entriesToMsgs, entryToMsg } from "./transcript.ts";
-import type { WireFrame, WireTool } from "./wire.ts";
+import type { WireFrame } from "./wire.ts";
 
 export type Sender = (frame: WireFrame) => void;
 export type EventStreamHandle = { stop: () => Promise<void> };
-
-type LiveDoc = { generation?: { attempt?: number; message?: { content?: unknown } } };
-
-/** One slot of the current round, as far as this file cares. See pi-durable's LiveState. */
-type LiveSlot = {
-  callId?: unknown;
-  name?: unknown;
-  status?: unknown;
-  output?: unknown;
-  parentCallId?: unknown;
-  diagnostics?: unknown;
-};
-
-/** The trace shows one line, so only the tail of a running output is worth sending. */
-const OUTPUT_TAIL = 400;
-
-/** The part of ConversationView used here (the original type is not exported by the package). */
-type ViewLike = {
-  readonly entries: readonly EntryRecord[];
-  readonly docs: Readonly<Record<string, unknown>>;
-};
-
-/**
- * Text of the assistant message in flight, read from the `pi.live` document.
- * pi-durable publishes partials to that document every `progress.partialIntervalMs`.
- */
-function liveText(view: ViewLike): string {
-  const live = view.docs["pi.live"] as LiveDoc | undefined;
-  const content = live?.generation?.message?.content;
-  if (!Array.isArray(content)) return "";
-  let text = "";
-  for (const block of content) {
-    if (block && typeof block === "object") {
-      const value = (block as { text?: unknown }).text;
-      if (typeof value === "string") text += value;
-    }
-  }
-  return text;
-}
-
-function errorDiagnostic(value: unknown): boolean {
-  if (!Array.isArray(value)) return false;
-  return value.some((entry) => {
-    const severity = entry && typeof entry === "object" ? (entry as { severity?: unknown }).severity : undefined;
-    return severity === "error";
-  });
-}
-
-/**
- * Tool calls of the current round, read from `pi.live` alongside the partial text.
- *
- * Only top-level calls are published: a code-mode script can make thousands of nested calls, which is a count
- * on the parent, not a thousand rows. `pi.live` is emptied when the run ends, so the trace is empty by the time
- * the round is over — the finished calls stay in the transcript as `pi.tool-result` entries instead.
- */
-function liveTools(view: ViewLike): WireTool[] {
-  const live = view.docs["pi.live"] as { tools?: unknown; nestedTools?: unknown } | undefined;
-  const slots = Array.isArray(live?.tools) ? (live.tools as LiveSlot[]) : [];
-  const nested = Array.isArray(live?.nestedTools) ? (live.nestedTools as LiveSlot[]) : [];
-
-  const nestedByParent = new Map<string, number>();
-  for (const child of nested) {
-    if (typeof child.parentCallId !== "string") continue;
-    nestedByParent.set(child.parentCallId, (nestedByParent.get(child.parentCallId) ?? 0) + 1);
-  }
-
-  const tools: WireTool[] = [];
-  for (const slot of slots) {
-    if (typeof slot.callId !== "string" || typeof slot.name !== "string") continue;
-    const status = slot.status === "running" || slot.status === "done" ? slot.status : "pending";
-    const counted = nestedByParent.get(slot.callId) ?? 0;
-    const output = typeof slot.output === "string" ? slot.output.slice(-OUTPUT_TAIL) : "";
-    tools.push({
-      callId: slot.callId,
-      name: slot.name,
-      status,
-      ...(output ? { output } : {}),
-      ...(errorDiagnostic(slot.diagnostics) ? { isError: true } : {}),
-      ...(counted > 0 ? { nested: counted } : {}),
-    });
-  }
-  return tools;
-}
 
 /**
  * Streaming to the client goes through the conversation watch (not watchEvents): one subscription
  * that yields new entries plus assistant partials. `message_update` from watchEvents is never
  * emitted for this provider, so partials are read straight from `pi.live`.
+ *
+ * Everything read out of `pi.live` lives in `live.ts`; this file decides when to send it.
  */
 export async function openEventStream(
   harness: Harness,
@@ -106,39 +26,51 @@ export async function openEventStream(
   const watch = await conversation.watch(streamContext);
   const seen = new Set<string>();
   let partial = "";
-  let toolsSignature = "";
+  let activitySignature = "";
 
-  for (const entry of watch.value.entries) seen.add(String(entry.id));
-  send({ type: "snapshot", entries: entriesToMsgs(watch.value.entries) });
-  // Connecting mid-round must show the calls already running, not wait for the next change.
-  publishTools(watch.value);
+  /** When this connection first saw each running call, and the run's own durable start time. */
+  const seenCalls = new Map<string, number>();
+  let currentRunTask: TaskId | undefined;
+  let runStart: number | null = null;
 
-  partial = liveText(watch.value);
-  if (partial) {
-    send({ type: "message-start" });
-    send({ type: "delta", text: partial });
-  }
-
-  watch.start(async (value) => {
+  /**
+   * The run task's own `startedAt`, read once per run.
+   *
+   * Durable, so a connection that attaches mid-run (or after a restart) reports the real elapsed time
+   * rather than restarting the clock — and `null` when the record cannot be read, which the UI shows as no
+   * elapsed time instead of a number nobody observed.
+   */
+  const runStartOf = async (view: LiveView): Promise<number | null> => {
+    const taskId = runTaskId(view);
+    if (taskId === currentRunTask) return runStart;
+    currentRunTask = taskId;
+    runStart = null;
+    if (taskId === undefined) return runStart;
     try {
-      publish(value);
-    } catch (error) {
-      send({ type: "error", message: String(error) });
+      const record = await conversation.commit((tx) => tx.task(taskId), streamContext);
+      const startedAt = (record as { startedAt?: unknown } | undefined)?.startedAt;
+      if (typeof startedAt === "number") runStart = startedAt;
+    } catch {
+      // A task that cannot be read is not an error worth breaking the stream over: no timer is honest.
     }
-  });
+    return runStart;
+  };
 
-  /** Tool state is a whole-list snapshot, so it is only sent when it actually changed. */
-  function publishTools(view: ViewLike): void {
-    const tools = liveTools(view);
-    const signature = JSON.stringify(tools);
-    if (signature === toolsSignature) return;
-    toolsSignature = signature;
-    send({ type: "tools", tools });
-  }
+  /** The round's status is a whole-list snapshot, so it is only sent when it actually changed. */
+  const publishActivity = async (view: LiveView): Promise<void> => {
+    const activity = liveActivity(view, seenCalls, {
+      now: Date.now(),
+      runStart: await runStartOf(view),
+    });
+    const signature = JSON.stringify(activity);
+    if (signature === activitySignature) return;
+    activitySignature = signature;
+    send({ type: "activity", activity });
+  };
 
-  function publish(view: ViewLike): void {
-    // First, because the tail of this function returns early when only the tool state changed.
-    publishTools(view);
+  const publish = async (view: LiveView): Promise<void> => {
+    // First, because the tail of this function returns early when only the status changed.
+    await publishActivity(view);
     let assistantEntry = false;
     for (const entry of view.entries) {
       const id = String(entry.id);
@@ -180,7 +112,31 @@ export async function openEventStream(
     send({ type: "message-start" });
     if (next) send({ type: "delta", text: next });
     partial = next;
+  };
+
+  for (const entry of watch.value.entries) seen.add(String(entry.id));
+  send({ type: "snapshot", entries: entriesToMsgs(watch.value.entries) });
+  // A socket that connects mid-answer must still learn who is answering: the transcript already holds it,
+  // and without this a reconnect would show an empty "is typing" line for the rest of the round.
+  for (const author of typingAuthors(watch.value.entries)) {
+    send({ type: "typing", author, state: "start" });
   }
+  // Connecting mid-round must show the calls already running, not wait for the next change.
+  await publishActivity(watch.value);
+
+  partial = liveText(watch.value);
+  if (partial) {
+    send({ type: "message-start" });
+    send({ type: "delta", text: partial });
+  }
+
+  watch.start(async (value) => {
+    try {
+      await publish(value);
+    } catch (error) {
+      send({ type: "error", message: String(error) });
+    }
+  });
 
   return { stop: () => watch.stop().then(() => undefined) };
 }

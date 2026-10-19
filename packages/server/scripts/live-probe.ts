@@ -29,7 +29,7 @@ const poller = (async () => {
 })();
 
 await new Promise((resolve) => setTimeout(resolve, 400));
-const result = await sendMessage(sessionId, "Sebutkan lima warna, satu kata masing-masing.");
+const result = await sendMessage(sessionId, { text: "Sebutkan lima warna, satu kata masing-masing." });
 console.log(stamp(), "post:", result ? "ok" : "failed");
 await new Promise((resolve) => setTimeout(resolve, 7000));
 running = false;

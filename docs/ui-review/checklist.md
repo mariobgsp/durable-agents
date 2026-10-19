@@ -25,14 +25,16 @@ actually prove the responsive layout — without them a broken mobile drawer loo
 8. **768×900** — the agent editor collapses to one column; nothing overflows horizontally.
 9. **390×844 (mobile)** — the ☰ appears, the sidebar is off-canvas, the drawer opens on tap, nothing
    overflows horizontally, tap targets ≥40 px.
-10. **Animation** — only `opacity` and `transform`; ≤180 ms for state changes; no `linear`/`ease-in-out`;
-    at most 2 animated elements per frame; liveliness must not make text jump.
+10. **Animation** — per the **Animation** rule in `docs/roadmap.md` (one source of truth; the state-change
+    limits and the live-indicator rules both live there). Continuous motion: at most one sweep per
+    indicator, at most one animated element per tool row, no idle motion, fully static under reduced
+    motion. Nothing else moves.
 11. **Consistency** — radii come from the scale (`--r-sm` 10 px, `--r-md` 14 px, `--r-lg` 20 px), never a
     hardcoded 8 px; separation is a hairline ring (`var(--line)`) or an inset highlight, never a 1 px solid
     grey border; colours come from the `app.css` variables; no new hardcoded colours; the mono stack is
     `var(--font-mono)` (Geist Mono).
-12. **Replying indicator** — three dots, only in the chat for the open thread and on the sidebar row for
-    every other one; no duplicated indicator for the same thread.
+12. **Replying indicator** — at most one per frame: dots on every sidebar row for a thread generating
+    elsewhere, and in the chat either the phase bubble or the round strip, never both.
 
 ## Output files
 - `docs/ui-review/<date>/<nn>-<name>-<viewport>.png` — one file per route per viewport

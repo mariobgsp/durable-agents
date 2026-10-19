@@ -1,8 +1,9 @@
 import type { EntryRecord } from "@earendil-works/pi-durable";
+import { userEntryDataOf, wireFilesOf } from "./attachments.ts";
 import type { WireMsg, WireRole } from "./wire.ts";
 
+/** Only the assistant is still a builtin here: a user message is read through its own record (below). */
 const BUILTIN_ROLES: Record<string, WireRole> = {
-  "pi.user": "user",
   "pi.assistant": "assistant",
 };
 
@@ -119,6 +120,27 @@ export function entryToMsg(entry: EntryRecord): WireMsg | null {
   const data: unknown = entry.data;
   const author = authorProp(data) ?? null;
   const appText = textProp(data) ?? "";
+
+  // A user message, in one shape: `chat.user` (what this app writes) and the `pi.user` entries written
+  // before it existed both normalize through the same reader, so the bubble is rendered once. An
+  // attachment-only message has no text and must still produce a bubble, which is why files count.
+  const user = userEntryDataOf(entry);
+  if (user) {
+    const files = wireFilesOf(entry);
+    const text = user.text || appText;
+    if (text.length === 0 && files.length === 0) return null;
+    return {
+      id: String(entry.id),
+      role: "user",
+      text,
+      ts: 0,
+      kind: entry.kind,
+      author: user.author,
+      ...(user.requestId.length > 0 ? { requestId: user.requestId } : {}),
+      ...(files.length > 0 ? { files } : {}),
+      data: entry.data ?? null,
+    };
+  }
 
   if (!builtin) {
     // Application entry (e.g. chat.user / chat.deliver): shown only when it carries text.

@@ -19,6 +19,7 @@ import {
   type AgentInput,
 } from "./agents.ts";
 import { activeIds, subscribe as subscribeActivity } from "./activity.ts";
+import { MessageRefused, readUserFile, type UserMessageBody } from "./attachments.ts";
 import { makeAuthHook } from "./auth.ts";
 import { modelCatalog } from "./capabilities.ts";
 import { usageReport } from "./usage.ts";
@@ -34,8 +35,10 @@ import {
   compactSession,
   contextInfo,
   conversationIdFromParam,
+  conversationOf,
   createSession,
   deleteSession,
+  entryIdFromParam,
   findSession,
   listSessions,
   moveSession,
@@ -88,6 +91,14 @@ for (const record of await allSessionRecords()) {
 }
 
 const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
+
+/**
+ * The one route that needs more than the 2 MiB default: a message carries its own attachments.
+ *
+ * 16 MiB of raw bytes is about 21.4 MiB as base64 plus JSON overhead, so 24 MiB leaves room. It is a route
+ * option rather than a raised instance limit, so every other route keeps the small default.
+ */
+const MESSAGE_BODY_LIMIT = 24 * 1024 * 1024;
 
 await app.register(
   async (api) => {
@@ -265,26 +276,76 @@ await app.register(
       return { entries: await transcript(id) };
     });
 
-    api.post("/sessions/:id/messages", async (request, reply) => {
-      const { id } = request.params as { id: string };
-      const body = (request.body ?? {}) as { text?: string; whenBusy?: string };
-      const text = (body.text ?? "").trim();
-      if (!text) {
-        await reply.code(400).send({ error: "Empty text" });
+    /**
+     * One message, with its own attachments inside it.
+     *
+     * This is the one route where the instance-wide 2 MiB limit would bite: 16 MiB of raw bytes is about
+     * 21.4 MiB as base64 plus JSON overhead, so the route declares its own limit and nothing else on the
+     * server accepts a body that big. Nothing is durable on a refusal, so a 400 means the draft is intact.
+     */
+    api.post(
+      "/sessions/:id/messages",
+      { bodyLimit: MESSAGE_BODY_LIMIT },
+      async (request, reply) => {
+        const { id } = request.params as { id: string };
+        const body = (request.body ?? {}) as {
+          text?: unknown;
+          attachments?: unknown;
+          requestId?: unknown;
+          whenBusy?: unknown;
+        };
+        const message: UserMessageBody = {
+          text: body.text,
+          attachments: body.attachments,
+          requestId: body.requestId,
+        };
+        // Steering is a per-message decision: the composer asks for it while the agent is replying. A group
+        // takes the plain queue path, because one message may start several member turns.
+        const whenBusy =
+          body.whenBusy === "steer" || body.whenBusy === "reject" ? body.whenBusy : "followUp";
+        try {
+          if (await isRoom(id)) return await postToRoom(id, message);
+          const result = await sendMessage(id, message, whenBusy);
+          if (!result) {
+            await reply.code(404).send({ error: "Session not found" });
+            return;
+          }
+          return result;
+        } catch (error) {
+          if (error instanceof MessageRefused) {
+            await reply.code(error.status).send({ code: error.code, error: error.message });
+            return;
+          }
+          throw error;
+        }
+      },
+    );
+
+    /**
+     * One file of a user message, exactly as the model was given it.
+     *
+     * The entry is the store: the bytes are read out of its own content block, so there is no upload route,
+     * no temporary file and no second copy to keep in sync. `<img>` cannot send a header, and `?token=` is
+     * already accepted on every /api route, so no new auth scheme is needed.
+     */
+    api.get("/sessions/:id/attachments/:entryId/:index", async (request, reply) => {
+      const { id, entryId, index } = request.params as { id: string; entryId: string; index: string };
+      const conversation = await conversationOf(id);
+      const entry = entryIdFromParam(entryId);
+      const position = Number(index);
+      const served =
+        conversation && entry !== null && Number.isSafeInteger(position) && position >= 0
+          ? await readUserFile(conversation, entry, position, context)
+          : undefined;
+      if (!served) {
+        await reply.code(404).send({ error: "Attachment not found" });
         return;
       }
-      // Steering is a per-message decision: the composer asks for it while the agent is replying. A group
-      // takes the plain queue path, because one message may start several member turns.
-      const whenBusy = body.whenBusy === "steer" || body.whenBusy === "reject" ? body.whenBusy : "followUp";
-      if (await isRoom(id)) {
-        return postToRoom(id, text);
-      }
-      const result = await sendMessage(id, text, whenBusy);
-      if (!result) {
-        await reply.code(404).send({ error: "Session not found" });
-        return;
-      }
-      return result;
+      // Entries are immutable, so the bytes behind this URL can never change.
+      return reply
+        .header("cache-control", "private, max-age=31536000, immutable")
+        .type(served.mimeType)
+        .send(served.body);
     });
 
     // ---------- models ----------

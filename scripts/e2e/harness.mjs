@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import WebSocket from "ws";
 
 const ROOT = resolve(import.meta.dirname, "../..");
@@ -23,6 +24,8 @@ export async function startServer(options = {}) {
     // Agent scratch space is ~/tmp by default; inside a test it must never touch the real home.
     PI_AGENT_TMP_DIR: resolve(dataDir, "tmp"),
     PI_E2E: options.real === true ? "0" : "1",
+    // A scenario can override one setting to exercise a branch that depends on the machine.
+    ...(options.env ?? {}),
   };
   const child = spawn(process.execPath, ["packages/server/src/index.ts"], {
     cwd: ROOT,
@@ -64,7 +67,17 @@ export async function startServer(options = {}) {
     // announced as application/json, which would make DELETE requests look broken.
     const headers = { "x-pi-token": token, ...(init.headers ?? {}) };
     if (init.body !== undefined) headers["content-type"] = "application/json";
-    const response = await fetch(base + path, { ...init, headers });
+    let response;
+    try {
+      response = await fetch(base + path, { ...init, headers });
+    } catch (error) {
+      // A connection-level failure has no response to inspect. Name the path and the cause, or the
+      // scenario only sees the bare "fetch failed" and cannot tell which call died.
+      const cause = error && typeof error === "object" ? error.cause : undefined;
+      throw new Error(
+        "fetch " + path + " failed: " + (cause?.code ?? cause?.message ?? "") + " " + String(error.message),
+      );
+    }
     const text = await response.text();
     let body = null;
     if (text.length > 0) {
@@ -95,6 +108,39 @@ export async function startServer(options = {}) {
     /** Replace the scripted answers the faux provider will hand out, in order. */
     script: (steps) => api("/api/e2e/script", { method: "POST", body: JSON.stringify({ steps }) }),
     state: () => api("/api/e2e/state"),
+    /** Post one message, attachments and all. */
+    send: (sessionId, message) =>
+      api("/api/sessions/" + sessionId + "/messages", {
+        method: "POST",
+        body: JSON.stringify(message),
+      }),
+    /**
+     * Fetch one file of a user message the way the browser does: the token in the query, because an `<img>`
+     * tag cannot send a header. Returns the bytes, so a test can assert on the content and its length.
+     */
+    attachment: async (sessionId, entryId, index) => {
+      const response = await fetch(
+        base + "/api/sessions/" + sessionId + "/attachments/" + entryId + "/" + index + "?token=" + token,
+      );
+      return {
+        status: response.status,
+        contentType: response.headers.get("content-type"),
+        cacheControl: response.headers.get("cache-control"),
+        bytes: Buffer.from(await response.arrayBuffer()),
+      };
+    },
+    /**
+     * Read the server's own SQLite directly. The only way to prove what is *not* stored: an attachment's
+     * bytes must be in the entry, and nowhere else.
+     */
+    query: (sql, ...params) => {
+      const db = new DatabaseSync(resolve(dataDir, "app.sqlite"), { readOnly: true });
+      try {
+        return db.prepare(sql).all(...params);
+      } finally {
+        db.close();
+      }
+    },
     /** Poll a thread's transcript until an entry matches the predicate. */
     waitForEntry: async (sessionId, predicate, timeoutMs = 20_000) => {
       const started = Date.now();

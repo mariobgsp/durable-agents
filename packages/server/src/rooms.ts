@@ -1,6 +1,13 @@
 import { context, harnessInstance } from "./harness.ts";
 import { markActive, markIdle, markIdleIfCurrent } from "./activity.ts";
 import { readAgent } from "./agents.ts";
+import {
+  MessageRefused,
+  USER_ENTRY_KIND,
+  requestIdOf,
+  userEntryData,
+  type UserMessageBody,
+} from "./attachments.ts";
 import { claimAll, overseeAll } from "./nyahut.ts";
 import { planTargets, mentionsIn } from "./router.ts";
 import { entryToMsg } from "./transcript.ts";
@@ -15,6 +22,7 @@ import {
   type WireSession,
 } from "./sessions.ts";
 import type { AgentChange, Conversation, SettledSubmissionRecord } from "@earendil-works/pi-durable";
+import type { JsonValue } from "@earendil-works/chord";
 
 export type RoomMode = "nyahut" | "moderator" | "silent";
 
@@ -140,7 +148,7 @@ async function memberConversation(roomId: string, agentId: string): Promise<Conv
 async function writeEntry(
   roomId: string,
   kind: string,
-  data: Record<string, string | null>,
+  data: JsonValue,
 ): Promise<void> {
   const conversation = await conversationOf(roomId);
   if (!conversation) throw new Error("group not found");
@@ -188,22 +196,41 @@ export type PostResult = { targets: string[]; answered: string[]; reason: string
  * exactly its duration — which is why this does not use `waitForIdle`: the member conversations are
  * separate conversations, and the room's own idle signal would fire before they finish.
  */
-export async function postToRoom(roomId: string, text: string): Promise<PostResult> {
+export async function postToRoom(roomId: string, body: UserMessageBody): Promise<PostResult> {
+  const text = typeof body.text === "string" ? body.text : "";
+  // A group has no single model-visible entry, so an attachment would have to be copied once per member.
+  // Refused before the room writes anything, so the transcript is untouched by the attempt.
+  if (Array.isArray(body.attachments) && body.attachments.length > 0) {
+    throw new MessageRefused(
+      400,
+      "group_attachments",
+      "A group cannot take attachments: every member would need its own copy. Send it in a direct thread.",
+    );
+  }
+  if (text.trim().length === 0) {
+    throw new MessageRefused(400, "empty", "Nothing to send: no text and no readable file.");
+  }
   const epoch = markActive(roomId);
   try {
-    return await runRoomFlow(roomId, text);
+    return await runRoomFlow(roomId, text, body);
   } finally {
     markIdleIfCurrent(roomId, epoch);
   }
 }
 
-async function runRoomFlow(roomId: string, text: string): Promise<PostResult> {
+async function runRoomFlow(roomId: string, text: string, body: UserMessageBody): Promise<PostResult> {
   const numeric = Number(roomId);
   const record = (await allSessionRecords()).find((session) => session.id === numeric);
   if (!record?.room) throw new Error("group not found");
   const room = roomOf(record);
 
-  await writeEntry(roomId, "chat.user", { text, author: null });
+  // The room's own entry is the UI's record of the message: it carries no model content (a room has no
+  // model), and the same constructor the direct path uses, so the transcript renders one kind of bubble.
+  await writeEntry(
+    roomId,
+    USER_ENTRY_KIND,
+    userEntryData({ requestId: requestIdOf(body.requestId), text, author: null }),
+  );
 
   // Message number; requestId must be unique per message so an old submission is not reused.
   const seq = (room.seq ?? 0) + 1;

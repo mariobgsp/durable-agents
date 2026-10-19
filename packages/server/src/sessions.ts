@@ -1,7 +1,13 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { AgentChange, Conversation, ConversationId } from "@earendil-works/pi-durable";
+import type { AgentChange, Conversation, ConversationId, EntryId } from "@earendil-works/pi-durable";
 import { readAgent, renderInstructions, writeAgent } from "./agents.ts";
+import {
+  USER_ENTRY_KIND,
+  prepareUserMessage,
+  type UserMessageBody,
+} from "./attachments.ts";
+import { imagePolicy, type ImagePolicy } from "./capabilities.ts";
 import { rememberTool } from "./remember.ts";
 import { WATCHDOG_MS, markActive, markIdle, markIdleIfCurrent } from "./activity.ts";
 import { context, harnessInstance, toolsByName } from "./harness.ts";
@@ -56,6 +62,13 @@ export function conversationIdFromParam(raw: string | null | undefined): Convers
   if (raw === null || raw === undefined) return null;
   const numeric = Number(raw);
   return Number.isSafeInteger(numeric) ? asConversationId(numeric) : null;
+}
+
+/** The same guard for an entry id, used by the attachment route. */
+export function entryIdFromParam(raw: string | null | undefined): EntryId | null {
+  if (raw === null || raw === undefined) return null;
+  const numeric = Number(raw);
+  return Number.isSafeInteger(numeric) ? (numeric as EntryId) : null;
 }
 
 /** Serialise index writes so two parallel requests cannot overwrite each other. */
@@ -292,10 +305,7 @@ export async function contextInfo(id: string): Promise<ContextInfo | null> {
     }
   }
 
-  const agent = record.agent ? await readAgent(record.agent) : null;
-  const ref = agent
-    ? { provider: agent.record.provider, modelId: agent.record.modelId }
-    : (record.model ?? { provider: DEFAULT_PROVIDER, modelId: DEFAULT_MODEL_ID });
+  const ref = await modelRefOf(record);
   const model = models.getModel(ref.provider, ref.modelId);
   return {
     usedTokens,
@@ -405,31 +415,79 @@ async function settle(id: string, epoch: number): Promise<void> {
 }
 
 /**
+ * Which model this thread answers with.
+ *
+ * One resolver, because the answer has two readers that must not disagree: the context caption and the
+ * attachment pre-flight. An agent thread follows its agent's record; a plain thread carries its own.
+ */
+async function modelRefOf(record: SessionRecord): Promise<ModelRef> {
+  const agent = record.agent ? await readAgent(record.agent) : null;
+  return agent
+    ? { provider: agent.record.provider, modelId: agent.record.modelId }
+    : (record.model ?? { provider: DEFAULT_PROVIDER, modelId: DEFAULT_MODEL_ID });
+}
+
+/**
+ * Whether this thread may send images, and the limits to normalize them to.
+ *
+ * Reads the agent's own `vision: "off"` switch, which is what finally enforces it, and the model's own
+ * `input` list, because pi-ai would otherwise swallow an image into a placeholder string.
+ */
+export async function attachmentPolicy(record: SessionRecord): Promise<ImagePolicy> {
+  const ref = await modelRefOf(record);
+  const visionOff = record.agent ? (await readAgent(record.agent))?.record.vision === "off" : false;
+  return imagePolicy(ref, visionOff);
+}
+
+/**
  * Place one user message.
  *
  * `whenBusy` is pi-durable's own routing for a message that arrives mid-run: `steer` folds it into the turn
  * that is generating, `followUp` queues it for after that turn, `reject` fails the submission. The default is
  * follow-up, so an ordinary send can never be swallowed by a run that happens to be in flight.
+ *
+ * The body is validated and converted first, so a refused message leaves no entry, no file and no spent
+ * model call. `requestId` travels with the submission as well as inside the entry: pi-durable returns the
+ * existing submission for a known id, which is what makes a double-click or a retry harmless.
  */
 export async function sendMessage(
   id: string,
-  text: string,
+  body: UserMessageBody,
   whenBusy: "steer" | "followUp" | "reject" = "followUp",
 ): Promise<{ submissionId: string } | null> {
+  const record = await findSession(id);
+  if (!record) return null;
   const conversation = await conversationOf(id);
   if (!conversation) return null;
+
+  const { data, content } = await prepareUserMessage(body, await attachmentPolicy(record));
   // The submission is durable by the time this call returns; the answer arrives over the WebSocket.
-  const submission = await conversation.submit({ type: "input", content: text, whenBusy }, context);
+  const submission = await conversation.submit(
+    {
+      type: "input",
+      requestId: data.requestId,
+      content,
+      entry: { kind: USER_ENTRY_KIND, data },
+      whenBusy,
+    },
+    context,
+  );
   // Track only after the submission is placed: a waiter started earlier could observe the conversation
   // as already idle and clear the mark before any work began.
   void trackActivity(id);
   const numeric = Number(id);
   await serialize(async () => {
     const sessions = await readIndex();
-    const record = sessions.find((session) => session.id === numeric);
-    if (!record) return;
-    if (!record.title || record.title === NEW_TITLE) record.title = text.slice(0, 48);
-    record.updatedAt = Date.now();
+    const index = sessions.findIndex((session) => session.id === numeric);
+    if (index === -1) return;
+    const current = sessions[index];
+    if (!current) return;
+    // An attachment-only message has no text to name the thread after, so its first file names it.
+    if (!current.title || current.title === NEW_TITLE) {
+      const source = data.text.length > 0 ? data.text : (data.files[0]?.name ?? "");
+      if (source.length > 0) current.title = source.slice(0, 48);
+    }
+    current.updatedAt = Date.now();
     await writeIndex(sessions);
   });
   return { submissionId: String(submission.id) };

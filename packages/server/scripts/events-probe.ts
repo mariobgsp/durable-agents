@@ -36,7 +36,7 @@ stream.start(async (events) => {
 
 if (text) {
   await new Promise((done) => setTimeout(done, 500));
-  const result = await sendMessage(sessionId, text);
+  const result = await sendMessage(sessionId, { text });
   console.log("post =", result ? "ok" : "failed");
 }
 
