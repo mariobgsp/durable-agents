@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { go } from "../router.svelte.ts";
   import {
     abort,
@@ -21,7 +22,7 @@
   import { activityRender } from "../lib/activity.ts";
   import { elapsedText } from "../lib/activity.ts";
   import { shownDrafts, shownFiles } from "../lib/attachments.ts";
-  import { isInternalLink } from "../lib/markdown.ts";
+  import { isInternalLink, mermaidBlocks } from "../lib/markdown.ts";
   import type { DraftFile, Msg, RoomMode } from "../types.ts";
   import AgentAvatar from "../components/AgentAvatar.svelte";
   import GroupSettings from "../components/GroupSettings.svelte";
@@ -33,12 +34,21 @@
   import Composer from "../components/Composer.svelte";
   import Markdown from "../components/Markdown.svelte";
   import QuestionOptions from "../components/QuestionOptions.svelte";
+  import RunSummary from "../components/RunSummary.svelte";
+  import DiagramDrawer from "../components/DiagramDrawer.svelte";
+  import GeneratedFiles from "../components/GeneratedFiles.svelte";
 
   // A group bubble shows the speaker's own colour and face, so a room reads like several people talking.
 
 
   let settings = $state(false);
+  let diagramsOpen = $state(false);
   let scroller = $state<HTMLDivElement | undefined>(undefined);
+
+  // A deep link for the screenshot gate and for sharing: ?diagrams=1 opens the drawer once entries arrive.
+  onMount(() => {
+    if (new URLSearchParams(location.search).has("diagrams")) diagramsOpen = true;
+  });
   let editingTitle = $state(false);
   let titleDraft = $state("");
 
@@ -103,6 +113,14 @@
   ];
   const currentMode = $derived(MODES.find((mode) => mode.id === room?.mode) ?? null);
 
+  /** A diagram control only exists when the session actually has one; an empty button is bloat. */
+  const diagramCount = $derived(
+    store.entries.reduce((count, entry) => {
+      if (entry.role !== "assistant" && entry.role !== "user") return count;
+      return count + mermaidBlocks(entry.text).length;
+    }, 0),
+  );
+
   /** The choices a `chat.question` message offers, or null for every other message. */
   function questionOptions(message: Msg): string[] | null {
     if (message.kind !== "chat.question") return null;
@@ -144,9 +162,22 @@
   }
 
   function label(message: Msg): string {
-    if (message.role === "user") return "you";
+    if (message.role === "user") {
+      if (message.via?.kind === "agent") return "from @" + message.via.from;
+      if (message.via?.kind === "schedule") return "Scheduled · " + message.via.name;
+      return "you";
+    }
     if (message.role === "assistant") return message.author ?? agentName;
     return message.role;
+  }
+
+  /** A provenance line on a user bubble only when another agent or a schedule wrote it. */
+  function viaIdentity(message: Msg) {
+    if (message.via?.kind === "agent") return identityOfAuthor(message.via.from, store.agents);
+    if (message.via?.kind === "schedule") {
+      return { id: "schedule:" + message.via.id, label: message.via.name, color: "var(--muted)", kind: "member" as const };
+    }
+    return null;
   }
 
   /** The avatar shows on the first message of a run by the same author, keeping long chats scannable. */
@@ -311,6 +342,16 @@
           {granted ? "Full Access (this thread)" : "Full Access: off"}
         </button>
       {/if}
+      {#if diagramCount > 0}
+        <button
+          class="chip chip--link"
+          title="Open this session's Mermaid diagrams"
+          data-testid="diagrams-open"
+          onclick={() => (diagramsOpen = true)}
+        >
+          Diagrams {diagramCount}
+        </button>
+      {/if}
       {#if store.busy}
         <button class="btn btn--ghost" onclick={abort} data-testid="stop">Stop</button>
       {/if}
@@ -319,6 +360,10 @@
 
   {#if settings && session}
     <GroupSettings {session} onclose={() => (settings = false)} />
+  {/if}
+
+  {#if diagramsOpen}
+    <DiagramDrawer entries={store.entries} onclose={() => (diagramsOpen = false)} />
   {/if}
 
   {#if agentDisabled}
@@ -358,6 +403,10 @@
         </div>
       {:else if message.role === "system"}
         <p class="sys" data-testid="msg-system">{message.text}</p>
+      {:else if message.kind === "chat.file" && message.artifacts && session}
+        <div class="msg msg--file" data-testid="msg-file">
+          <GeneratedFiles sessionId={session.id} entryId={message.id} artifacts={message.artifacts} />
+        </div>
       {:else if message.role === "assistant"}
         {@const identity = identityFor(message)}
         <article class="msg msg--assistant msg--identity" data-testid="msg-assistant">
@@ -371,6 +420,12 @@
               <div class="msg__who" style="--author: {identity.color}">{label(message)}</div>
             {/if}
             <div class="msg__body"><Markdown text={message.text} /></div>
+            {#if message.artifacts && session}
+              <GeneratedFiles sessionId={session.id} entryId={message.id} artifacts={message.artifacts} />
+            {/if}
+            {#if message.run}
+              <RunSummary run={message.run} />
+            {/if}
             {#if options}
               <QuestionOptions
                 {options}
@@ -381,7 +436,17 @@
           </div>
         </article>
       {:else}
-        <article class="msg msg--{message.role}" data-testid="msg-{message.role}">
+        {@const via = message.via ? viaIdentity(message) : null}
+        <article class="msg msg--{message.role}" class:msg--via={via !== null} data-testid="msg-{message.role}">
+          {#if via}
+            <div class="msg__via" style="--author: {via.color}">
+              <span class="msg__via-dot"></span>
+              <span>{message.via?.kind === "schedule" ? "Scheduled · " + message.via.name : "from @" + message.via?.from}</span>
+              {#if message.via?.kind === "agent"}
+                <span class="msg__via-mode">{message.via.mode}</span>
+              {/if}
+            </div>
+          {/if}
           {#if message.files && session}
             <Attachments files={shownFiles(session.id, message.id, message.files)} />
           {/if}

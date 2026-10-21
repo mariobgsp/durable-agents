@@ -31,6 +31,11 @@ export type Session = {
   grant?: "full";
   /** Soft delete: set when the thread is hidden but its transcript is still in SQLite. */
   deletedAt?: number;
+  /** Purpose thread created by the agent network or the scheduler. */
+  purpose?: "inbox" | "delegate" | "schedule";
+  meshKey?: string;
+  scheduleId?: string;
+  peer?: string;
 };
 
 /** A finished tool call, as one line in the transcript. Mirrors packages/server/src/wire.ts. */
@@ -80,6 +85,14 @@ export const IDLE_ACTIVITY: Activity = {
   queued: [],
 };
 
+/** A generated file attached to a thread. The bytes live under data/artifacts, never in this type. */
+export type Artifact = {
+  id: string;
+  name: string;
+  mimeType: string;
+  bytes: number;
+};
+
 /** One file of a user message, derived on the server from the entry the model was given. Mirrors wire.ts. */
 export type Attachment = {
   name: string;
@@ -114,20 +127,38 @@ export type DraftFile = {
   previewUrl?: string;
 };
 
-/** One measured row of the usage report. */
-export type UsageBucket = {
+/** One measured usage bucket. Mirrors the server's UsageNumbers. */
+export type UsageNumbers = {
   turns: number;
   tokens: number;
   cost: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
 };
+
+export type UsagePeriod =
+  | "today"
+  | "yesterday"
+  | "last7"
+  | "last30"
+  | "thisMonth"
+  | "lastMonth"
+  | "all";
 
 export type UsageReport = {
   generatedAt: number;
-  totals: UsageBucket & { sessions: number; toolCalls: number };
-  agents: (UsageBucket & { id: string; name: string })[];
-  models: (UsageBucket & { provider: string; modelId: string })[];
+  timezone: string;
+  firstAt: number | null;
+  totals: UsageNumbers & { sessions: number; toolCalls: number };
+  periods: Record<UsagePeriod, UsageNumbers>;
+  agents: { id: string; name: string; all: UsageNumbers; today: UsageNumbers; month: UsageNumbers }[];
+  models: (UsageNumbers & { provider: string; modelId: string })[];
   tools: { name: string; calls: number; errors: number; avgMs: number }[];
-  days: { date: string; turns: number; tokens: number }[];
+  days: (UsageNumbers & { date: string })[];
+  months: (UsageNumbers & { month: string })[];
+  stateless: UsageNumbers;
 };
 
 /** What the composer caption shows, straight from the server's own reading of the last turn. */
@@ -153,8 +184,38 @@ export type Msg = {
   requestId?: string;
   /** On user messages: the files the model was given. */
   files?: Attachment[];
+  /** On assistant messages: the spend of this response. */
+  usage?: RunUsage;
+  /** On the final assistant (or a group run line): the whole run's duration and spend. */
+  run?: RunSummary;
+  /** On agent/schedule messages: who sent it. */
+  via?: Via;
+  /** On a generated-file card: the files available for download. */
+  artifacts?: Artifact[];
   data?: unknown;
 };
+
+/** The provider's per-response usage, as the run summary and message footer see it. */
+export type RunUsage = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+  cost: number;
+};
+
+export type RunSummary = {
+  startedAt: number;
+  endedAt: number;
+  durationMs: number;
+  turns: number;
+  usage: RunUsage;
+};
+
+export type Via =
+  | { kind: "agent"; from: string; mode: "message" | "delegate" }
+  | { kind: "schedule"; id: string; name: string };
 
 export type ThinkingLevel = "off" | "low" | "medium" | "high";
 
@@ -190,6 +251,8 @@ export type AgentRecord = {
   blockedTools?: string[];
   /** Extra roots a scoped agent may reach beyond its `cwd`. */
   allowedPaths?: string[];
+  /** What this agent may do on the agent network. */
+  mesh?: "off" | "message" | "full";
 };
 
 export type AgentFiles = { record: AgentRecord; policy: AgentPolicy; agentMd: string; soulMd: string };
@@ -209,6 +272,7 @@ export type AgentInput = {
   permissions?: PermissionTier;
   blockedTools?: string[];
   allowedPaths?: string[];
+  mesh?: "off" | "message" | "full";
 };
 
 /**
@@ -299,3 +363,89 @@ export type SystemSnapshot = {
   last: SystemOperation | null;
 };
 
+
+/** One agent in the live roster. Mirrors packages/server/src/fleet.ts. */
+export type FleetStatus = "working" | "idle" | "disabled";
+
+export type FleetThread = { id: string; title: string; purpose?: "inbox" | "delegate" | "schedule" };
+
+export type FleetAgent = {
+  id: string;
+  name: string;
+  color?: string;
+  avatar?: string;
+  model: { provider: string; modelId: string };
+  responsibility?: string;
+  enabled: boolean;
+  policy: AgentPolicy;
+  mesh: "off" | "message" | "full";
+  status: FleetStatus;
+  since: number | null;
+  activeThreads: FleetThread[];
+  currentThread: FleetThread | null;
+  threadCount: number;
+  lastActiveAt: number | null;
+  links: { inbound: number; outbound: number; active: number };
+  schedules: { total: number; enabled: number; nextRunAt?: number; nextName?: string };
+};
+
+export type FleetLink = {
+  id: string;
+  batchId: string;
+  kind: "message" | "delegate";
+  from: string;
+  to: string;
+  fromThreadId: string;
+  threadId: string;
+  status: "sent" | "answered" | "failed";
+  hop: number;
+  preview?: string;
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+  active: boolean;
+};
+
+export type FleetSchedule = {
+  id: string;
+  agentId: string;
+  name: string;
+  cron: string;
+  enabled: boolean;
+  nextRunAt?: number;
+  lastStatus?: ScheduleStatus;
+};
+
+export type FleetSnapshot = {
+  generatedAt: number;
+  timezone: string;
+  agents: FleetAgent[];
+  links: FleetLink[];
+  schedules: FleetSchedule[];
+  totals: { agents: number; working: number; idle: number; disabled: number; activeLinks: number };
+};
+
+export type ScheduleStatus = "running" | "done" | "skipped" | "failed" | "interrupted";
+
+export type Schedule = {
+  id: string;
+  agentId: string;
+  name: string;
+  prompt: string;
+  cron: string;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+  lastRunAt?: number;
+  lastScheduledFor?: number;
+  lastStatus?: ScheduleStatus;
+  lastError?: string;
+  lastDurationMs?: number;
+  lastTokens?: number;
+  lastCacheRead?: number;
+  lastSubmissionId?: string;
+  nextRunAt?: number;
+  runCount: number;
+  missedRuns: number;
+  threadId?: string;
+};

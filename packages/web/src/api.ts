@@ -3,12 +3,15 @@ import type {
   AgentFiles,
   AgentInput,
   AgentRecord,
+  Artifact,
   ContextInfo,
+  FleetSnapshot,
   ModelInfo,
   Msg,
   Outgoing,
   ProviderRow,
   RoomConfig,
+  Schedule,
   Session,
   SystemOperation,
   SystemSnapshot,
@@ -19,7 +22,9 @@ export type {
   AgentFiles,
   AgentInput,
   AgentRecord,
+  Artifact,
   ContextInfo,
+  FleetSnapshot,
   ModelInfo,
   Msg,
   Outgoing,
@@ -27,6 +32,7 @@ export type {
   Role,
   RoomConfig,
   RoomMode,
+  Schedule,
   Session,
   SystemOperation,
   SystemSnapshot,
@@ -101,6 +107,11 @@ export function attachmentUrl(sessionId: string, entryId: string, index: number)
   return `${boot.apiBase}/api/sessions/${sessionId}/attachments/${entryId}/${index}?token=${encodeURIComponent(boot.token)}`;
 }
 
+/** The download URL for a file an agent generated. The token rides in the query for a plain anchor. */
+export function artifactUrl(sessionId: string, entryId: string, artifactId: string): string {
+  return `${boot.apiBase}/api/sessions/${sessionId}/files/${entryId}/${artifactId}?token=${encodeURIComponent(boot.token)}`;
+}
+
 export const api = {
   health: () => req<{ ok: true; defaultProvider: string; sandboxed: boolean }>("/api/health"),
 
@@ -151,7 +162,29 @@ export const api = {
   updateRoom: (id: string, patch: Partial<RoomConfig>) =>
     req<Session>(`/api/rooms/${id}`, { method: "PUT", body: JSON.stringify(patch) }),
 
-  usage: () => req<UsageReport>("/api/usage"),
+  /** Usage is cached server-side; fresh bypasses the cache for the Usage view's Refresh. */
+  usage: (fresh = false) => req<UsageReport>("/api/usage" + (fresh ? "?fresh=1" : "")),
+
+  fleet: () => req<FleetSnapshot>("/api/fleet"),
+
+  schedules: (agentId?: string) =>
+    req<{ schedules: Schedule[]; timezone: string }>("/api/schedules" + (agentId ? "?agentId=" + encodeURIComponent(agentId) : "")),
+  createSchedule: (input: { agentId: string; name: string; prompt: string; cron: string; enabled?: boolean }) =>
+    req<Schedule>("/api/schedules", { method: "POST", body: JSON.stringify(input) }),
+  updateSchedule: (id: string, patch: Partial<Pick<Schedule, "name" | "prompt" | "cron" | "enabled">>) =>
+    req<Schedule>("/api/schedules/" + id, { method: "PUT", body: JSON.stringify(patch) }),
+  deleteSchedule: (id: string) =>
+    req<{ ok: boolean }>("/api/schedules/" + id, { method: "DELETE" }),
+  runSchedule: (id: string) =>
+    req<{ accepted: boolean; threadId?: string; submissionId?: string; reason?: string }>(
+      "/api/schedules/" + id + "/run",
+      { method: "POST", body: "{}" },
+    ),
+  previewSchedule: (cron: string, count = 5) =>
+    req<{ timezone: string; times: number[] }>("/api/schedules/preview", {
+      method: "POST",
+      body: JSON.stringify({ cron, count }),
+    }),
 
   providers: () =>
     req<{ providers: ProviderRow[]; default: { provider: string; modelId: string } }>("/api/providers"),

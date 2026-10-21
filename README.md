@@ -2,8 +2,9 @@
 
 The application is called **dura-agents**; the repository and its directory keep the name `durable-agents`.
 
-A local, single-user web app for **durable agent chat**: threads that survive restarts, agents defined by
-two markdown files, and group chats where several agents talk to each other.
+A local, single-user web app for **durable agent work**: threads that survive restarts, agents defined by two
+markdown files, group chats where several agents talk to each other, and a directed agent network where one
+agent can message or delegate to several others in their own sessions, and produce files the owner can download.
 
 Built on [`@earendil-works/pi-durable`](https://www.npmjs.com/package/@earendil-works/pi-durable) — every
 message, tool call and generation is a durable task in SQLite, so closing the browser or killing the server
@@ -21,7 +22,8 @@ Open <http://localhost:5173>.
 ## Status — where we are right now
 
 **Phases 1–4 complete. Phase 5 partial. Phase 5.5 complete. Phases 6 and 6.0 partial. Phase 10 partial (the
-animation half). Phases 7–9 not started.**
+animation half). Phase 12 (agent network, fleet, usage periods, cron, diagrams, alerts and boot) and Phase 13 (generated
+files, refresh and the mobile composer) complete. Phases 7–9 not started.**
 
 | Area | State |
 | --- | --- |
@@ -29,13 +31,22 @@ animation half). Phases 7–9 not started.**
 | Agents from `AGENT.md` + `SOUL.md` | **Done** — hot-reloaded into existing threads (`rebindAgent`) |
 | Group chat with modes (`Nyahut` / `Moderator` / `Silent`) | **Done** |
 | 3-phase `Nyahut` (claim → answer → oversee) | **Done** |
+| Agent network: multi-target messages and delegation | **Done** — directed inbox/task threads, fan-out, 6-hop guard, request-id idempotency |
+| Fleet roster + live A2A links | **Done** — working/idle/disabled, current thread, token totals, grouped batches over the presence socket |
+| Usage periods, cache and stateless calls | **Done** — today/month/30 days/all time, daily and monthly series, `usage.jsonl` for Nyahut/suggestions |
+| Run summaries and session totals | **Done** — duration, tokens, cached tokens and cost on the final answer, derived from durable entries |
+| Per-agent cron schedules | **Done** — 5-field cron, dedicated thread, run-now, skip-when-busy, restart-safe |
+| Mermaid diagram drawer | **Done** — per-session gallery, render one at a time, inline diagrams render when near the viewport |
+| Completion sound, toast and desktop notification | **Done** — client preferences, one shared AudioContext, permission requested from a user gesture |
+| Static boot screen | **Done** — paints before the bundle, removed after sessions and agents are ready |
 | PWA + provider credential screen | **Partial** — installable; no push notifications |
 | Per-agent model picker + capability badges | **Done** |
 | Agent & group identity (colour + emoji) | **Done** |
 | Live "replying" indicator, per session | **Done** |
 | Responsive layout + design system | **Done** — 5 viewport tiers in the screenshot gate |
-| E2E suite (faux provider, deterministic) | **15 scenarios passing** |
+| E2E suite (faux provider, deterministic) | **20 scenarios passing** |
 | Image and document attachments | **Done** — bytes live in the entry the model was given |
+| Generated file output | **Done** — Markdown, text, JSON, PDF, arbitrary base64 and published files become durable download cards under data/artifacts |
 | Live activity indicator (phase, calls, elapsed) | **Done** — derived from `pi.live`, never a guess |
 | Storage: size report, cleanup, purge | **Done** — the `#/usage` panel prints the bytes the cleanup actually gave back |
 | System panel: update + restart | **Done** — `#/system` reports the loaded versions, the sandbox and the supervisor; Update installs packages only where the repo is writable, and reloads the live tools where it is read-only |
@@ -50,14 +61,14 @@ Latest verified run:
 | Check | Result |
 | --- | --- |
 | `npm run check` | `tsc` clean · `svelte-check` **0 errors, 2 warnings** (both in `Dialog.svelte`, untouched) · `lint:lang` clean |
-| `npm run e2e` | **15 passed, 0 failed** (`activity`, `attachments`, `codemode`, `identity`, `live-activity`, `memory`, `models`, `permissions`, `questions`, `search`, `sessions`, `steering`, `storage`, `system`, `tools`) |
-| `npm run build` | entry **73.86 kB JS** + **7.98 kB CSS** gzip (budget 100 kB); mermaid and its layout engines stay in their own chunks (`mermaid.core` 29.31 kB, `elk` 455.84 kB gzip), fetched only when a diagram renders |
+| `npm run e2e` | **20 passed, 0 failed** (`activity`, `attachments`, `codemode`, `files`, `fleet`, `identity`, `live-activity`, `memory`, `mesh`, `models`, `permissions`, `questions`, `schedules`, `search`, `sessions`, `steering`, `storage`, `system`, `tools`, `usage`) |
+| `npm run build` | entry **84.0 kB JS** + **9.7 kB CSS** gzip (budget 120 kB); mermaid and its layout engines stay in their own chunks, fetched only when a diagram renders |
 | `npm run shots:replying` | 11 screenshots |
-| `npm run shots` | **45 screenshots** (9 routes × 5 viewports) in `docs/ui-review/2026-10-19/`, including the new `#/system` |
-| `#/usage` Storage panel | 2 screenshots + the rendered DOM checked (6 rows, no wrapping or overflow at 1440×900 and 390×844, the cleanup line read back after a click) — see [`docs/ui-review/`](docs/ui-review/) |
+| `npm run shots` | 70 screenshots captured locally in `docs/ui-review/2026-10-21/` (14 routes × 5 viewports), including boot, automation, diagram, usage and notification states. Not committed: that gate run used the owner's live agents. |
+| `#/usage` | daily/monthly/cache/stateless report + Storage panel; included in the local screenshot gate |
 
 The plan of record, with the evidence for each phase, lives in [`docs/roadmap.md`](docs/roadmap.md).
-UI review notes and screenshots live in [`docs/ui-review/`](docs/ui-review/).
+Older UI review notes and screenshots live in [`docs/ui-review/`](docs/ui-review/); the 2026-10-21 run is local-only because it contains live agent data.
 
 ---
 
@@ -138,6 +149,10 @@ flowchart TB
 | `models.ts`, `capabilities.ts` | Provider credentials and the per-model capability catalog |
 | `storage.ts` | What the data directory holds, the checkpoint + vacuum, and the purge that exports before it deletes |
 | `questions.ts`, `search.ts` | The `question` tool (a durable `chat.question` entry) and the keyless DuckDuckGo `web-search` tool |
+| `mesh.ts`, `mesh-tools.ts`, `roster.ts` | Directed inbox/task threads, multi-target fan-out, hop guards, the link index, and the shared ownership/activity map |
+| `fleet.ts` | The compact roster + grouped A2A links snapshot sent over REST and the presence socket |
+| `cron.ts`, `schedules.ts` | The 5-field cron parser, the per-agent schedule store, and the 15-second scheduler tick |
+| `usage-ledger.ts` | Append-only spend from stateless calls that have no conversation entry |
 | `wire.ts` | The server→web frame contract (mirrored in `packages/web/src/ws.ts`) |
 | `packages/web/src/state.svelte.ts` | The single runes store; the only place frames mutate state |
 | `packages/web/src/lib/identity.ts` | One normaliser for agent/group/member identity |
@@ -160,6 +175,8 @@ erDiagram
     string title
     string agent "agent id, empty for a plain thread"
     string kind "plain | agent | group"
+    string purpose "inbox | delegate | schedule"
+    string meshKey "idempotent purpose-thread key"
     number deletedAt "soft delete"
     number updatedAt
   }
@@ -183,14 +200,15 @@ erDiagram
     string vision "auto | off"
     string responsibility "one line, drives Nyahut"
     boolean enabled
+    string mesh "off | message | full"
     string color
     string avatar
   }
   ENTRY {
     string id
-    string kind "pi.user | pi.assistant | pi.tool-result | chat.user | room.*"
+    string kind "pi.user | pi.assistant | pi.tool-result | chat.user | room.* | schedule.note"
     json model "the messages the provider was given"
-    json data "what the UI shows: text, author, files[]"
+    json data "what the UI shows: text, author, files[], via, mesh, run"
   }
 ```
 
@@ -200,6 +218,38 @@ gets its own conversation under `room.conversations`, created on first use.
 A user message is one `chat.user` entry. `entry.model` holds the messages the provider was given — image
 blocks included — and `entry.data.files[]` describes them, so an attachment has exactly one home and there
 is no second store to keep in step.
+
+### Agent network, fleet, schedules and diagrams
+
+- **Agent network.** `agents_message` delivers to one directed inbox thread per sender–recipient pair; a fan-out
+  addresses up to 16 targets, or `all` except the sender. `agents_delegate` creates one task thread per target
+  (at most four) and waits for the answers. The inbound entry carries the chain and hop, so a later tool call
+  can refuse a cycle or an over-budget chain. Every tool call uses a deterministic request id and `api.memo`,
+  which makes a replay after a crash reuse the thread and submission instead of duplicating them.
+- **Fleet.** `fleet.ts` builds one snapshot from agents, the session index, the activity registry, the link
+  index and the schedule store. The presence socket sends `presence` and `fleet` together; the Agents page is
+  the compact roster and grouped link batches. Fleet snapshots never scan transcripts; token totals come from
+  the cached usage report.
+- **Usage and run summaries.** The report buckets assistant usage plus stateless calls by local day and month,
+  and includes soft-deleted threads while their rows exist. `entriesToMsgs` derives one run summary — wall time,
+  tokens, cache read/write and cost — from the user entry and the assistant/tool entries, so there is no
+  second usage log for a normal run.
+- **Generated files.** create_file writes text or base64 into data/artifacts; create_pdf renders Markdown with a
+  small built-in PDF writer; publish_file attaches a file the agent already wrote. The entry is the durable
+  index, and the download route serves only an artifact id named by that entry. A purge removes the
+  conversation's artifacts with its rows.
+- **Mobile composer.** The shell is sized to visualViewport, not only 100dvh, and the viewport meta asks the
+  browser to resize content for the keyboard. The composer is sticky above the safe area and scrolls itself
+  into view on focus, so the chat box is reachable without scrolling down.
+- **Cron.** A schedule owns one thread. The tick reads the durable store, skips a thread that is still working,
+  submits with a request id keyed to the due minute, and records the answer's duration and tokens. Cron is
+  evaluated in the server's local time zone; missed windows are counted, never replayed in a burst.
+- **Diagrams.** A fenced mermaid block stays in the message that produced it. The chat renders inline diagrams
+  only when they are near the viewport; the per-session Diagram drawer lists all fences and renders exactly one
+  selected diagram at a time. Mermaid is initialized once and imported only on the first render.
+- **Alerts and boot.** Completion is a presence transition (an active session that goes idle), filtered to real
+  session IDs. Sound is a shared Web Audio context; desktop notifications request permission only from a click.
+  The static boot screen is inline HTML/CSS, removed after the first sessions/agents snapshot.
 
 ---
 
@@ -518,7 +568,7 @@ systemd user unit and the iOS/Android install — is in [`docs/tailscale.md`](do
 | `npm run check` | `tsc` (server) + `svelte-check` (web) + `lint:lang` |
 | `npm run e2e` | Every E2E scenario against a throwaway server |
 | `npm run e2e:real` | Also run the optional real-model scenario |
-| `npm run shots` | 9 routes × 5 viewports → `docs/ui-review/<date>/` |
+| `npm run shots` | 14 routes × 5 viewports → `docs/ui-review/<date>/` |
 | `npm run shots:replying` | The replying indicator, the attachment cards, each activity phase and the Full Access control, on a throwaway E2E server |
 | `npm run smoke` | Harness + storage + one real question to the model |
 | `npm run smoke:image` | The same, with an image attachment: proves a real model sees it |
@@ -636,7 +686,7 @@ Two E2E findings worth keeping in mind, because both were real bugs the suite ca
 2. **A harness that announces `content-type: application/json` on an empty body gets a 400 from Fastify.**
    `DELETE` looked broken until the harness only claimed a JSON body when it had one.
 
-The screenshot gate is part of testing: `npm run shots` captures 8 routes at 1440/1280/1024/768/390 and
+The screenshot gate is part of testing: `npm run shots` captures 14 routes at 1440/1280/1024/768/390 and
 writes `manifest.json` plus `findings.md`. The 768 and 390 tiers exist because without them a broken mobile
 drawer looks exactly like a working one.
 
@@ -685,14 +735,25 @@ These are **not** done — please do not read the status table as claiming other
   The thread menu's delete stays a soft delete, and the Storage panel explains the difference rather than
   offering the button.
 - **A diagram is a large lazy download.** mermaid and its layout engines are their own chunks, fetched on the
-  first diagram a thread renders — `elk` alone is ≈456 kB gzip. The entry bundle is untouched, but the first
-  diagram is not cheap.
+  first diagram a thread renders — `elk` alone is ≈456 kB gzip. Inline diagrams wait until they are near the
+  viewport and the drawer renders one at a time, but the first diagram is still not cheap.
+- **Desktop notifications need the app tab open.** The page can show a notification while it is hidden or on
+  another thread; a notification with the browser fully closed needs push infrastructure and is not implemented.
+- **Generated files are download-only in the chat card.** There is no inline PDF preview and no zip-all action yet.
+- **PDF uses the base fonts.** Non-Latin glyphs become "?"; an agent that needs an embedded font can generate
+  the PDF itself and attach it with publish_file.
+- **The artifact directory has no standalone cleanup.** It is measured in Storage and removed when its
+  conversation is purged, but orphaned files from an interrupted create_file call have no separate cleaner.
+- **Cron is local-time and has no backfill.** A schedule whose window passed while the server was off is counted
+  as missed, not replayed; per-schedule time zones are not offered.
+- **Compaction spend is not itemized.** Assistant answers and stateless calls are counted; pi-durable exposes
+  background compaction only in the aggregate usage document, without a timestamp to bucket by day.
+- **Schedules are owner-managed.** There is no agent-facing tool to create or cancel a schedule yet.
+- **Run duration can be unavailable.** When a provider reports neither a response duration nor a tool call, the
+  footer says "Duration unavailable" rather than inventing a number.
 - **Web search follows DuckDuckGo's HTML.** Keyless and dependency-free, but the markup is a shape
   dependency: when it changes the tool reports a failure rather than an empty result list, and the `search`
   E2E asserts against a stubbed page instead of the live endpoint.
-- **`#/usage` is not in the screenshot gate.** `npm run shots` photographs 8 routes; the Storage panel was
-  reviewed with a throwaway DevTools-protocol script (see `docs/ui-review/<date>/`), not by the committed
-  harness.
 - **Attachments cannot be sent in a group thread.** Refused with a readable reason: each member
   conversation is its own model-visible entry, so supporting it would keep one copy of every byte per
   member.
@@ -700,9 +761,8 @@ These are **not** done — please do not read the status table as claiming other
   first publish, so its start is not observable; the round's own elapsed time is real and is shown instead.
 - **The Tauri shell has never been compiled.** `tauri-plugin-single-instance` is not installed, so do not
   run the desktop app twice — that would start two servers over one `app.sqlite`.
-- **System notifications on turn completion are not wired up.** The PWA is installable.
-- **No real cost counter.** `Nyahut` shows an estimated tooltip only; a group message costs about
-  `2N − R` short calls plus `R` full ones.
+- **The fleet link index is bounded.** The store keeps the newest 1000 links and the roster shows the newest 30
+  batches; it is an operational view, not a permanent audit log.
 - **Tap targets are 40 px on coarse pointers, not the 44 px Apple figure.**
 - **The double bezel on cards and panels is a single-element read** (outer ring + hairline + inner
   highlight) rather than true nesting. Real nesting is used on the hero surfaces where the depth shows.

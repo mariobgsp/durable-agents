@@ -13,6 +13,27 @@
   /** Only while the request is in flight: the task itself is background work, not something to wait on. */
   let asking = $state(false);
 
+  /** What every completed run in this thread adds up to. Derived from the run summaries, never a second log. */
+  const totals = $derived.by(() => {
+    let turns = 0;
+    let tokens = 0;
+    let cacheRead = 0;
+    let durationMs = 0;
+    for (const entry of store.entries) {
+      if (!entry.run) continue;
+      turns += entry.run.turns;
+      tokens += entry.run.usage.totalTokens;
+      cacheRead += entry.run.usage.cacheRead;
+      durationMs += entry.run.durationMs;
+    }
+    return { turns, tokens, cacheRead, durationMs };
+  });
+
+  function seconds(ms: number): string {
+    if (ms >= 60_000) return Math.floor(ms / 60_000) + "m " + Math.round((ms % 60_000) / 1000) + "s";
+    return (ms / 1000).toFixed(1) + "s";
+  }
+
   async function askCompact(): Promise<void> {
     if (asking) return;
     asking = true;
@@ -66,6 +87,16 @@
   >
     {asking ? "Compacting…" : "Compact"}
   </button>
+
+  {#if totals.turns > 0}
+    <span
+      class="contextbar__session"
+      data-testid="session-usage"
+      title={"This thread: " + totals.turns + " assistant turns · input/output/cache included · " + totals.tokens.toLocaleString("en-US") + " tokens"}
+    >
+      {compact(totals.tokens)} tok{#if totals.durationMs > 0} · {seconds(totals.durationMs)}{/if}{#if totals.cacheRead > 0} · {compact(totals.cacheRead)} cached{/if}
+    </span>
+  {/if}
 
   <label
     class="contextbar__model"

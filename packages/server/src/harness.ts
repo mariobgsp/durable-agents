@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { Harness, createRegistry, defineExtension } from "@earendil-works/pi-durable";
+import { Harness, createRegistry, defineExtension, section } from "@earendil-works/pi-durable";
 import type { Extension, Registry, ToolRegistration } from "@earendil-works/pi-durable";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import type { ImageProcessor } from "@earendil-works/pi-durable/tools";
@@ -13,6 +13,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { models } from "./models.ts";
 import { permissionsExtension } from "./permissions.ts";
 import { questionTool } from "./questions.ts";
+import { meshToolsExtension } from "./mesh-tools.ts";
+import { fileToolsExtension } from "./file-tools.ts";
 import { rememberTool } from "./remember.ts";
 import { webSearchTool } from "./search.ts";
 import { dataDir, dbPath } from "./paths.ts";
@@ -137,6 +139,30 @@ function installCoreExtensions(): void {
 
   // Asking the user a question: one durable `chat.question` entry with the option buttons, then the turn ends.
   registry.install(defineExtension({ name: "question", tools: [questionTool] }));
+
+  // The agent network. The extension is installed once; the agent's own mesh policy decides which tools are
+  // offered, so a shared registry cannot leak delegate to an agent that only asked for messages.
+  registry.install(meshToolsExtension);
+
+  // File output: create_file, create_pdf and publish_file. Every agent gets these, because producing a
+  // deliverable is part of the job; permissions still decide which paths publish_file may read.
+  registry.install(fileToolsExtension);
+
+  // Diagrams are just markdown, but the model has to know they are supported. Keep the instruction short: it
+  // is present on every request, and the diagram itself costs nothing until one is rendered.
+  registry.install(
+    defineExtension({
+      name: "diagrams",
+      sections: [
+        section(
+          "diagrams",
+          () =>
+            "Answers may include a fenced mermaid block when a flow, architecture, or relationship is clearer visually. " +
+            "Keep labels short and the diagram focused; the UI renders it lazily.",
+        ),
+      ],
+    }),
+  );
 
   // Web search: keyless, because pi-ai has no provider-native search and this machine has no search credential.
   registry.install(defineExtension({ name: "search", tools: [webSearchTool] }));

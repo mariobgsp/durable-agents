@@ -29,6 +29,15 @@ async function api(path) {
 }
 
 /** Session list plus entry counts; one retry so a restarting server is not photographed by mistake. */
+async function loadAgents() {
+  try {
+    const body = await api("/api/agents");
+    return Array.isArray(body.agents) ? body.agents : [];
+  } catch {
+    return [];
+  }
+}
+
 async function loadSessions() {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
@@ -79,8 +88,10 @@ if (!existsSync(CHROME)) {
 }
 
 let sessions = [];
+let agents = [];
 try {
   sessions = await loadSessions();
+  agents = await loadAgents();
 } catch (error) {
   console.error("cannot read /api/sessions — make sure 'npm run dev' is running:", String(error));
   process.exit(1);
@@ -91,16 +102,24 @@ const rich = sessions
   .sort((a, b) => b.count - a.count)[0];
 const empty = sessions.find((session) => session.count === 0 && session.kind !== "group");
 const group = sessions.find((session) => session.kind === "group" && session.count > 0);
+const diagram = sessions.find((session) => session.title === "Request flow diagram");
+const automationAgent = agents[0];
 const routes = [
+  { name: "00-boot", path: "/?boot=hold#/" },
   { name: "01-home", path: "/#/" },
   ...(empty ? [{ name: "02-empty-thread", path: "/#/s/" + empty.id }] : []),
   ...(rich ? [{ name: "03-chat-filled", path: "/#/s/" + rich.id }] : []),
   { name: "04-agent-list", path: "/#/agents" },
   { name: "05-agent-editor", path: "/#/agents/new" },
+  ...(automationAgent ? [{ name: "05b-agent-automation", path: "/?automation=1#/agents/" + automationAgent.id }] : []),
   { name: "06-group-list", path: "/#/groups" },
   ...(group ? [{ name: "07-group-chat", path: "/#/s/" + group.id }] : []),
+  ...(diagram ? [{ name: "03b-run-summary", path: "/#/s/" + diagram.id }] : []),
+  ...(diagram ? [{ name: "10-diagram", path: "/?diagrams=1#/s/" + diagram.id }] : []),
   { name: "08-provider", path: "/#/providers" },
   { name: "09-system", path: "/#/system" },
+  { name: "11-usage", path: "/#/usage" },
+  { name: "12-notify", path: "/?notify=1&drawer=1#/agents" },
 ];
 
 await mkdir(OUT, { recursive: true });

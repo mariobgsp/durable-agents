@@ -158,6 +158,36 @@ export async function startServer(options = {}) {
           (body?.entries ?? []).map((entry) => entry.role + ":" + entry.text.slice(0, 40)).join(" | "),
       );
     },
+    /** Attach to the presence/fleet socket; returns { frames, ready, close, waitFor }. */
+    presence: () => {
+      const frames = [];
+      const socket = new WebSocket(base.replace("http", "ws") + "/api/ws/presence?token=" + token);
+      const ready = new Promise((done, fail) => {
+        socket.on("open", done);
+        socket.on("error", fail);
+      });
+      socket.on("message", (raw) => {
+        try {
+          frames.push(JSON.parse(String(raw)));
+        } catch {
+          /* ignore malformed frames */
+        }
+      });
+      return {
+        frames,
+        ready,
+        close: () => socket.close(),
+        waitFor: async (predicate, timeoutMs = 20_000) => {
+          const started = Date.now();
+          while (Date.now() - started < timeoutMs) {
+            const hit = frames.find(predicate);
+            if (hit) return hit;
+            await new Promise((done) => setTimeout(done, 50));
+          }
+          throw new Error("no matching frame within " + timeoutMs + "ms; saw: " + frames.map((f) => f.type).join(","));
+        },
+      };
+    },
     /** Attach to one conversation's WS stream; returns { frames, close }. */
     ws: (conversationId) => {
       const frames = [];

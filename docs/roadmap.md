@@ -394,6 +394,105 @@ part with a `NaN%` bar. The screenshot is what caught it; `svelte-check` was cle
 - [x] Display pass: four-tab footer, the status dot in the head, search on demand, no per-row marker, one
       mode chip instead of three buttons, user labels removed, the editor's policy behind one disclosure.
 
+### Phase 12 — Agent network, fleet, usage periods, cron, diagrams, alerts and boot (DONE)
+
+The owner asked for agents that can reach each other across threads, a roster that shows what they are doing,
+usage per day/month/all time, run summaries, per-agent cron, a place to read Mermaid diagrams, completion
+alerts, and a boot screen — without turning the UI into a dashboard.
+
+Locked decisions taken in this phase:
+
+- **Directed network.** A message goes to one inbox thread per sender–recipient pair; a delegation creates one
+  task thread per target. This keeps each recipient's context and model attribution clean. One shared mailbox per
+  agent was rejected because it would mix unrelated senders' context and make every turn pay for it.
+- **Fan-out.** agents_message accepts a string, an array, or all (up to 16 targets). agents_delegate accepts an
+  explicit array of up to four targets and waits for all answers. One link per target shares a batchId.
+- **Loop control.** The inbound entry carries from, chain and hop; the limit is six hops. A direct reply to the
+  immediate sender is allowed, a cycle to anyone else is refused. Self-target and disabled targets are refused
+  per target, so a fan-out can partially succeed.
+- **Mesh policy.** agent.json.mesh is off, message or full, default full; message offers list + message, full adds
+  delegate. The recipient's own permission tier still applies. The policy is a capability switch, not a sandbox;
+  the systemd unit remains the boundary.
+- **Fleet.** GET /api/fleet and a fleet frame on the presence socket carry a whole snapshot. The roster is a
+  compact card grid plus grouped link batches; no charts and no spatial graph.
+- **Usage.** Calendar buckets follow the server's local time zone. The report includes soft-deleted threads while
+  their rows exist, assistant usage, and the stateless ledger (data/usage.jsonl) written by Nyahut claims,
+  oversight and responsibility suggestions. Compaction spend is not itemized because pi-durable exposes it only
+  in the aggregate usage document, without a timestamp.
+- **Run summaries.** Derived in entriesToMsgs, not stored twice. The final assistant of a run carries duration,
+  tokens, cache read/write and cost; tool durations are a floor when a provider omits a response duration. Group
+  runs write one room.usage entry with the measured wall time and summed member usage.
+- **Cron.** Five-field cron plus aliases in server local time; no per-schedule time zone and no backfill. One
+  dedicated thread per schedule; the scheduler skips a thread that is still working and records the skip. The
+  request id is keyed to the due minute, so a retry cannot duplicate a run.
+- **Diagrams.** The source stays in the message. The drawer derives the gallery; inline diagrams render only near
+  the viewport and the drawer renders one selected diagram at a time. Mermaid initializes once per page.
+- **Alerts and boot.** Completion is a presence transition, filtered to real session IDs, with a debounced chime,
+  a toast for visible background threads, and a desktop notification when the tab is hidden or another thread is
+  open. The static boot screen is inline HTML/CSS and is removed after the first sessions/agents snapshot.
+
+Evidence:
+
+| Check | Result |
+| --- | --- |
+| npm run check | tsc clean · svelte-check 0 errors (2 pre-existing Dialog warnings) · lint:lang clean |
+| npm run e2e | **20 passed, 0 failed**, including the mesh, fleet, schedules, usage and files scenarios |
+| npm run build | entry **84.0 kB JS** + **9.7 kB CSS** gzip; mermaid remains in lazy chunks |
+| npm run shots | 70 screenshots captured locally in docs/ui-review/2026-10-21 (14 routes × 5 viewports), including boot, automation, diagram, usage and notification states; the folder is not committed because the run used live owner data |
+| Manual proof | The seeded Request flow diagram thread shows Worked 8.2s · 2,600 tokens · 400 cached · $0.0021; the Usage page shows the same totals and per-agent row; the fleet screenshots show idle/disabled status and a cron thread; the E2E demo shows an answered Ann → Bob/Chef delegate batch |
+
+Deviations and limitations recorded rather than hidden:
+
+- The inbox is per pair, not one mailbox per agent (reason above).
+- Compaction spend is not itemized; assistant and stateless calls are.
+- Cron has no timezone field and no catch-up burst.
+- Desktop notifications need the app tab open; push while the browser is closed is not implemented.
+- A provider that reports neither a response duration nor a tool call leaves the duration unavailable rather than
+  inventing a number.
+- The fleet link index keeps the newest 1000 links and shows the newest 30 batches.
+
+### Phase 13 — Generated file output and the mobile composer (DONE)
+
+The owner asked for agents that can produce downloadable files — PDF, Markdown, text, JSON and anything else
+needed — and for the chat box to stay reachable on a phone without scrolling.
+
+Locked decisions:
+
+- **Bytes live in data/artifacts.** The transcript entry is the durable index: it carries id, name, MIME type and
+  size, while the bytes live at data/artifacts/<conversation>/<artifact-id>. The download route only serves an
+  artifact id named by that entry, and a purge removes the conversation's artifact directory with its rows.
+- **Three tools, always offered.** create_file handles UTF-8 text and base64 for arbitrary bytes; create_pdf
+  renders a Markdown-shaped document with a dependency-free PDF writer (A4, Helvetica/Courier, WinAnsi); and
+  publish_file copies a file the agent already wrote with write, bash or code mode. File output is part of being
+  an agent, like remember; publish_file is added to the path-policy tools so a Standard agent cannot read outside
+  its roots through it.
+- **Cards, not a second transcript.** A generated file is a standalone download card, not an assistant bubble.
+  The tool result line remains as the audit trail; the card carries the name, size and a download arrow.
+- **Mobile composer.** The shell follows visualViewport, the viewport meta asks the browser to resize content
+  for the keyboard, the composer is sticky above the safe area, and focusing the textarea brings it into the
+  remaining visible area. A 390×500 screenshot is part of the review evidence.
+- **Refresh.** The Fleet has a Refresh button, reloads agents and fleet on every mount, and the AgentEditor
+  reloads both lists after create, update and delete. The old first-load-only check was the reason a new agent
+  could remain invisible until a full page reload.
+
+Evidence:
+
+| Check | Result |
+| --- | --- |
+| npm run check | tsc clean · svelte-check 0 errors (2 pre-existing Dialog warnings) · lint:lang clean |
+| npm run e2e | **20 passed, 0 failed**, including the new files scenario: Markdown, JSON, base64, PDF text extraction through pdftotext, publish_file and artifact storage |
+| npm run build | entry **84.0 kB JS** + **9.7 kB CSS** gzip; Mermaid remains in lazy chunks |
+| npm run shots | 70 screenshots (14 routes × 5 viewports) plus supplementary generated-file, fleet-link, run-summary, usage and mobile-composer evidence, captured locally; not committed because the gate used live owner data |
+| Manual proof | A generated .md and .pdf appear as download cards on desktop and phone; the 390×500 composer stays visible; the fleet refresh shows an externally created agent after one click; the new agent appears in the sidebar immediately after Save |
+
+Remaining limits:
+
+- PDF uses the built-in fonts; non-Latin glyphs become "?" unless an agent generates and publishes a PDF with its
+  own font pipeline.
+- Generated files are download-only in the chat card; there is no inline PDF preview or zip-all action.
+- The artifact directory is included in the Storage panel and purged with its conversation, but there is no
+  standalone cleanup button for orphaned files.
+
 ## Known gaps (do not claim these are done)
 
 - The pi-lens checker still reports **stale** findings for web files (for example "api.ts has no

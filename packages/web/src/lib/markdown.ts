@@ -27,6 +27,33 @@ export function isInternalLink(href: string): boolean {
  * An unclosed fence stays ordinary markdown, so a diagram that is still streaming renders as a code block
  * until its closing fence arrives instead of flashing an error.
  */
+/**
+ * The complete mermaid fences in a message, without rendering any markdown.
+ *
+ * The Diagram drawer needs the sources for every message; running the markdown sanitizer over the whole
+ * transcript just to find fences would be expensive and pointless. An unclosed fence is not a diagram.
+ */
+export function mermaidBlocks(src: string): string[] {
+  const out: string[] = [];
+  let fence: { marker: string; lines: string[] } | null = null;
+  for (const line of src.split("\n")) {
+    if (fence === null) {
+      const open = line.match(MERMAID_OPEN);
+      if (open?.[1]) fence = { marker: open[1], lines: [] };
+      continue;
+    }
+    const close = line.match(FENCE_CLOSE);
+    if (close?.[1] && close[1].length >= fence.marker.length) {
+      const source = fence.lines.join("\n").trim();
+      if (source.length > 0) out.push(source);
+      fence = null;
+      continue;
+    }
+    fence.lines.push(line);
+  }
+  return out;
+}
+
 export function markdownParts(src: string): MarkdownPart[] {
   const parts: MarkdownPart[] = [];
   let plain: string[] = [];

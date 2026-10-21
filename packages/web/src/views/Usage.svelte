@@ -5,25 +5,22 @@
   import { store } from "../state.svelte.ts";
   import type { UsageReport } from "../types.ts";
 
-  /**
-   * Usage graphs. Everything is drawn with divs and one scaled span per bar — no chart library, so the view
-   * weighs nothing, prints the same numbers the transcript recorded, and stays inside the monochrome system.
-   */
   let report = $state<UsageReport | null>(null);
   let error = $state<string | null>(null);
+  let refreshing = $state(false);
+  type Range = "14d" | "30d" | "month" | "all";
+  let range = $state<Range>("14d");
 
-  /**
-   * Storage, as the server reports it. Mirrors `packages/server/src/storage.ts`.
-   *
-   * A cleanup returns the sizes before and after rather than a promise, which is the whole point: the button
-   * below reports what came back, it does not assume anything did.
-   */
   type StorageReport = {
     databaseBytes: number;
     walBytes: number;
     sharedMemoryBytes: number;
     sessionsBytes: number;
     agentBytes: number;
+    meshBytes: number;
+    schedulesBytes: number;
+    usageLedgerBytes: number;
+    artifactBytes: number;
     totalBytes: number;
   };
   type CleanupResult = { before: StorageReport; after: StorageReport; reclaimedBytes: number };
@@ -38,24 +35,23 @@
     void loadStorage();
   });
 
-  async function loadUsage(): Promise<void> {
+  async function loadUsage(fresh = false): Promise<void> {
+    refreshing = true;
     try {
-      report = await api.usage();
+      report = await api.usage(fresh);
+      error = null;
     } catch (err) {
       error = String(err);
+    } finally {
+      refreshing = false;
     }
   }
 
-  /**
-   * The storage routes are called here rather than through `api`, which has no methods for them yet.
-   * The URL stays relative, so it resolves the same way through Vite's proxy and through the production
-   * server that serves this bundle.
-   */
   async function storageCall<T>(path: string, method: "GET" | "POST"): Promise<T> {
     const response = await fetch(path, { method, headers: { "x-pi-token": token } });
     const text = await response.text().catch(() => "");
     if (!response.ok) {
-      let message = `${response.status} ${response.statusText}`;
+      let message = response.status + " " + response.statusText;
       try {
         const body = JSON.parse(text) as { error?: unknown };
         if (typeof body.error === "string" && body.error.length > 0) message = body.error;
@@ -69,7 +65,6 @@
 
   async function loadStorage(): Promise<void> {
     try {
-      // The route wraps the report: `GET /api/storage` answers `{ storage: { ...sizes } }`.
       const body = await storageCall<{ storage: StorageReport }>("/api/storage", "GET");
       storage = body.storage;
       storageError = null;
@@ -82,7 +77,6 @@
     cleaning = true;
     try {
       cleanup = await storageCall<CleanupResult>("/api/storage/cleanup", "POST");
-      // The server's own after-size, not the before-size minus a guess.
       storage = cleanup.after;
       storageError = null;
     } catch (err) {
@@ -92,12 +86,6 @@
     }
   }
 
-  /**
-   * Bytes with the unit a reader would use.
-   *
-   * Under 100 the value keeps one decimal and from 100 it is rounded, so the widest string stays short
-   * enough for the note column under the row at the phone tier.
-   */
   function bytes(size: number): string {
     for (const [step, unit] of [
       [1024 ** 3, "GB"],
@@ -112,12 +100,6 @@
     return size + " B";
   }
 
-  /**
-   * The number that belongs to the storage bar: that part's share of the data directory.
-   *
-   * A part whose share rounds to nothing says "<0.1%" instead of "0%", because the bar still draws its 2%
-   * visibility floor and a printed zero next to a visible stub would be the one number that disagrees.
-   */
   function shareLabel(value: number, total: number): string {
     if (value <= 0 || total <= 0) return "0%";
     const percent = (value / total) * 100;
@@ -125,7 +107,6 @@
     return percent >= 10 ? Math.round(percent) + "%" : percent.toFixed(1) + "%";
   }
 
-  /** What the cleanup actually gave back. A zero is said out loud rather than dressed up as a win. */
   function reclaimed(result: CleanupResult): string {
     if (result.reclaimedBytes === 0) {
       return "0 B reclaimed — the log was already folded in and there was nothing free to give back.";
@@ -149,6 +130,10 @@
           { label: "shared memory", size: storage.sharedMemoryBytes, note: "SQLite -shm index" },
           { label: "sessions.json", size: storage.sessionsBytes, note: "the session index" },
           { label: "agent files", size: storage.agentBytes, note: "AGENT.md · SOUL.md" },
+          { label: "mesh.json", size: storage.meshBytes, note: "agent-to-agent links" },
+          { label: "schedules.json", size: storage.schedulesBytes, note: "cron schedules" },
+          { label: "usage.jsonl", size: storage.usageLedgerBytes, note: "stateless model calls" },
+          { label: "artifacts", size: storage.artifactBytes, note: "agent-generated downloads" },
           { label: "total", size: storage.totalBytes, note: "the sum of the parts" },
         ],
   );
@@ -157,10 +142,6 @@
     return max > 0 ? Math.max(2, Math.round((value / max) * 100)) : 0;
   }
 
-  /**
-   * Storage bars share the whole data directory rather than an arbitrary maximum. A part that holds nothing
-   * draws nothing: `share`'s 2% floor exists so a tiny value stays visible, and 0 B is not a tiny value.
-   */
   function shareBytes(value: number, total: number): number {
     if (value <= 0 || total <= 0) return 0;
     return Math.max(2, Math.round((value / total) * 100));
@@ -172,7 +153,6 @@
     return String(tokens);
   }
 
-  /** Spend per thread is small, so four decimals is the honest unit. */
   function money(cost: number): string {
     return "$" + cost.toFixed(4);
   }
@@ -182,26 +162,82 @@
     return ms < 1000 ? ms + "ms" : (ms / 1000).toFixed(1) + "s";
   }
 
-  /** An agent's own colour, so the bar and the sidebar agree about who is who. */
   function colorOf(id: string): string {
     const agent = store.agents.find((entry) => entry.id === id);
     return agent ? identityOfAgent(agent).color : "var(--muted)";
   }
 
-  const maxTurns = $derived(Math.max(1, ...(report?.agents ?? []).map((agent) => agent.turns)));
+  function dateOf(timestamp: number | null): string {
+    if (timestamp === null) return "no recorded calls yet";
+    return new Date(timestamp).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+  }
+
+  const periodCards = $derived(
+    report === null
+      ? []
+      : [
+          { label: "Today", data: report.periods.today },
+          { label: "This month", data: report.periods.thisMonth },
+          { label: "Last 30 days", data: report.periods.last30 },
+          { label: "All time", data: report.periods.all },
+        ],
+  );
+
+  const activeDays = $derived.by(() => {
+    if (!report) return [];
+    if (range === "14d") return report.days.slice(-14);
+    if (range === "30d") return report.days.slice(-30);
+    if (range === "month") {
+      const now = new Date();
+      const prefix = String(now.getFullYear()) + "-" + String(now.getMonth() + 1).padStart(2, "0");
+      return report.days.filter((day) => day.date.startsWith(prefix));
+    }
+    return [];
+  });
+
+  const activeMonths = $derived(report ? report.months.slice(-12) : []);
+  const showMonths = $derived(range === "all");
+
+  const chartRows = $derived.by(() => {
+    if (!report) return [] as { label: string; turns: number; tokens: number; cached: number; title: string }[];
+    if (showMonths) {
+      return activeMonths.map((month) => ({
+        label: month.month.slice(2),
+        turns: month.turns,
+        tokens: month.tokens,
+        cached: month.cacheRead,
+        title: month.month + ": " + month.turns + " calls, " + compact(month.tokens) + " tokens",
+      }));
+    }
+    return activeDays.map((day) => ({
+      label: day.date.slice(5),
+      turns: day.turns,
+      tokens: day.tokens,
+      cached: day.cacheRead,
+      title: day.date + ": " + day.turns + " calls, " + compact(day.tokens) + " tokens",
+    }));
+  });
+
+  const maxChart = $derived(Math.max(1, ...chartRows.map((row) => row.turns)));
   const maxTokens = $derived(Math.max(1, ...(report?.models ?? []).map((model) => model.tokens)));
   const maxCalls = $derived(Math.max(1, ...(report?.tools ?? []).map((tool) => tool.calls)));
-  const maxDay = $derived(Math.max(1, ...(report?.days ?? []).map((day) => day.turns)));
+  const maxMonth = $derived(Math.max(1, ...(report?.months ?? []).map((month) => month.tokens)));
+  const maxAgent = $derived(Math.max(1, ...(report?.agents ?? []).map((agent) => agent.all.tokens)));
 </script>
 
 <section class="page" data-testid="usage">
   <div class="page__head">
     <h1 class="page__title">Usage</h1>
-    {#if report}
-      <span class="hint">
-        {report.totals.sessions} threads · {report.totals.turns} answers · every number read from the durable log
-      </span>
-    {/if}
+    <div class="row">
+      {#if report}
+        <span class="hint">
+          {report.totals.sessions} threads · {report.totals.turns} calls · since {dateOf(report.firstAt)} · {report.timezone}
+        </span>
+      {/if}
+      <button class="btn btn--small" disabled={refreshing} onclick={() => loadUsage(true)} data-testid="usage-refresh">
+        {refreshing ? "Refreshing…" : "Refresh"}
+      </button>
+    </div>
   </div>
 
   {#if error}
@@ -209,21 +245,69 @@
   {/if}
 
   {#if report}
-    <div class="usage__stats">
-      {#each [
-        { label: "Answers", value: String(report.totals.turns) },
-        { label: "Tokens", value: compact(report.totals.tokens) },
-        { label: "Spend", value: money(report.totals.cost) },
-        { label: "Tool calls", value: String(report.totals.toolCalls) },
-      ] as stat (stat.label)}
-        <div class="usage__stat">
-          <span class="usage__stat-value">{stat.value}</span>
-          <span class="usage__stat-label">{stat.label}</span>
+    <div class="usage__periods" data-testid="usage-periods">
+      {#each periodCards as card (card.label)}
+        <div class="usage__period">
+          <span class="usage__period-label">{card.label}</span>
+          <span class="usage__period-value">{compact(card.data.tokens)}</span>
+          <span class="usage__period-sub">
+            {compact(card.data.cacheRead)} cached · {money(card.data.cost)}
+          </span>
         </div>
       {/each}
     </div>
 
-    <h2 class="usage__head">Agents <span class="usage__head-note">answers per agent</span></h2>
+    <div class="usage__rangebar" role="group" aria-label="Usage range">
+      {#each [
+        { id: "14d", label: "14 days" },
+        { id: "30d", label: "30 days" },
+        { id: "month", label: "This month" },
+        { id: "all", label: "All months" },
+      ] as option (option.id)}
+        <button
+          class="btn btn--small"
+          class:btn--active={range === option.id}
+          onclick={() => (range = option.id as Range)}
+          data-testid="usage-range-{option.id}"
+        >
+          {option.label}
+        </button>
+      {/each}
+    </div>
+
+    <h2 class="usage__head">
+      Activity <span class="usage__head-note">{showMonths ? "calls per month, recent 12" : "calls per day"}</span>
+    </h2>
+    {#if chartRows.length === 0}
+      <p class="empty">Nothing recorded in this range.</p>
+    {:else}
+      <div class="usage__days" data-testid="usage-days">
+        {#each chartRows as day (day.label)}
+          <div class="usage__day" title={day.title}>
+            <span class="usage__day-bar" style="transform: scaleY({share(day.turns, maxChart) / 100})"></span>
+            <span class="usage__day-label">{day.label}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    <details class="usage__allmonths" data-testid="usage-months">
+      <summary>All months <span class="usage__head-note">{report.months.length} recorded · tokens, cached, spend</span></summary>
+      <div class="usage__chart">
+        {#each report.months.toReversed() as month (month.month)}
+          <div class="usage__row">
+            <span class="usage__label">{month.month}</span>
+            <span class="usage__track">
+              <span class="usage__bar usage__bar--paper" style="width: {share(month.tokens, maxMonth)}%"></span>
+            </span>
+            <span class="usage__value">{compact(month.tokens)}</span>
+            <span class="usage__sub">{month.turns} calls · {compact(month.cacheRead)} cached · {money(month.cost)}</span>
+          </div>
+        {/each}
+      </div>
+    </details>
+
+    <h2 class="usage__head">Agents <span class="usage__head-note">tokens, all time</span></h2>
     {#if report.agents.length === 0}
       <p class="empty">No agent has answered yet.</p>
     {:else}
@@ -232,13 +316,12 @@
           <div class="usage__row">
             <span class="usage__label" title={agent.id}>{agent.name}</span>
             <span class="usage__track">
-              <span
-                class="usage__bar"
-                style="width: {share(agent.turns, maxTurns)}%; background: {colorOf(agent.id)}"
-              ></span>
+              <span class="usage__bar" style="width: {share(agent.all.tokens, maxAgent)}%; background: {colorOf(agent.id)}"></span>
             </span>
-            <span class="usage__value">{agent.turns}</span>
-            <span class="usage__sub">{compact(agent.tokens)} tok · {money(agent.cost)}</span>
+            <span class="usage__value">{compact(agent.all.tokens)}</span>
+            <span class="usage__sub">
+              today {compact(agent.today.tokens)} · cached {compact(agent.all.cacheRead)} · {money(agent.all.cost)}
+            </span>
           </div>
         {/each}
       </div>
@@ -253,24 +336,10 @@
             <span class="usage__bar usage__bar--paper" style="width: {share(model.tokens, maxTokens)}%"></span>
           </span>
           <span class="usage__value">{compact(model.tokens)}</span>
-          <span class="usage__sub">{model.turns} turns · {money(model.cost)}</span>
+          <span class="usage__sub">{model.turns} calls · {compact(model.cacheRead)} cached · {money(model.cost)}</span>
         </div>
       {/each}
     </div>
-
-    <h2 class="usage__head">Activity <span class="usage__head-note">answers per day, last 14 days</span></h2>
-    {#if report.days.length === 0}
-      <p class="empty">Nothing recorded yet.</p>
-    {:else}
-      <div class="usage__days" data-testid="usage-days">
-        {#each report.days as day (day.date)}
-          <div class="usage__day" title="{day.date}: {day.turns} answers, {compact(day.tokens)} tokens">
-            <span class="usage__day-bar" style="transform: scaleY({share(day.turns, maxDay) / 100})"></span>
-            <span class="usage__day-label">{day.date.slice(5)}</span>
-          </div>
-        {/each}
-      </div>
-    {/if}
 
     <h2 class="usage__head">Tools <span class="usage__head-note">calls per tool</span></h2>
     {#if report.tools.length === 0}
@@ -290,6 +359,14 @@
           </div>
         {/each}
       </div>
+    {/if}
+
+    {#if report.stateless.turns > 0}
+      <p class="hint" data-testid="usage-stateless">
+        Includes {report.stateless.turns} stateless calls (group claims/oversight and suggestions), {compact(
+          report.stateless.tokens,
+        )} tokens. Background compaction spend is not itemized.
+      </p>
     {/if}
   {:else if !error}
     <p class="empty">Loading…</p>
@@ -325,12 +402,6 @@
         <span class="hint" data-testid="storage-cleanup-result">{reclaimed(cleanup)}</span>
       {/if}
     </div>
-    <p class="hint">
-      Cleanup folds the write-ahead log back into the database and vacuums what deletions left behind; the sizes
-      above are read from disk after it ran, not estimated before it. A purge is per thread and irreversible, and
-      it is not a delete: it exports that thread's transcript to <code>data/exports/</code> first, then removes its
-      rows for good. There is no purge control in this view yet.
-    </p>
   {:else if !storageError}
     <p class="empty">Loading…</p>
   {/if}

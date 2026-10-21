@@ -35,7 +35,7 @@ export type PermissionPolicy = {
 export const ESCAPE_HATCHES = ["bash", "codemode"] as const;
 
 /** Tools whose `path` argument is checked against the agent's roots. */
-const PATH_TOOLS = new Set(["read", "write", "edit"]);
+const PATH_TOOLS = new Set(["read", "write", "edit", "publish_file"]);
 
 /**
  * The policy for one agent.

@@ -58,12 +58,46 @@ export type FileRef =
     }
   | { name: string; kind: FileKind; state: "omitted"; code: string; reason: string };
 
+/** Where a non-owner message came from. */
+export type UserVia =
+  | { kind: "agent"; from: string; mode: "message" | "delegate" }
+  | { kind: "schedule"; id: string; name: string };
+
+/**
+ * Loop-control data for an agent-to-agent message. It lives in the entry itself, so a later reply can read
+ * the chain without a second table, and a restart loses nothing.
+ */
+export type MeshMeta = {
+  from: string;
+  to: string;
+  mode: "message" | "delegate";
+  chain: string[];
+  hop: number;
+};
+
 /** The durable record of one user message. `userEntryData()` is its only constructor. */
 export type UserEntryData = {
   requestId: string;
   text: string;
   author: string | null;
   files: FileRef[];
+  /** Present when an agent or a schedule wrote this message, never for the owner. */
+  via?: UserVia;
+  /** Present on an agent-to-agent input; internal, not rendered. */
+  mesh?: MeshMeta;
+};
+
+/** Options for a message that is not the owner's ordinary composer input. */
+export type UserMessageOptions = {
+  /** The speaker for a non-owner message; also what the UI colours it with. */
+  author?: string | null;
+  via?: UserVia;
+  mesh?: MeshMeta;
+  /**
+   * A model-only sentence placed before the user text. It names the sender and explains the reply path; the
+   * transcript's own text stays exactly what the owner reads.
+   */
+  preamble?: string;
 };
 
 /** The POST body as it arrived: untrusted JSON, made into domain values here and nowhere else. */
@@ -94,7 +128,7 @@ export class MessageRefused extends Error {
 export async function prepareUserMessage(
   body: UserMessageBody,
   policy: ImagePolicy,
-  author: string | null = null,
+  options: UserMessageOptions = {},
 ): Promise<PreparedUserMessage> {
   const text = typeof body.text === "string" ? body.text.trim() : "";
   const drafts = decodeAttachments(body.attachments);
@@ -102,6 +136,8 @@ export async function prepareUserMessage(
   const images = drafts.filter((draft) => draft.kind === "image");
 
   const content: Block[] = [];
+  const preamble = options.preamble?.trim() ?? "";
+  if (preamble.length > 0) content.push({ type: "text", text: preamble });
   if (text.length > 0) content.push({ type: "text", text });
 
   const files: FileRef[] = [];
@@ -120,12 +156,30 @@ export async function prepareUserMessage(
   if (content.length === 0) {
     throw new MessageRefused(400, "empty", "Nothing to send: no text and no readable file.");
   }
-  return { data: userEntryData({ requestId: requestIdOf(body.requestId), text, author }, files), content };
+  return {
+    data: userEntryData(
+      {
+        requestId: requestIdOf(body.requestId),
+        text,
+        author: options.author ?? null,
+        ...(options.via ? { via: options.via } : {}),
+        ...(options.mesh ? { mesh: options.mesh } : {}),
+      },
+      files,
+    ),
+    content,
+  };
 }
 
 /** The only constructor of a user entry's data. A group calls this with no files, and no model content. */
 export function userEntryData(
-  input: { requestId: string; text: string; author?: string | null },
+  input: {
+    requestId: string;
+    text: string;
+    author?: string | null;
+    via?: UserVia;
+    mesh?: MeshMeta;
+  },
   files: readonly FileRef[] = [],
 ): UserEntryData {
   return {
@@ -133,6 +187,8 @@ export function userEntryData(
     text: input.text,
     author: input.author ?? null,
     files: [...files],
+    ...(input.via ? { via: input.via } : {}),
+    ...(input.mesh ? { mesh: input.mesh } : {}),
   };
 }
 
@@ -145,11 +201,15 @@ export function userEntryData(
 export function userEntryDataOf(entry: EntryRecord): UserEntryData | undefined {
   const data = entry.data as Partial<UserEntryData> | undefined;
   if (entry.kind === USER_ENTRY_KIND) {
+    const via = viaOf(data?.via);
+    const mesh = meshOf(data?.mesh);
     return {
       requestId: typeof data?.requestId === "string" ? data.requestId : "",
       text: typeof data?.text === "string" ? data.text : "",
       author: typeof data?.author === "string" ? data.author : null,
       files: Array.isArray(data?.files) ? (data.files as FileRef[]).filter(isFileRef) : [],
+      ...(via ? { via } : {}),
+      ...(mesh ? { mesh } : {}),
     };
   }
   if (entry.kind === "pi.user") {
@@ -396,6 +456,32 @@ function fileName(raw: unknown): string {
 /** The request id an entry echoes back, so a client drops exactly its own local echo. */
 export function requestIdOf(raw: unknown): string {
   return typeof raw === "string" && raw.length > 0 && raw.length <= 128 ? raw : randomUUID();
+}
+
+/** Read a provenance value structurally; an older or foreign entry simply has none. */
+function viaOf(value: unknown): UserVia | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const via = value as { kind?: unknown; from?: unknown; mode?: unknown; id?: unknown; name?: unknown };
+  if (via.kind === "agent" && typeof via.from === "string" && (via.mode === "message" || via.mode === "delegate")) {
+    return { kind: "agent", from: via.from, mode: via.mode };
+  }
+  if (via.kind === "schedule" && typeof via.id === "string" && typeof via.name === "string") {
+    return { kind: "schedule", id: via.id, name: via.name };
+  }
+  return undefined;
+}
+
+/** Read loop-control data; a malformed value is ignored rather than failing the whole transcript. */
+function meshOf(value: unknown): MeshMeta | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const mesh = value as { from?: unknown; to?: unknown; mode?: unknown; chain?: unknown; hop?: unknown };
+  if (typeof mesh.from !== "string" || typeof mesh.to !== "string") return undefined;
+  if (mesh.mode !== "message" && mesh.mode !== "delegate") return undefined;
+  if (typeof mesh.hop !== "number" || !Number.isSafeInteger(mesh.hop)) return undefined;
+  const chain = Array.isArray(mesh.chain)
+    ? mesh.chain.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  return { from: mesh.from, to: mesh.to, mode: mesh.mode, chain, hop: mesh.hop };
 }
 
 /** Whether a value read back out of `entry.data` is a file reference we wrote. */

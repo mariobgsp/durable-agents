@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { agentTmpRoot, dataDir } from "./paths.ts";
 import { models, resolveDefaultModel } from "./models.ts";
 import type { PermissionTier } from "./permissions.ts";
+import { recordStatelessUsage } from "./usage-ledger.ts";
 
 export type ThinkingLevel = "off" | "low" | "medium" | "high";
 
@@ -37,6 +38,11 @@ export type AgentRecord = {
   blockedTools?: string[];
   /** Extra roots a scoped agent may reach beyond its `cwd`. */
   allowedPaths?: string[];
+  /**
+   * What this agent may do on the agent network: off (no tools), message (list and send), or full (also
+   * delegate). Defaults to full when absent, because being able to talk to a teammate is part of the job.
+   */
+  mesh?: "off" | "message" | "full";
 };
 
 export type AgentFiles = { record: AgentRecord; agentMd: string; soulMd: string; memoryMd: string };
@@ -57,6 +63,7 @@ export type AgentInput = {
   permissions?: PermissionTier;
   blockedTools?: string[];
   allowedPaths?: string[];
+  mesh?: "off" | "message" | "full";
   agentMd?: string;
   soulMd?: string;
 };
@@ -150,6 +157,9 @@ async function readRecord(id: string): Promise<AgentRecord | null> {
     allowedPaths: Array.isArray(parsed.allowedPaths)
       ? parsed.allowedPaths.filter((path) => typeof path === "string")
       : undefined,
+    // Carried explicitly for the same reason as permissions: a reader that rebuilds the record drops what it
+    // does not name, and a dropped policy would silently become "full".
+    mesh: parsed.mesh === "off" || parsed.mesh === "message" || parsed.mesh === "full" ? parsed.mesh : undefined,
   };
 }
 
@@ -202,6 +212,7 @@ export async function writeAgent(input: AgentInput): Promise<AgentFiles> {
     permissions: input.permissions ?? existing?.permissions,
     blockedTools: input.blockedTools ?? existing?.blockedTools,
     allowedPaths: input.allowedPaths ?? existing?.allowedPaths,
+    mesh: input.mesh ?? existing?.mesh,
   };
   await writeText(resolve(dirOf(id), "agent.json"), JSON.stringify(record, null, 2) + "\n");
   if (input.agentMd !== undefined) await writeText(resolve(dirOf(id), "AGENT.md"), input.agentMd);
@@ -352,6 +363,15 @@ export async function suggestResponsibility(soulMd: string): Promise<string> {
     },
     { sessionId: "agent-responsibility" },
   );
+  if (answer?.usage) {
+    await recordStatelessUsage({
+      source: "suggest-responsibility",
+      provider: ref.provider,
+      modelId: ref.modelId,
+      usage: answer.usage,
+      at: answer.timestamp,
+    });
+  }
   const line = textOfAssistant(answer).trim().split("\n")[0] ?? "";
   return line.slice(0, 200);
 }

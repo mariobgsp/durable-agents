@@ -1,5 +1,6 @@
 import { context, harnessInstance } from "./harness.ts";
 import { markActive, markIdle, markIdleIfCurrent } from "./activity.ts";
+import type { WireUsage } from "./wire.ts";
 import { readAgent } from "./agents.ts";
 import {
   MessageRefused,
@@ -162,12 +163,27 @@ async function writeEntry(
 async function answerText(
   conversation: Conversation,
   settled: SettledSubmissionRecord,
-): Promise<string> {
+): Promise<{ text: string; usage?: WireUsage }> {
   if (settled.type !== "input" || settled.status !== "done") {
-    return "(no answer · status " + settled.status + ")";
+    return { text: "(no answer · status " + settled.status + ")" };
   }
   const entry = await conversation.commit((tx) => tx.entry(settled.answer), context);
-  return entry ? (entryToMsg(entry)?.text ?? "(empty answer)") : "(answer entry not found)";
+  const message = entry ? entryToMsg(entry) : null;
+  return { text: message?.text ?? (entry ? "(empty answer)" : "(answer entry not found)"), ...(message?.usage ? { usage: message.usage } : {}) };
+}
+
+function addUsage(total: WireUsage, usage: WireUsage | undefined): void {
+  if (!usage) return;
+  total.input += usage.input;
+  total.output += usage.output;
+  total.cacheRead += usage.cacheRead;
+  total.cacheWrite += usage.cacheWrite;
+  total.totalTokens += usage.totalTokens;
+  total.cost += usage.cost;
+}
+
+function seconds(ms: number): string {
+  return (Math.max(0, ms) / 1000).toFixed(1) + "s";
 }
 
 /** Room timeline digest so every member hears the same conversation. */
@@ -210,15 +226,21 @@ export async function postToRoom(roomId: string, body: UserMessageBody): Promise
   if (text.trim().length === 0) {
     throw new MessageRefused(400, "empty", "Nothing to send: no text and no readable file.");
   }
+  const startedAt = Date.now();
   const epoch = markActive(roomId);
   try {
-    return await runRoomFlow(roomId, text, body);
+    return await runRoomFlow(roomId, text, body, startedAt);
   } finally {
     markIdleIfCurrent(roomId, epoch);
   }
 }
 
-async function runRoomFlow(roomId: string, text: string, body: UserMessageBody): Promise<PostResult> {
+async function runRoomFlow(
+  roomId: string,
+  text: string,
+  body: UserMessageBody,
+  startedAt: number,
+): Promise<PostResult> {
   const numeric = Number(roomId);
   const record = (await allSessionRecords()).find((session) => session.id === numeric);
   if (!record?.room) throw new Error("group not found");
@@ -239,6 +261,8 @@ async function runRoomFlow(roomId: string, text: string, body: UserMessageBody):
   const planned = planTargets(room.mode, room.moderator, text, room.members);
   const answered: string[] = [];
   const notes: { author: string; text: string }[] = [];
+  const runUsage: WireUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0 };
+  let runTurns = 0;
   const spoken = new Set<string>();
   let queue: string[] = [];
   let hops = 0;
@@ -299,20 +323,31 @@ async function runRoomFlow(roomId: string, text: string, body: UserMessageBody):
         ". Answer as " +
         agentId +
         ". If the question suits another member better, mention @name in your answer. Keep it short.";
-      const submission = await conversation.submit(
-        {
-          type: "input",
-          content: prompt,
-          requestId: "room:" + roomId + ":" + seq + ":" + hops + ":" + agentId,
-        },
-        context,
-      );
-      const settled = await submission.wait(context);
-      const answer = await answerText(conversation, settled);
-      await writeEntry(roomId, "chat.agent-message", { text: answer, author: agentId });
+      // The member conversation is what is actually generating; marking it lets the fleet name the member
+      // instead of treating the whole room as one anonymous busy thread. The room mark above still covers
+      // the orchestration as a whole.
+      const memberEpoch = markActive(String(conversation.id));
+      let answer: { text: string; usage?: WireUsage };
+      try {
+        const submission = await conversation.submit(
+          {
+            type: "input",
+            content: prompt,
+            requestId: "room:" + roomId + ":" + seq + ":" + hops + ":" + agentId,
+          },
+          context,
+        );
+        const settled = await submission.wait(context);
+        answer = await answerText(conversation, settled);
+      } finally {
+        markIdleIfCurrent(String(conversation.id), memberEpoch);
+      }
+      await writeEntry(roomId, "chat.agent-message", { text: answer.text, author: agentId });
       answered.push(agentId);
-      notes.push({ author: agentId, text: answer });
-      const next = mentionsIn(answer, room.members).filter((member) => member !== agentId);
+      notes.push({ author: agentId, text: answer.text });
+      addUsage(runUsage, answer.usage);
+      runTurns += answer.usage ? 1 : 0;
+      const next = mentionsIn(answer.text, room.members).filter((member) => member !== agentId);
       queue = [...next, ...queue];
     } catch (error) {
       await writeEntry(roomId, "room.error", {
@@ -333,6 +368,28 @@ async function runRoomFlow(roomId: string, text: string, body: UserMessageBody):
         await writeEntry(roomId, "chat.note", { text: note.text, author: note.member });
       }
     }
+  }
+
+  const endedAt = Date.now();
+  if (runTurns > 0) {
+    const text =
+      "Group run · " +
+      seconds(endedAt - startedAt) +
+      " · " +
+      runUsage.totalTokens.toLocaleString("en-US") +
+      " tokens · " +
+      runUsage.cacheRead.toLocaleString("en-US") +
+      " cached";
+    await writeEntry(roomId, "room.usage", {
+      text,
+      run: {
+        startedAt,
+        endedAt,
+        durationMs: Math.max(0, endedAt - startedAt),
+        turns: runTurns,
+        usage: runUsage,
+      },
+    });
   }
 
   await updateSessionRecord(numeric, { updatedAt: Date.now() });

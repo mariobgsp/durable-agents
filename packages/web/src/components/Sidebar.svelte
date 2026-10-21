@@ -23,6 +23,7 @@
 
   const COLLAPSE_KEY = "durable-agents.collapsed";
   const MODE_LABEL: Record<string, string> = { nyahut: "Nyahut", moderator: "Moderator", silent: "Silent" };
+  const PURPOSE_LABEL: Record<string, string> = { inbox: "inbox", delegate: "task", schedule: "cron" };
 
   let query = $state("");
   let searchOpen = $state(false);
@@ -161,6 +162,9 @@
           <span class="caret" class:caret--closed={collapsed[section.agent.id]}>▾</span>
           <AgentAvatar {identity} size="md" />
           <span class="section__name">{identity.label}</span>
+          {#if store.fleet?.agents.find((agent) => agent.id === section.agent.id)?.status === "working"}
+            <span class="section__live" title="Working" data-testid="agent-working-{section.agent.id}"></span>
+          {/if}
           {#if section.agent.enabled === false}
             <span class="section__meta">off</span>
           {:else if section.threads.length > 0}
@@ -307,6 +311,9 @@
           {/if}
         </span>
         <span class="thread__title">{thread.title}</span>
+        {#if thread.purpose}
+          <span class="thread__purpose">{PURPOSE_LABEL[thread.purpose] ?? thread.purpose}</span>
+        {/if}
       </button>
       <button
         class="icon-btn"
@@ -318,14 +325,16 @@
     {#if menu === "thread:" + thread.id}
       <div class="menu">
         <button class="menu__item" onclick={() => startRename(thread)}>Rename</button>
-        <button
-          class="menu__item"
-          onclick={() => {
-            menu = null;
-            moving = thread;
-            moveTarget = thread.agent ?? store.agents[0]?.id ?? "";
-          }}
-        >Move to agent…</button>
+        {#if !thread.purpose}
+          <button
+            class="menu__item"
+            onclick={() => {
+              menu = null;
+              moving = thread;
+              moveTarget = thread.agent ?? store.agents[0]?.id ?? "";
+            }}
+          >Move to agent…</button>
+        {/if}
         <button class="menu__item menu__item--danger" onclick={() => { menu = null; deleting = thread; }}>
           Delete
         </button>

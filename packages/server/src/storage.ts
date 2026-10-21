@@ -2,7 +2,8 @@ import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { agentsDir } from "./agents.ts";
-import { dataDir, dbPath, sessionsPath } from "./paths.ts";
+import { artifactsBytes } from "./artifacts.ts";
+import { dataDir, dbPath, meshPath, schedulesPath, sessionsPath, usageLedgerPath } from "./paths.ts";
 
 /**
  * Storage: how much there is, and how to give some back.
@@ -21,6 +22,10 @@ export type StorageReport = {
   sharedMemoryBytes: number;
   sessionsBytes: number;
   agentBytes: number;
+  meshBytes: number;
+  schedulesBytes: number;
+  usageLedgerBytes: number;
+  artifactBytes: number;
   totalBytes: number;
 };
 
@@ -35,6 +40,10 @@ export async function storageReport(): Promise<StorageReport> {
   const walBytes = await sizeOf(dbPath + "-wal");
   const sharedMemoryBytes = await sizeOf(dbPath + "-shm");
   const sessionsBytes = await sizeOf(sessionsPath);
+  const meshBytes = await sizeOf(meshPath);
+  const schedulesBytes = await sizeOf(schedulesPath);
+  const usageLedgerBytes = await sizeOf(usageLedgerPath);
+  const artifactBytes = await artifactsBytes();
   let agentBytes = 0;
   for (const entry of await readdir(agentsDir, { withFileTypes: true }).catch(() => [])) {
     if (!entry.isDirectory()) continue;
@@ -48,7 +57,20 @@ export async function storageReport(): Promise<StorageReport> {
     sharedMemoryBytes,
     sessionsBytes,
     agentBytes,
-    totalBytes: databaseBytes + walBytes + sharedMemoryBytes + sessionsBytes + agentBytes,
+    meshBytes,
+    schedulesBytes,
+    usageLedgerBytes,
+    artifactBytes,
+    totalBytes:
+      databaseBytes +
+      walBytes +
+      sharedMemoryBytes +
+      sessionsBytes +
+      agentBytes +
+      meshBytes +
+      schedulesBytes +
+      usageLedgerBytes +
+      artifactBytes,
   };
 }
 

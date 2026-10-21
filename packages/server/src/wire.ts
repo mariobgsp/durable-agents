@@ -1,7 +1,46 @@
 import type { EntryRecord } from "@earendil-works/pi-durable";
+import type { FleetSnapshot } from "./fleet.ts";
 
 /** Server -> web frame contract. A copy lives in packages/web/src/ws.ts and must stay identical. */
 export type WireRole = "user" | "assistant" | "tool" | "system";
+
+/**
+ * The spend of one model response, as the provider reported it. Cost is in the provider's own unit (USD for
+ * the built-in catalogs); the UI only shows it when it is non-zero.
+ */
+export type WireUsage = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+  cost: number;
+};
+
+/**
+ * One completed run: the first user entry through the final assistant answer. The duration includes queueing,
+ * tool time and every model round, because that is the wall-clock span the owner waited for.
+ */
+export type WireRun = {
+  startedAt: number;
+  endedAt: number;
+  durationMs: number;
+  turns: number;
+  usage: WireUsage;
+};
+
+/** Where a non-owner message came from. A direct message from the owner has no via. */
+export type WireVia =
+  | { kind: "agent"; from: string; mode: "message" | "delegate" }
+  | { kind: "schedule"; id: string; name: string };
+
+/** A file an agent generated and attached to this thread. The bytes live under data/artifacts. */
+export type WireArtifact = {
+  id: string;
+  name: string;
+  mimeType: string;
+  bytes: number;
+};
 
 /** A finished tool call, as one line in the transcript. */
 export type ToolLine = {
@@ -25,6 +64,14 @@ export type WireMsg = {
   requestId?: string;
   /** On user messages: the files the model was given, metadata only, derived from the entry. */
   files?: WireFile[];
+  /** On assistant messages: what this one response cost, when the provider reported it. */
+  usage?: WireUsage;
+  /** On the final assistant message of a run: the run's whole spend and wall-clock span. */
+  run?: WireRun;
+  /** On non-owner user messages: who sent it, or which schedule. */
+  via?: WireVia;
+  /** On a generated-file entry: the files available for download. */
+  artifacts?: WireArtifact[];
   data?: unknown;
 };
 
@@ -99,6 +146,8 @@ export type WireFrame =
   | { type: "typing"; author: string; state: "start" | "stop" }
   /** Whole-list activity snapshot, sent on connect and on every change. */
   | { type: "presence"; active: string[] }
+  /** Whole-list fleet snapshot, sent with presence so the roster and the active threads cannot disagree. */
+  | { type: "fleet"; fleet: FleetSnapshot }
   | { type: "log"; text: string }
   | { type: "error"; message: string };
 

@@ -1,0 +1,826 @@
+:root {
+  --app-height: 100dvh;
+}
+
+#app,
+.app,
+html,
+body {
+  height: var(--app-height);
+}
+
+/* Fleet, schedules, diagrams, alerts and usage-period additions. Kept separate from the original app.css so
+   the design system's responsive rules stay in one piece. */
+
+.sidebar__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.section__live {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+  flex: none;
+}
+
+.thread__purpose {
+  margin-left: auto;
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  flex: none;
+}
+
+.fleet {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.fleet > .empty {
+  grid-column: 1 / -1;
+}
+
+.fleet-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+
+.fleet-card__identity {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.fleet-card__name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.fleet-card__name b {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-card__name span {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.fleet-status__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.fleet-status--working {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  color: var(--accent);
+}
+
+.fleet-status--working .fleet-status__dot {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.fleet-status--disabled {
+  opacity: 0.55;
+}
+
+.fleet-card__line {
+  margin: 0;
+  min-height: 34px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.fleet-card__meta,
+.fleet-card__live,
+.fleet-card__cron {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-card__live a {
+  color: var(--text);
+  text-decoration: none;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.fleet-card__stats {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.fleet-card__stats b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.fleet-card__actions {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-top: auto;
+  padding-top: 2px;
+}
+
+.linkfeed {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+}
+
+.linkfeed__row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) auto minmax(120px, 2fr) auto auto auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+
+.linkfeed__row--active {
+  box-shadow: inset 2px 0 0 var(--accent);
+  padding-left: 8px;
+}
+
+.linkfeed__from {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--author, var(--text));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.linkfeed__arrow,
+.linkfeed__kind,
+.linkfeed__time {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.linkfeed__targets {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.linkfeed__targets .chip {
+  gap: 4px;
+  padding: 2px 6px;
+  font-size: 10px;
+  text-decoration: none;
+}
+
+.linkfeed__status {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.linkfeed__status--active {
+  color: var(--accent);
+}
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  border: none;
+  padding: 0;
+  background: rgb(0 0 0 / 58%);
+  cursor: default;
+}
+
+.drawer {
+  position: fixed;
+  inset: 0 0 0 auto;
+  z-index: 81;
+  display: flex;
+  flex-direction: column;
+  width: min(620px, 100vw);
+  background: var(--panel);
+  border-left: 1px solid var(--line-strong);
+  box-shadow: -24px 0 48px rgb(0 0 0 / 35%);
+}
+
+.drawer__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.drawer__head h2 {
+  margin: 0 0 2px;
+  font-size: 14px;
+}
+
+.drawer__body {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+}
+
+.diagram-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  padding: 6px;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+}
+
+.diagram-list__item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.diagram-list__item:hover {
+  background: var(--panel-2);
+}
+
+.diagram-list__item--active {
+  border-color: var(--line-strong);
+  background: var(--panel-2);
+}
+
+.diagram-list__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 11px;
+}
+
+.diagram-list__text b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagram-list__index {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.diagram-viewer {
+  min-width: 0;
+  padding: 12px;
+  overflow: auto;
+}
+
+.diagram-viewer .diagram {
+  margin: 0;
+}
+
+.diagram-viewer .diagram__viewport {
+  max-height: none;
+  min-height: 240px;
+}
+
+.automation-panel {
+  margin: 0 0 4px;
+}
+
+.automation-panel > summary {
+  cursor: pointer;
+}
+
+.automation-panel .schedules {
+  max-width: 900px;
+}
+
+.schedules {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+}
+
+.schedules__list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+}
+
+.schedules__row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.schedules__row--off {
+  opacity: 0.6;
+}
+
+.schedules__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.schedules__cron {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.schedules__actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex: none;
+}
+
+.schedules__new {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.schedules__preview {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.filecards {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-width: 78ch;
+  margin-top: 8px;
+}
+
+.filecard {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.filecard:hover {
+  border-color: var(--line-strong);
+}
+
+.filecard__kind {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+
+.filecard__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.filecard__body b {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filecard__body span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filecard__download {
+  flex: none;
+  color: var(--muted);
+  font-size: 16px;
+}
+
+.msg--file {
+  width: 100%;
+  max-width: 78ch;
+}
+
+.msg--file .filecards {
+  margin-top: 0;
+}
+
+.runsummary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.88;
+}
+
+.runsummary__time {
+  color: var(--text);
+  opacity: 0.72;
+}
+
+.runsummary__sep {
+  opacity: 0.4;
+}
+
+.msg__via {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  color: var(--author, var(--muted));
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.msg__via-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.msg__via-mode {
+  color: var(--muted);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.usage__periods {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.usage__period {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 12px 10px 0;
+}
+
+.usage__period + .usage__period {
+  border-left: 1px solid var(--line);
+  padding-left: 12px;
+}
+
+.usage__period-label {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.usage__period-value {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage__period-sub {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage__allmonths {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.usage__allmonths > summary {
+  padding: 7px 0;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.usage__allmonths .usage__row {
+  grid-template-columns: minmax(64px, 100px) 1fr 44px minmax(150px, 220px);
+}
+
+.usage__rangebar {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.btn--active {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--ink);
+}
+
+.contextbar__session {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.notify {
+  position: relative;
+}
+
+.notify__pop {
+  position: absolute;
+  top: 26px;
+  left: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 270px;
+  max-height: min(70vh, 520px);
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--panel-2);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 55%);
+}
+
+.notify__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.notify__desktop {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.composer {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+}
+
+.toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 90;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  max-width: min(360px, calc(100vw - 32px));
+  padding: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--panel-2);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 55%);
+}
+
+.toast__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.toast__body span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+@media (max-width: 900px) {
+  .drawer__body {
+    grid-template-columns: 170px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .fleet-head {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .fleet-head .row {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+
+  /* Keep the two actions on one line and give the status sentence the full width below them. This is the
+     difference between "Refresh" being usable with a thumb and three lines of squeezed text. */
+  .fleet-head .row .hint {
+    order: 3;
+    flex: 0 0 100%;
+    min-width: 0;
+    white-space: normal;
+  }
+
+  .fleet {
+    grid-template-columns: 1fr;
+  }
+
+  .usage__periods {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .usage__period:nth-child(3) {
+    border-left: none;
+    padding-left: 0;
+  }
+
+  .usage__period:nth-child(n + 3) {
+    border-top: 1px solid var(--line);
+  }
+
+  .linkfeed__row {
+    grid-template-columns: minmax(90px, 1fr) auto;
+    gap: 5px;
+  }
+
+  .linkfeed__targets {
+    grid-column: 1 / -1;
+  }
+
+  .linkfeed__kind,
+  .linkfeed__time {
+    display: none;
+  }
+
+  .linkfeed__status {
+    justify-self: end;
+  }
+
+  .drawer {
+    width: 100vw;
+  }
+
+  .drawer__body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .diagram-list {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .diagram-list__item {
+    min-width: 190px;
+  }
+
+  .schedules__row {
+    flex-direction: column;
+  }
+
+  .schedules__actions {
+    justify-content: flex-start;
+  }
+
+  .contextbar__session {
+    display: none;
+  }
+
+  .notify__pop {
+    position: fixed;
+    top: calc(58px + env(safe-area-inset-top, 0px));
+    left: 10px;
+    right: auto;
+    width: calc(100vw - 20px);
+    max-height: calc(100dvh - 80px);
+  }
+
+  .toast {
+    right: 10px;
+    bottom: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fleet-status--working .fleet-status__dot {
+    box-shadow: none;
+  }
+}
+
+@media (min-width: 901px) {
+  .usage__row {
+    grid-template-columns: minmax(80px, 168px) 1fr 44px minmax(180px, 240px);
+  }
+}

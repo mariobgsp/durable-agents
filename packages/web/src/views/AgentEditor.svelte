@@ -2,11 +2,15 @@
   import { api } from "../api.ts";
   import { EMOJI_CHOICES, PALETTE, initialsOf, type Identity } from "../lib/identity.ts";
   import { go } from "../router.svelte.ts";
+  import { loadAgents, loadFleet } from "../state.svelte.ts";
   import type { ModelInfo, ProviderRow, ThinkingLevel } from "../types.ts";
   import AgentAvatar from "../components/AgentAvatar.svelte";
+  import SchedulePanel from "../components/SchedulePanel.svelte";
 
   let { id }: { id: string } = $props();
   const isNew = $derived(id === "new");
+  // Deep link used by the screenshot gate and by a direct link to automation.
+  const automationOpen = new URLSearchParams(location.search).has("automation");
 
   let name = $state("");
   let agentMd = $state("");
@@ -22,6 +26,8 @@
   let permissions = $state<"standard" | "custom" | "full">("standard");
   let blockedTools = $state("");
   let allowedPaths = $state("");
+  /** What this agent may do on the agent network. */
+  let mesh = $state<"off" | "message" | "full">("full");
   /** Whether the server is inside the hardened unit. The tiers are policy; that unit is the boundary. */
   let sandboxed = $state(true);
 
@@ -81,6 +87,7 @@
     void load(id);
   });
 
+
   /** Models depend on the provider, so they reload whenever it changes. */
   $effect(() => {
     const wanted = provider;
@@ -121,6 +128,7 @@
       allowedPaths = stringsOf(field(record, "allowedPaths")).join(", ");
       color = files.record.color ?? PALETTE[0]!;
       avatar = files.record.avatar ?? "";
+      mesh = files.record.mesh ?? "full";
       provider = files.record.provider;
       modelId = files.record.modelId;
     } catch (err) {
@@ -174,6 +182,7 @@
       color,
       avatar,
       permissions,
+      mesh,
       blockedTools: blockedTools
         .split(",")
         .map((entry) => entry.trim())
@@ -188,9 +197,13 @@
     try {
       if (isNew) {
         const files = await api.createAgent(input);
+        // A new agent must appear in the sidebar and the fleet immediately: those two lists are read from
+        // the shared store, not from this editor's response.
+        await Promise.all([loadAgents(), loadFleet()]);
         go("#/agents/" + files.record.id);
       } else {
         const files = await api.updateAgent(id, input);
+        await Promise.all([loadAgents(), loadFleet()]);
         status = "Saved · " + files.rebound + " threads now use the latest files";
       }
     } catch (err) {
@@ -217,6 +230,7 @@
   async function remove(): Promise<void> {
     if (isNew || !window.confirm("Delete this agent?")) return;
     await api.deleteAgent(id);
+    await Promise.all([loadAgents(), loadFleet()]);
     go("#/agents");
   }
 </script>
@@ -232,6 +246,13 @@
       <button class="btn btn--primary" disabled={busy} onclick={save} data-testid="save-agent">Save</button>
     </div>
   </header>
+
+  {#if !isNew}
+    <details class="preview automation-panel" data-testid="agent-automation" open={automationOpen}>
+      <summary>Automation — cron schedules</summary>
+      <SchedulePanel agentId={id} />
+    </details>
+  {/if}
 
   {#if error}
     <p class="error" role="alert" data-testid="error">{error}</p>
@@ -343,6 +364,15 @@
         </button>
       </div>
 
+      <label class="field">
+        <span>Agent network</span>
+        <select bind:value={mesh} data-testid="agent-mesh">
+          <option value="full">Full — message any agent and delegate work</option>
+          <option value="message">Messages only — list and send, no delegation</option>
+          <option value="off">Off — no agent-to-agent tools</option>
+        </select>
+      </label>
+
       <fieldset class="tools">
         <legend>Tools</legend>
         {#each TOOL_CHOICES as choice (choice.name)}
@@ -358,6 +388,10 @@
         {#if tools.includes("bash")}
           <p class="warn">bash runs real commands on this machine.</p>
         {/if}
+        <p class="hint">
+          File output is always available: create_file, create_pdf and publish_file attach a download card to
+          the thread. publish_file obeys this agent's path policy.
+        </p>
       </fieldset>
 
       <details class="preview advanced" data-testid="agent-advanced">
@@ -414,4 +448,5 @@
       </details>
     </aside>
   </div>
+
 </section>

@@ -143,6 +143,11 @@
       {placeholder}
       data-testid="composer"
       onkeydown={onKeydown}
+      onfocus={() => {
+        // The keyboard changes the visual viewport after focus; scroll the box into the remaining area once
+        // the browser has applied that change.
+        window.setTimeout(() => area?.scrollIntoView({ block: "nearest" }), 280);
+      }}
     ></textarea>
     {#if attach.allowed}
       <button

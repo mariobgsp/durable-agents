@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#000000" />
     <link rel="manifest" href="/manifest.webmanifest" />
@@ -15,8 +15,41 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Dura" />
     <title>dura-agents</title>
+    <style>
+      /* The first paint, before the bundle or the font exists. Kept inline so it cannot wait on either. */
+      html, body { margin: 0; background: #0a0b0d; color: #ecedef; }
+      .boot {
+        position: fixed; inset: 0; z-index: 9999; display: grid; place-content: center; gap: 18px;
+        background: #0a0b0d; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        transition: opacity 160ms ease;
+      }
+      .boot--done { opacity: 0; pointer-events: none; }
+      .boot__brand { font-size: 15px; letter-spacing: .08em; text-transform: uppercase; color: #e0a35c; }
+      .boot__status { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #8b9096; }
+      .boot__spinner {
+        width: 14px; height: 14px; border: 1px solid #2a2d33; border-top-color: #ecedef;
+        border-radius: 50%; animation: boot-spin 900ms linear infinite; flex: none;
+      }
+      .boot__actions { display: flex; gap: 8px; justify-content: center; }
+      .boot__actions button {
+        font: inherit; font-size: 12px; color: #ecedef; background: #131519; border: 1px solid #2a2d33;
+        border-radius: 6px; padding: 6px 10px; cursor: pointer;
+      }
+      @keyframes boot-spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { .boot__spinner { animation: none; } .boot { transition: none; } }
+    </style>
+
   </head>
   <body>
+    <div id="boot" class="boot" role="status" aria-live="polite">
+      <div class="boot__brand">dura-agents</div>
+      <div class="boot__status"><span class="boot__spinner" aria-hidden="true"></span><span id="boot-status">Preparing the app…</span></div>
+      <div class="boot__actions">
+        <button id="boot-retry" type="button" hidden>Reload</button>
+        <button id="boot-continue" type="button" hidden>Continue</button>
+      </div>
+      <noscript>This app needs JavaScript.</noscript>
+    </div>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

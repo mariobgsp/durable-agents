@@ -1,5 +1,6 @@
 import { readAgent } from "./agents.ts";
 import { models, resolveDefaultModel } from "./models.ts";
+import { recordStatelessUsage } from "./usage-ledger.ts";
 
 export type Claim = { member: string; claim: boolean; confidence: number; reason: string };
 export type Oversight = { member: string; add: boolean; text: string };
@@ -22,7 +23,12 @@ function textOf(message: unknown): string {
  * Stateless model call (no conversation). `sessionId` is required: the opencode provider
  * rejects requests without a session header.
  */
-async function shortCall(systemPrompt: string, userPrompt: string, maxTokens: number): Promise<string> {
+async function shortCall(
+  systemPrompt: string,
+  userPrompt: string,
+  maxTokens: number,
+  attribution: { agentId?: string; source: string },
+): Promise<string> {
   const ref = await resolveDefaultModel();
   const model = await models.getModel(ref.provider, ref.modelId);
   if (!model) throw new Error("model unavailable: " + ref.provider + "/" + ref.modelId);
@@ -31,6 +37,18 @@ async function shortCall(systemPrompt: string, userPrompt: string, maxTokens: nu
     { systemPrompt, messages: [{ role: "user", content: userPrompt, timestamp: Date.now() }] },
     { sessionId: "nyahut", maxTokens },
   );
+  // This call has no conversation entry of its own, so its spend goes to the stateless ledger.
+  const usage = (answer as { usage?: unknown } | undefined)?.usage;
+  if (usage) {
+    await recordStatelessUsage({
+      source: attribution.source,
+      ...(attribution.agentId ? { agentId: attribution.agentId } : {}),
+      provider: ref.provider,
+      modelId: ref.modelId,
+      usage: usage as Parameters<typeof recordStatelessUsage>[0]["usage"],
+      at: (answer as { timestamp?: unknown }).timestamp as number | undefined,
+    });
+  }
   return textOf(answer);
 }
 
@@ -97,6 +115,7 @@ export async function claimAll(
             "\n\nRecent conversation:\n" +
             digest.slice(-1200),
           300,
+          { agentId: member, source: "nyahut-claim" },
         );
         return { member, ...parseClaim(raw) };
       } catch (error) {
@@ -126,6 +145,7 @@ export async function overseeAll(
             "\n\nOther members\' answers:\n" +
             transcript.slice(-1600),
           400,
+          { agentId: member, source: "nyahut-oversee" },
         );
         const parsed = firstJson(raw);
         if (!parsed) {

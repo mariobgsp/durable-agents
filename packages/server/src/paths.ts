@@ -13,6 +13,12 @@ export const dataDir = env.PI_DATA_DIR
 export const tokenPath = resolve(dataDir, "token");
 export const dbPath = resolve(dataDir, "app.sqlite");
 export const sessionsPath = resolve(dataDir, "sessions.json");
+/** Directed agent-to-agent index: links and their answer status. The transcripts remain the source of truth. */
+export const meshPath = resolve(dataDir, "mesh.json");
+/** Per-agent cron schedules. */
+export const schedulesPath = resolve(dataDir, "schedules.json");
+/** Append-only spend from model calls that have no conversation of their own (Nyahut claims, suggestions). */
+export const usageLedgerPath = resolve(dataDir, "usage.jsonl");
 export const credentialsPath = resolve(dataDir, "credentials.json");
 /** The last system operation, written only at a terminal phase. The one writable file outside SQLite. */
 export const systemPath = resolve(dataDir, "system.json");

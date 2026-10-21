@@ -19,7 +19,35 @@ import {
   type AgentInput,
 } from "./agents.ts";
 import { activeIds, subscribe as subscribeActivity } from "./activity.ts";
+import { fleetSnapshot } from "./fleet.ts";
+import {
+  forgetMeshAgent,
+  forgetMeshThread,
+  reconcileMesh,
+  subscribeMesh,
+} from "./mesh.ts";
+import {
+  ScheduleError,
+  createSchedule,
+  deleteSchedule,
+  deleteSchedulesForAgent,
+  forceScheduleDue,
+  forgetScheduleThread,
+  listSchedules,
+  previewSchedule,
+  reconcileSchedules,
+  runScheduleNow,
+  scheduleTimezone,
+  startScheduler,
+  stopScheduler,
+  subscribeSchedules,
+  tickSchedules,
+  updateSchedule,
+  type ScheduleInput,
+  type SchedulePatch,
+} from "./schedules.ts";
 import { MessageRefused, readUserFile, type UserMessageBody } from "./attachments.ts";
+import { readArtifact, removeArtifacts } from "./artifacts.ts";
 import { makeAuthHook } from "./auth.ts";
 import { modelCatalog } from "./capabilities.ts";
 import { policyOf, setGrantResolver } from "./permissions.ts";
@@ -104,7 +132,17 @@ setGrantResolver(async (conversationId) => (await findSession(conversationId))?.
 // window, so an idle session is never reported as generating.
 for (const record of await allSessionRecords()) {
   void trackIfBusy(String(record.id));
+  // A group member has its own conversation and its own model call. Marking it at boot lets the fleet name
+  // the member that is still working after a restart, instead of reporting the room as one anonymous thread.
+  for (const memberId of Object.values(record.room?.conversations ?? {})) {
+    void trackIfBusy(String(memberId));
+  }
 }
+
+// Schedules and mesh links survive a restart. Reconcile before the first tick so a stale "running" row is
+// explained rather than shown as live forever.
+await reconcileSchedules();
+await reconcileMesh();
 
 const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
 
@@ -334,6 +372,9 @@ await app.register(
       }
       const result = await purgeConversation(id, await transcript(id));
       await removeSessionRecord(id);
+      await forgetMeshThread(id);
+      await forgetScheduleThread(id);
+      await removeArtifacts(id);
       return result;
     });
 
@@ -393,7 +434,14 @@ await app.register(
     api.delete("/agents/:id", async (request, reply) => {
       const { id } = request.params as { id: string };
       const ok = await deleteAgent(id);
-      if (!ok) await reply.code(404).send({ error: "Agent not found" });
+      if (!ok) {
+        await reply.code(404).send({ error: "Agent not found" });
+        return { ok };
+      }
+      // Schedules and links are application state about the agent, not part of its files. A deleted agent
+      // must not keep producing cron work or appear as a live counterpart in the fleet.
+      await deleteSchedulesForAgent(id);
+      await forgetMeshAgent(id);
       return { ok };
     });
 
@@ -478,6 +526,46 @@ await app.register(
         .send(served.body);
     });
 
+    /**
+     * One generated file, read from data/artifacts.
+     *
+     * The entry is the index: the artifact id is looked up in that entry's metadata before a path is built. A
+     * query token is accepted because a plain download anchor cannot send a header.
+     */
+    api.get("/sessions/:id/files/:entryId/:artifactId", async (request, reply) => {
+      const { id, entryId, artifactId } = request.params as { id: string; entryId: string; artifactId: string };
+      const conversation = await conversationOf(id);
+      const entryNumber = entryIdFromParam(entryId);
+      if (!conversation || entryNumber === null) {
+        await reply.code(404).send({ error: "File not found" });
+        return;
+      }
+      const entry = await conversation.commit((tx) => tx.entry(entryNumber), context);
+      const artifacts = (entry?.data as { artifacts?: unknown } | undefined)?.artifacts;
+      const artifact = Array.isArray(artifacts)
+        ? (artifacts as { id?: unknown; name?: unknown; mimeType?: unknown }[]).find(
+            (candidate) => candidate.id === artifactId,
+          )
+        : undefined;
+      if (!entry || entry.conversationId !== conversation.id || !artifact) {
+        await reply.code(404).send({ error: "File not found" });
+        return;
+      }
+      const bytes = await readArtifact(String(conversation.id), artifactId);
+      if (!bytes) {
+        await reply.code(404).send({ error: "File bytes are missing" });
+        return;
+      }
+      const name = typeof artifact.name === "string" ? artifact.name : "file";
+      const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\/\r\n]/g, "_");
+      const encoded = encodeURIComponent(name).replace(/'/g, "%27");
+      return reply
+        .header("cache-control", "private, max-age=31536000, immutable")
+        .header("content-disposition", 'attachment; filename="' + ascii + '"; filename*=UTF-8\'\'' + encoded)
+        .type(typeof artifact.mimeType === "string" ? artifact.mimeType : "application/octet-stream")
+        .send(bytes);
+    });
+
     // ---------- models ----------
 
     api.get("/models", async (request) => {
@@ -516,7 +604,86 @@ await app.register(
     // ---------- providers ----------
 
     /** Aggregates behind the usage view: who answered, on which model, at what cost. */
-    api.get("/usage", async () => usageReport());
+    api.get("/usage", async (request) => {
+      const query = (request.query ?? {}) as { fresh?: string };
+      return usageReport(query.fresh === "1");
+    });
+
+    // ---------- fleet and schedules ----------
+
+    /** The compact roster and recent agent-to-agent links. Also sent over the presence socket. */
+    api.get("/fleet", async () => fleetSnapshot());
+
+    api.get("/schedules", async (request) => {
+      const query = (request.query ?? {}) as { agentId?: string };
+      return { schedules: await listSchedules(query.agentId), timezone: scheduleTimezone() };
+    });
+
+    api.post("/schedules", async (request, reply) => {
+      try {
+        return await createSchedule((request.body ?? {}) as ScheduleInput);
+      } catch (error) {
+        if (error instanceof ScheduleError) {
+          await reply.code(error.status).send({ code: error.code, error: error.message });
+          return;
+        }
+        throw error;
+      }
+    });
+
+    /** Validate a cron expression without creating anything; the editor shows the next runs. */
+    api.post("/schedules/preview", async (request, reply) => {
+      const body = (request.body ?? {}) as { cron?: unknown; count?: unknown };
+      const cron = typeof body.cron === "string" ? body.cron : "";
+      const count = typeof body.count === "number" ? Math.max(1, Math.min(10, Math.floor(body.count))) : 5;
+      try {
+        return previewSchedule(cron, count);
+      } catch (error) {
+        if (error instanceof ScheduleError) {
+          await reply.code(error.status).send({ code: error.code, error: error.message });
+          return;
+        }
+        throw error;
+      }
+    });
+
+    api.put("/schedules/:id", async (request, reply) => {
+      const { id } = request.params as { id: string };
+      try {
+        return await updateSchedule(id, (request.body ?? {}) as SchedulePatch);
+      } catch (error) {
+        if (error instanceof ScheduleError) {
+          await reply.code(error.status).send({ code: error.code, error: error.message });
+          return;
+        }
+        throw error;
+      }
+    });
+
+    api.delete("/schedules/:id", async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const ok = await deleteSchedule(id);
+      if (!ok) await reply.code(404).send({ code: "schedule_not_found", error: "Schedule not found" });
+      return { ok };
+    });
+
+    api.post("/schedules/:id/run", async (request, reply) => {
+      const { id } = request.params as { id: string };
+      try {
+        const result = await runScheduleNow(id);
+        if (!result.accepted && result.reason === "previous run still working") {
+          await reply.code(409).send({ code: "schedule_busy", error: "This schedule is already running." });
+          return;
+        }
+        return result;
+      } catch (error) {
+        if (error instanceof ScheduleError) {
+          await reply.code(error.status).send({ code: error.code, error: error.message });
+          return;
+        }
+        throw error;
+      }
+    });
 
     api.get("/providers", async () => ({
       providers: await providerStatus(),
@@ -551,6 +718,16 @@ await app.register(
       });
 
       api.get("/e2e/state", async () => e2eState());
+
+      // Deterministic schedule firing without waiting for a wall-clock minute.
+      api.post("/e2e/schedules/:id/due", async (request, reply) => {
+        const { id } = request.params as { id: string };
+        const ok = await forceScheduleDue(id);
+        if (!ok) await reply.code(404).send({ error: "Schedule not found" });
+        return { ok };
+      });
+
+      api.post("/e2e/schedules/tick", async () => ({ attempted: await tickSchedules() }));
     }
 
     // ---------- groups ----------
@@ -617,17 +794,50 @@ await app.register(
     // viewing can still show that it is replying. Frames are whole-list snapshots, which keeps the client
     // free of diffing and immune to a missed start/stop pair.
     const presenceSockets = new Set<WebSocket>();
-    subscribeActivity((ids) => {
+
+    const sendPresence = (ids: readonly string[]): void => {
       const frame = JSON.stringify({ type: "presence", active: [...ids] } satisfies WireFrame);
       for (const socket of presenceSockets) {
         if (socket.readyState === socket.OPEN) socket.send(frame);
       }
+    };
+
+    let fleetTimer: NodeJS.Timeout | undefined;
+    const sendFleet = (): void => {
+      if (fleetTimer) return;
+      fleetTimer = setTimeout(() => {
+        fleetTimer = undefined;
+        if (presenceSockets.size === 0) return;
+        void fleetSnapshot()
+          .then((fleet) => {
+            const frame = JSON.stringify({ type: "fleet", fleet } satisfies WireFrame);
+            for (const socket of presenceSockets) {
+              if (socket.readyState === socket.OPEN) socket.send(frame);
+            }
+          })
+          .catch(() => undefined);
+      }, 50);
+      fleetTimer.unref?.();
+    };
+
+    subscribeActivity((ids) => {
+      sendPresence(ids);
+      sendFleet();
     });
+    subscribeMesh(sendFleet);
+    subscribeSchedules(sendFleet);
 
     api.get("/ws/presence", { websocket: true }, (socket: WebSocket) => {
       presenceSockets.add(socket);
       // Send the current state immediately: a tab that connects mid-generation must not wait for a change.
       socket.send(JSON.stringify({ type: "presence", active: activeIds() } satisfies WireFrame));
+      void fleetSnapshot()
+        .then((fleet) => {
+          if (socket.readyState === socket.OPEN) {
+            socket.send(JSON.stringify({ type: "fleet", fleet } satisfies WireFrame));
+          }
+        })
+        .catch(() => undefined);
       socket.on("close", () => {
         presenceSockets.delete(socket);
       });
@@ -652,12 +862,14 @@ if (existsSync(resolve(webDist, "index.html"))) {
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
     // Never leave an npm child writing node_modules while the next process starts another.
+    stopScheduler();
     disposeSystem();
     void app.close().then(() => process.exit(0));
   });
 }
 
 await app.listen({ host, port: serverPort });
+startScheduler();
 // Report the port that was actually bound: with PI_SERVER_PORT=0 the OS picks a free one, which is what
 // the E2E harness relies on so scenarios never collide.
 const address = app.server.address();

@@ -1,16 +1,19 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { AgentChange, Conversation, ConversationId, EntryId } from "@earendil-works/pi-durable";
+import type { AgentChange, Conversation, ConversationId, EntryId, ToolRegistration } from "@earendil-works/pi-durable";
 import { readAgent, renderInstructions, writeAgent } from "./agents.ts";
 import {
   USER_ENTRY_KIND,
   prepareUserMessage,
   type UserMessageBody,
+  type UserMessageOptions,
 } from "./attachments.ts";
 import { imagePolicy, type ImagePolicy } from "./capabilities.ts";
 import { rememberTool } from "./remember.ts";
 import { WATCHDOG_MS, markActive, markIdle, markIdleIfCurrent } from "./activity.ts";
 import { context, harnessInstance, toolsByName } from "./harness.ts";
+import { meshToolsFor } from "./mesh-tools.ts";
+import { fileTools } from "./file-tools.ts";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, models, resolveDefaultModel, type ModelRef } from "./models.ts";
 import { sessionsPath } from "./paths.ts";
 import { entriesToMsgs } from "./transcript.ts";
@@ -40,6 +43,17 @@ export type SessionRecord = {
   grant?: "full";
   /** Soft delete: set when the thread is hidden. The durable rows stay in SQLite until a purge. */
   deletedAt?: number;
+  /**
+   * Why this thread exists beyond a normal conversation. Purpose threads are created by the agent network or
+   * the scheduler; they stay under their agent's section but are refused by Move so their metadata cannot lie.
+   */
+  purpose?: "inbox" | "delegate" | "schedule";
+  /** Stable lookup key for a purpose thread: inbox:<recipient>:<sender> or delegate:<task>:<target>. */
+  meshKey?: string;
+  /** The schedule that owns this thread. */
+  scheduleId?: string;
+  /** The other agent in a directed inbox/delegation thread. */
+  peer?: string;
 };
 
 /** Shape sent to the UI: id is always a string so it is safe in URLs and keys. */
@@ -54,6 +68,10 @@ export type WireSession = {
   room?: RoomConfig;
   grant?: "full";
   deletedAt?: number;
+  purpose?: "inbox" | "delegate" | "schedule";
+  meshKey?: string;
+  scheduleId?: string;
+  peer?: string;
 };
 
 const NEW_TITLE = "New thread";
@@ -116,8 +134,20 @@ function toWireSession(record: SessionRecord): WireSession {
     ...(record.room ? { room: record.room } : {}),
     ...(record.grant ? { grant: record.grant } : {}),
     ...(record.deletedAt ? { deletedAt: record.deletedAt } : {}),
+    ...(record.purpose ? { purpose: record.purpose } : {}),
+    ...(record.meshKey ? { meshKey: record.meshKey } : {}),
+    ...(record.scheduleId ? { scheduleId: record.scheduleId } : {}),
+    ...(record.peer ? { peer: record.peer } : {}),
   };
 }
+
+/** The extra fields a purpose thread carries when it is created. */
+export type SessionOrigin = {
+  purpose: "inbox" | "delegate" | "schedule";
+  meshKey?: string;
+  scheduleId?: string;
+  peer?: string;
+};
 
 export async function listSessions(includeDeleted = false): Promise<WireSession[]> {
   const sessions = await readIndex();
@@ -183,6 +213,10 @@ export async function removeSessionRecord(id: string): Promise<boolean> {
 
 /** Point one thread at another agent: reconfigure the conversation, then update the record. */
 export async function moveSession(id: string, agentId: string): Promise<WireSession | null> {
+  const existing = await findSession(id);
+  // A purpose thread's agent is part of its identity (an inbox is the recipient's; a schedule belongs to its
+  // owner). Moving it would leave the mesh/schedule metadata pointing at a thread that no longer runs that agent.
+  if (!existing || existing.purpose) return null;
   const files = await readAgent(agentId);
   if (!files) return null;
   const conversation = await conversationOf(id);
@@ -265,18 +299,35 @@ export { readIndex as allSessionRecords, serialize as withIndexLock, toWireSessi
 /** Agent change for one conversation: model, thinking, instructions, tools, cwd. */
 export function agentChangeOf(files: Awaited<ReturnType<typeof readAgent>>): AgentChange {
   if (!files) return {};
+  // Mesh tools follow the agent's own mesh policy. A name is enabled once, even if an old tool list and the
+  // policy both mention it; the registry replaces a same-name tool, but the offered list should not repeat.
+  const meshTools = meshToolsFor(files.record.mesh);
+  const meshNames = new Set(meshTools.map((tool) => tool.name));
+  const byName = new Map<string, ToolRegistration>();
+  // The policy is authoritative even for an older agent.json whose tool list mentions agents_*: an agent
+  // switched to "message" must not keep a delegate tool merely because its list still names it.
+  const selected = toolsByName(files.record.tools).filter(
+    (tool) => !tool.name.startsWith("agents_") || meshNames.has(tool.name),
+  );
+  for (const tool of [...selected, rememberTool, ...meshTools, ...fileTools]) {
+    byName.set(tool.name, tool);
+  }
   return {
     model: { provider: files.record.provider, modelId: files.record.modelId },
     thinkingLevel: files.record.thinkingLevel,
     instructions: renderInstructions(files),
     // `remember` is always offered: keeping memory is part of being an agent, not a tool the owner has to
-    // switch on first. Everything else comes from the agent's own list.
-    tools: [...toolsByName(files.record.tools), rememberTool],
+    // switch on first. Mesh tools follow the agent's policy; everything else comes from its own list.
+    tools: [...byName.values()],
     cwd: files.record.cwd ?? null,
   };
 }
 
-export async function createSession(title?: string, agentId?: string): Promise<WireSession> {
+export async function createSession(
+  title?: string,
+  agentId?: string,
+  origin?: SessionOrigin,
+): Promise<WireSession> {
   const model = await resolveDefaultModel();
   const agentFiles = agentId ? await readAgent(agentId) : null;
   const agentChange: AgentChange = agentFiles ? agentChangeOf(agentFiles) : { model };
@@ -295,6 +346,7 @@ export async function createSession(title?: string, agentId?: string): Promise<W
         ? { provider: agentFiles.record.provider, modelId: agentFiles.record.modelId }
         : model,
       agent: agentFiles?.record.id,
+      ...(origin ? origin : {}),
     };
     const sessions = await readIndex();
     sessions.push(record);
@@ -491,13 +543,14 @@ export async function sendMessage(
   id: string,
   body: UserMessageBody,
   whenBusy: "steer" | "followUp" | "reject" = "followUp",
+  options?: UserMessageOptions,
 ): Promise<{ submissionId: string } | null> {
   const record = await findSession(id);
   if (!record) return null;
   const conversation = await conversationOf(id);
   if (!conversation) return null;
 
-  const { data, content } = await prepareUserMessage(body, await attachmentPolicy(record));
+  const { data, content } = await prepareUserMessage(body, await attachmentPolicy(record), options);
   // The submission is durable by the time this call returns; the answer arrives over the WebSocket.
   const submission = await conversation.submit(
     {

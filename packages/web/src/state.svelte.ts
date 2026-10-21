@@ -1,8 +1,9 @@
 /// <reference types="svelte" />
 import { api } from "./api.ts";
 import { releaseDrafts } from "./lib/files.ts";
-import { IDLE_ACTIVITY, type Activity, type AgentRecord, type ContextInfo, type DraftFile, type Msg, type Session, type SystemSnapshot } from "./types.ts";
+import { IDLE_ACTIVITY, type Activity, type AgentRecord, type ContextInfo, type DraftFile, type FleetSnapshot, type Msg, type Session, type SystemSnapshot } from "./types.ts";
 import { connect, connectPresence, type Frame } from "./ws.ts";
+import { loadNotifyPrefs, playChime, showDesktopNotification } from "./lib/notify.ts";
 
 export const store = $state({
   sessions: [] as Session[],
@@ -23,6 +24,10 @@ export const store = $state({
   busy: false,
   /** Session ids the server reports as generating, for every thread and not just the open one. */
   active: [] as string[],
+  /** The live roster and recent A2A links, sent with presence. */
+  fleet: null as FleetSnapshot | null,
+  /** One small completion notice; a batch of finishes is coalesced into a count. */
+  completionToast: null as { sessionId: string; title: string; count: number; at: number } | null,
   /**
    * The round's status. One whole-list snapshot from the server, so there is nothing to diff and a missed
    * start/stop pair cannot leave a row spinning.
@@ -51,6 +56,8 @@ export type RestartTracker =
 
 let disconnect: (() => void) | null = null;
 let openToken = 0;
+/** The activity list of the previous presence frame; null until the first frame has been seen. */
+let presenceBaseline: Set<string> | null = null;
 
 /**
  * One interval for every elapsed label, running only while something is running.
@@ -160,8 +167,18 @@ function onFrame(frame: Frame): void {
             : [...store.typing, frame.author]
           : store.typing.filter((name) => name !== frame.author);
       break;
-    case "presence":
+    case "presence": {
+      const next = new Set(frame.active);
+      const finished = presenceBaseline
+        ? [...presenceBaseline].filter((id) => !next.has(id))
+        : [];
+      presenceBaseline = next;
       store.active = frame.active;
+      if (finished.length > 0) announceCompletions(finished);
+      break;
+    }
+    case "fleet":
+      store.fleet = frame.fleet;
       break;
     case "activity":
       store.activity = frame.activity;
@@ -170,6 +187,60 @@ function onFrame(frame: Frame): void {
     default:
       break;
   }
+}
+
+/**
+ * Sound, a toast, or a desktop notification when a run leaves the active list.
+ *
+ * Only real sessions are announced: a group's member conversations are active too, but the room's own id is
+ * the one the owner can open. The first presence frame is a baseline, so a page load never announces work
+ * that was already running.
+ */
+function announceCompletions(ids: readonly string[]): void {
+  const prefs = loadNotifyPrefs();
+  const hidden = document.visibilityState === "hidden" || !document.hasFocus();
+  const seen = new Set<string>();
+  let toast: { sessionId: string; title: string; count: number; at: number } | null = null;
+  let shouldChime = false;
+
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const session = store.sessions.find((entry) => entry.id === id);
+    if (!session) continue;
+    if (session.deletedAt) continue;
+    const agent = session.agent ? store.agents.find((entry) => entry.id === session.agent) : undefined;
+    const label = agent?.name || (session.kind === "group" ? session.title : session.title);
+    const current = id === store.currentId;
+    shouldChime = true;
+
+    if (prefs.desktop && (hidden || !current)) {
+      showDesktopNotification(
+        {
+          sessionId: id,
+          title: label + " finished",
+          body: session.title,
+        },
+        prefs.sound,
+      );
+    }
+
+    if (prefs.toast && !hidden && !current) {
+      if (toast === null) {
+        toast = { sessionId: id, title: label + " finished", count: 1, at: Date.now() };
+      } else {
+        toast.count += 1;
+        toast.at = Date.now();
+      }
+    }
+  }
+
+  if (shouldChime && prefs.sound) playChime();
+  if (toast) store.completionToast = toast;
+}
+
+export function dismissCompletionToast(): void {
+  store.completionToast = null;
 }
 
 function report(error: unknown): void {
@@ -210,15 +281,19 @@ export function watchActivity(): void {
 export function unwatchActivity(): void {
   disconnectPresence?.();
   disconnectPresence = null;
+  presenceBaseline = null;
   store.active = [];
+  store.fleet = null;
 }
 
-export async function loadSessions(includeDeleted = false): Promise<void> {
+export async function loadSessions(includeDeleted = false): Promise<boolean> {
   try {
     const { sessions } = await api.sessions(includeDeleted);
     store.sessions = sessions;
+    return true;
   } catch (err) {
     report(err);
+    return false;
   }
 }
 
@@ -284,12 +359,25 @@ export async function setThreadModel(provider: string, modelId: string): Promise
   }
 }
 
-export async function loadAgents(): Promise<void> {
+export async function loadAgents(): Promise<boolean> {
   try {
     const { agents } = await api.agents();
     store.agents = agents;
+    return true;
   } catch (err) {
     report(err);
+    return false;
+  }
+}
+
+/** The REST fallback for a fleet page opened before the presence socket's first frame. */
+export async function loadFleet(): Promise<boolean> {
+  try {
+    store.fleet = await api.fleet();
+    return true;
+  } catch (err) {
+    report(err);
+    return false;
   }
 }
 
@@ -602,5 +690,3 @@ function waitForRestart(previousPid: number): void {
     void restartTick(previousPid, since);
   }, 500);
 }
-
-
