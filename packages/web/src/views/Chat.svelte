@@ -114,6 +114,19 @@
   const currentMode = $derived(MODES.find((mode) => mode.id === room?.mode) ?? null);
 
   /** A diagram control only exists when the session actually has one; an empty button is bloat. */
+  /**
+   * The one task summary is shown at the bottom of the timeline, not under every assistant reply. While a run
+   * is active the previous task's numbers are hidden, so the owner never reads a stale total as if it belonged
+   * to the answer still being written.
+   */
+  const lastTask = $derived.by(() => {
+    for (let index = store.entries.length - 1; index >= 0; index -= 1) {
+      const entry = store.entries[index];
+      if (entry?.run) return entry;
+    }
+    return null;
+  });
+
   const diagramCount = $derived(
     store.entries.reduce((count, entry) => {
       if (entry.role !== "assistant" && entry.role !== "user") return count;
@@ -423,9 +436,6 @@
             {#if message.artifacts && session}
               <GeneratedFiles sessionId={session.id} entryId={message.id} artifacts={message.artifacts} />
             {/if}
-            {#if message.run}
-              <RunSummary run={message.run} />
-            {/if}
             {#if options}
               <QuestionOptions
                 {options}
@@ -456,6 +466,13 @@
         </article>
       {/if}
     {/each}
+
+    {#if lastTask?.run && !store.busy && store.activity.phase === null}
+      <div class="task-summary" data-testid="task-summary">
+        <span class="task-summary__label">Task summary</span>
+        <RunSummary run={lastTask.run} />
+      </div>
+    {/if}
 
     {#if indicator === "strip"}
       <ActivityStrip activity={store.activity} now={store.now} />

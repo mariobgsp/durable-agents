@@ -72,25 +72,8 @@ function resultText(results: readonly MeshTargetResult[], delegate: boolean): st
     }
     const where = result.threadId ? "thread " + result.threadId : "delivered";
     if (delegate) {
-      const timing =
-        typeof result.durationMs === "number"
-          ? " in " + (result.durationMs / 1000).toFixed(1) + "s"
-          : "";
-      const tokens =
-        typeof result.tokens === "number"
-          ? " · " + result.tokens.toLocaleString("en-US") + " tokens"
-          : "";
-      lines.push(
-        "@" +
-          result.target +
-          " — answered" +
-          timing +
-          tokens +
-          " (" +
-          where +
-          "):\n" +
-          (result.answer ?? "(empty answer)"),
-      );
+      // Timing and token totals belong to the one task summary at the end, not to an intermediate reply.
+      lines.push("@" + result.target + " — answered (" + where + "):\n" + (result.answer ?? "(empty answer)"));
     } else {
       lines.push("@" + result.target + " — delivered (" + where + ")");
     }

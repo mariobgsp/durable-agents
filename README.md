@@ -34,7 +34,7 @@ files, refresh and the mobile composer) complete. Phases 7–9 not started.**
 | Agent network: multi-target messages and delegation | **Done** — directed inbox/task threads, fan-out, 6-hop guard, request-id idempotency |
 | Fleet roster + live A2A links | **Done** — working/idle/disabled, current thread, token totals, grouped batches over the presence socket |
 | Usage periods, cache and stateless calls | **Done** — today/month/30 days/all time, daily and monthly series, `usage.jsonl` for Nyahut/suggestions |
-| Run summaries and session totals | **Done** — duration, tokens, cached tokens and cost on the final answer, derived from durable entries |
+| Task summaries | **Done** — duration, tokens, cached tokens and cost once at the end of the completed task, derived from durable entries; no token footer on intermediate replies |
 | Per-agent cron schedules | **Done** — 5-field cron, dedicated thread, run-now, skip-when-busy, restart-safe |
 | Mermaid diagram drawer | **Done** — per-session gallery, render one at a time, inline diagrams render when near the viewport |
 | Completion sound, toast and desktop notification | **Done** — client preferences, one shared AudioContext, permission requested from a user gesture |
@@ -231,10 +231,10 @@ is no second store to keep in step.
   index and the schedule store. The presence socket sends `presence` and `fleet` together; the Agents page is
   the compact roster and grouped link batches. Fleet snapshots never scan transcripts; token totals come from
   the cached usage report.
-- **Usage and run summaries.** The report buckets assistant usage plus stateless calls by local day and month,
-  and includes soft-deleted threads while their rows exist. `entriesToMsgs` derives one run summary — wall time,
+- **Usage and task summaries.** The report buckets assistant usage plus stateless calls by local day and month,
+  and includes soft-deleted threads while their rows exist. `entriesToMsgs` derives one task summary — wall time,
   tokens, cache read/write and cost — from the user entry and the assistant/tool entries, so there is no
-  second usage log for a normal run.
+  second usage log for a normal run. Chat shows that summary once at the end of the timeline and hides it while a run is active.
 - **Display.** customize_ui changes a saved global theme: product name, tagline, logo, colors, font, density,
   radius and a bounded network-free CSS layer. The server validates every token, writes data/display.json and
   broadcasts a display frame; a tab that misses the frame sees the same result on refresh. This is not source

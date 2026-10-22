@@ -559,6 +559,27 @@ body {
   margin-top: 0;
 }
 
+.task-summary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.task-summary__label {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.task-summary .runsummary {
+  margin-top: 0;
+}
+
 .runsummary {
   display: flex;
   align-items: baseline;
@@ -675,14 +696,6 @@ body {
   background: var(--text);
   border-color: var(--text);
   color: var(--ink);
-}
-
-.contextbar__session {
-  margin-left: auto;
-  color: var(--muted);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 
 .notify {
@@ -883,10 +896,6 @@ html[data-density="spacious"] .sidebar {
 
   .schedules__actions {
     justify-content: flex-start;
-  }
-
-  .contextbar__session {
-    display: none;
   }
 
   .notify__pop {

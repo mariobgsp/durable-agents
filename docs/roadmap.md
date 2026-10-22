@@ -419,9 +419,9 @@ Locked decisions taken in this phase:
   their rows exist, assistant usage, and the stateless ledger (data/usage.jsonl) written by Nyahut claims,
   oversight and responsibility suggestions. Compaction spend is not itemized because pi-durable exposes it only
   in the aggregate usage document, without a timestamp.
-- **Run summaries.** Derived in entriesToMsgs, not stored twice. The final assistant of a run carries duration,
+- **Task summaries.** Derived in entriesToMsgs, not stored twice. The latest completed task is summarized once at the end of the timeline, with duration,
   tokens, cache read/write and cost; tool durations are a floor when a provider omits a response duration. Group
-  runs write one room.usage entry with the measured wall time and summed member usage.
+  runs write one room.usage entry with the measured wall time and summed member usage; intermediate replies do not show token totals.
 - **Cron.** Five-field cron plus aliases in server local time; no per-schedule time zone and no backfill. One
   dedicated thread per schedule; the scheduler skips a thread that is still working and records the skip. The
   request id is keyed to the due minute, so a retry cannot duplicate a run.

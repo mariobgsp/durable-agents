@@ -7,32 +7,13 @@
    */
   const info = $derived(store.context);
   const selected = $derived(info ? info.provider + "|" + info.modelId : "");
+  /** A token count is a task result, not a live reply decoration: keep the context figure for idle moments. */
+  const running = $derived(store.busy || store.activity.phase !== null);
   const percent = $derived(
     info?.maxTokens ? Math.min(100, Math.round((info.usedTokens / info.maxTokens) * 100)) : 0,
   );
   /** Only while the request is in flight: the task itself is background work, not something to wait on. */
   let asking = $state(false);
-
-  /** What every completed run in this thread adds up to. Derived from the run summaries, never a second log. */
-  const totals = $derived.by(() => {
-    let turns = 0;
-    let tokens = 0;
-    let cacheRead = 0;
-    let durationMs = 0;
-    for (const entry of store.entries) {
-      if (!entry.run) continue;
-      turns += entry.run.turns;
-      tokens += entry.run.usage.totalTokens;
-      cacheRead += entry.run.usage.cacheRead;
-      durationMs += entry.run.durationMs;
-    }
-    return { turns, tokens, cacheRead, durationMs };
-  });
-
-  function seconds(ms: number): string {
-    if (ms >= 60_000) return Math.floor(ms / 60_000) + "m " + Math.round((ms % 60_000) / 1000) + "s";
-    return (ms / 1000).toFixed(1) + "s";
-  }
 
   async function askCompact(): Promise<void> {
     if (asking) return;
@@ -65,7 +46,7 @@
 </script>
 
 <div class="contextbar" data-testid="context-bar">
-  {#if info}
+  {#if info && !running}
     <span class="contextbar__usage" data-testid="context-usage" title="Tokens used of the model's window">
       {compact(info.usedTokens)}{#if info.maxTokens}&thinsp;/&thinsp;{compact(info.maxTokens)}{/if}
       {#if info.maxTokens}<span class="contextbar__pct">{percent}%</span>{/if}
@@ -87,16 +68,6 @@
   >
     {asking ? "Compacting…" : "Compact"}
   </button>
-
-  {#if totals.turns > 0}
-    <span
-      class="contextbar__session"
-      data-testid="session-usage"
-      title={"This thread: " + totals.turns + " assistant turns · input/output/cache included · " + totals.tokens.toLocaleString("en-US") + " tokens"}
-    >
-      {compact(totals.tokens)} tok{#if totals.durationMs > 0} · {seconds(totals.durationMs)}{/if}{#if totals.cacheRead > 0} · {compact(totals.cacheRead)} cached{/if}
-    </span>
-  {/if}
 
   <label
     class="contextbar__model"

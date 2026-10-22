@@ -15,7 +15,7 @@ the transcript and its permissions ambiguous. The mesh therefore uses directed t
   The caller waits for the answer; the target's full answer stays in its thread and a bounded copy returns in the
   tool result.
 - A schedule owns one thread titled "Cron · <name>", keyed by the schedule id. Every run is a normal user input
-  there, which is why the transcript, run summary, attachments and usage report need no special case.
+  there, which is why the transcript, task summary, attachments and usage report need no special case.
 
 Purpose threads carry purpose, meshKey, scheduleId and peer on the session record. Move is refused for them, and
 the sidebar gives them compact Inbox, Task and Cron badges.
@@ -79,11 +79,10 @@ ledger exists because Nyahut's claim and oversee calls and the responsibility su
 entry. Compaction spend is not itemized: pi-durable exposes it only in the aggregate usage document, without a
 timestamp.
 
-Run summaries are derived from entries. A run starts at the first user entry, stays open across tool-call rounds
-and steers, and closes at the first assistant answer whose stopReason is not toolUse. The final assistant carries
-the duration, tokens, cache read/write and cost. Tool durations are a floor when the provider reports no response
-duration. A group run writes one room.usage entry with the measured wall time and summed member usage; it is
-display and session-total data, not a second usage source.
+Task summaries are derived from entries. A run starts at the first user entry, stays open across tool-call rounds
+and steers, and closes at the first assistant answer whose stopReason is not toolUse. The UI shows one task summary at the end of the timeline, not under every reply; it carries duration, tokens,
+cache read/write and cost. Tool durations are a floor when the provider reports no response duration. A group run writes one room.usage entry with the measured wall time and summed member usage; it is
+display and task-summary data, not a second usage source.
 
 ## Cron
 
