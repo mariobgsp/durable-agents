@@ -119,10 +119,12 @@ rows. The chat renders a standalone download card, not a second assistant bubble
 
 ## Mobile composer
 
-The shell height follows visualViewport, with 100dvh as the fallback, and the viewport meta includes
-interactive-widget=resizes-content. The composer is sticky above the safe area and focuses the textarea into the
-remaining visible area after the keyboard has settled. The 390×500 screenshot is the regression evidence: the
-composer is visible without scrolling even when the layout is shorter than a phone.
+The shell is pinned to visualViewport's height and top offset, with 100dvh as the fallback, and the viewport meta
+includes interactive-widget=resizes-content. The offset matters: when a phone keyboard pans the focused field,
+the visible rectangle moves down as well as shrinking, and sizing only the height leaves the composer above the
+visible area. There is deliberately no focus-triggered scrollIntoView; the app rectangle follows the viewport
+instead. The 390×500 screenshot is the regression evidence. Thread titles use flex: 1 1 auto with min-width: 0 so
+the phone drawer ellipsizes long names rather than pushing them out.
 
 ## Refresh
 

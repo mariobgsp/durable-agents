@@ -5,6 +5,7 @@ import type {
   AgentRecord,
   Artifact,
   ContextInfo,
+  DisplaySnapshot,
   FleetSnapshot,
   ModelInfo,
   Msg,
@@ -166,6 +167,9 @@ export const api = {
   usage: (fresh = false) => req<UsageReport>("/api/usage" + (fresh ? "?fresh=1" : "")),
 
   fleet: () => req<FleetSnapshot>("/api/fleet"),
+
+  display: () => req<DisplaySnapshot>("/api/display"),
+  resetDisplay: () => req<DisplaySnapshot>("/api/display/reset", { method: "POST", body: "{}" }),
 
   schedules: (agentId?: string) =>
     req<{ schedules: Schedule[]; timezone: string }>("/api/schedules" + (agentId ? "?agentId=" + encodeURIComponent(agentId) : "")),

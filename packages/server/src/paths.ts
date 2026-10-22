@@ -19,6 +19,8 @@ export const meshPath = resolve(dataDir, "mesh.json");
 export const schedulesPath = resolve(dataDir, "schedules.json");
 /** Append-only spend from model calls that have no conversation of their own (Nyahut claims, suggestions). */
 export const usageLedgerPath = resolve(dataDir, "usage.jsonl");
+/** Global display/theme chosen by an agent or the owner. */
+export const displayPath = resolve(dataDir, "display.json");
 export const credentialsPath = resolve(dataDir, "credentials.json");
 /** The last system operation, written only at a terminal phase. The one writable file outside SQLite. */
 export const systemPath = resolve(dataDir, "system.json");

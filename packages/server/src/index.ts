@@ -21,6 +21,15 @@ import {
 import { activeIds, subscribe as subscribeActivity } from "./activity.ts";
 import { fleetSnapshot } from "./fleet.ts";
 import {
+  DEFAULT_DISPLAY,
+  DisplayError,
+  displaySnapshot,
+  resetDisplay,
+  subscribeDisplay,
+  updateDisplay,
+  type DisplayPatch,
+} from "./display.ts";
+import {
   forgetMeshAgent,
   forgetMeshThread,
   reconcileMesh,
@@ -609,6 +618,25 @@ await app.register(
       return usageReport(query.fresh === "1");
     });
 
+    // ---------- display ----------
+
+    /** The saved global display. The client applies it before the shell is shown. */
+    api.get("/display", async () => displaySnapshot());
+
+    api.put("/display", async (request, reply) => {
+      try {
+        return await updateDisplay((request.body ?? {}) as DisplayPatch, "owner");
+      } catch (error) {
+        if (error instanceof DisplayError) {
+          await reply.code(error.status).send({ code: error.code, error: error.message });
+          return;
+        }
+        throw error;
+      }
+    });
+
+    api.post("/display/reset", async () => resetDisplay("owner"));
+
     // ---------- fleet and schedules ----------
 
     /** The compact roster and recent agent-to-agent links. Also sent over the presence socket. */
@@ -802,6 +830,21 @@ await app.register(
       }
     };
 
+    const sendDisplay = (display: Awaited<ReturnType<typeof displaySnapshot>>): void => {
+      const frame = JSON.stringify({ type: "display", display } satisfies WireFrame);
+      for (const socket of presenceSockets) {
+        if (socket.readyState === socket.OPEN) socket.send(frame);
+      }
+    };
+
+    const broadcastDisplay = (): void => {
+      void displaySnapshot()
+        .then(sendDisplay)
+        .catch(() => undefined);
+    };
+
+    subscribeDisplay(broadcastDisplay);
+
     let fleetTimer: NodeJS.Timeout | undefined;
     const sendFleet = (): void => {
       if (fleetTimer) return;
@@ -831,6 +874,13 @@ await app.register(
       presenceSockets.add(socket);
       // Send the current state immediately: a tab that connects mid-generation must not wait for a change.
       socket.send(JSON.stringify({ type: "presence", active: activeIds() } satisfies WireFrame));
+      void displaySnapshot()
+        .then((display) => {
+          if (socket.readyState === socket.OPEN) {
+            socket.send(JSON.stringify({ type: "display", display } satisfies WireFrame));
+          }
+        })
+        .catch(() => undefined);
       void fleetSnapshot()
         .then((fleet) => {
           if (socket.readyState === socket.OPEN) {

@@ -85,6 +85,30 @@ export const IDLE_ACTIVITY: Activity = {
   queued: [],
 };
 
+export type DisplayFont = "geist" | "system" | "serif" | "mono";
+export type DisplayDensity = "compact" | "comfortable" | "spacious";
+
+/** The global display chosen by an agent. Mirrors packages/server/src/display.ts. */
+export type DisplayTheme = {
+  displayName: string;
+  tagline: string;
+  logo: string;
+  accent: string;
+  background: string;
+  panel: string;
+  text: string;
+  muted: string;
+  font: DisplayFont;
+  density: DisplayDensity;
+  radius: number;
+  customCss: string;
+};
+
+export type DisplaySnapshot = DisplayTheme & {
+  updatedAt: number;
+  updatedBy?: string;
+};
+
 /** A generated file attached to a thread. The bytes live under data/artifacts, never in this type. */
 export type Artifact = {
   id: string;

@@ -4,7 +4,7 @@ The application is called **dura-agents**; the repository and its directory keep
 
 A local, single-user web app for **durable agent work**: threads that survive restarts, agents defined by two
 markdown files, group chats where several agents talk to each other, and a directed agent network where one
-agent can message or delegate to several others in their own sessions, and produce files the owner can download.
+agent can message or delegate to several others in their own sessions, produce files the owner can download, and restyle the app's display.
 
 Built on [`@earendil-works/pi-durable`](https://www.npmjs.com/package/@earendil-works/pi-durable) — every
 message, tool call and generation is a durable task in SQLite, so closing the browser or killing the server
@@ -44,9 +44,10 @@ files, refresh and the mobile composer) complete. Phases 7–9 not started.**
 | Agent & group identity (colour + emoji) | **Done** |
 | Live "replying" indicator, per session | **Done** |
 | Responsive layout + design system | **Done** — 5 viewport tiers in the screenshot gate |
-| E2E suite (faux provider, deterministic) | **20 scenarios passing** |
+| E2E suite (faux provider, deterministic) | **21 scenarios passing** |
 | Image and document attachments | **Done** — bytes live in the entry the model was given |
 | Generated file output | **Done** — Markdown, text, JSON, PDF, arbitrary base64 and published files become durable download cards under data/artifacts |
+| Agent display customization | **Done** — a closed global theme token set plus a bounded network-free CSS layer, changed by customize_ui and applied live or on refresh |
 | Live activity indicator (phase, calls, elapsed) | **Done** — derived from `pi.live`, never a guess |
 | Storage: size report, cleanup, purge | **Done** — the `#/usage` panel prints the bytes the cleanup actually gave back |
 | System panel: update + restart | **Done** — `#/system` reports the loaded versions, the sandbox and the supervisor; Update installs packages only where the repo is writable, and reloads the live tools where it is read-only |
@@ -61,8 +62,8 @@ Latest verified run:
 | Check | Result |
 | --- | --- |
 | `npm run check` | `tsc` clean · `svelte-check` **0 errors, 2 warnings** (both in `Dialog.svelte`, untouched) · `lint:lang` clean |
-| `npm run e2e` | **20 passed, 0 failed** (`activity`, `attachments`, `codemode`, `files`, `fleet`, `identity`, `live-activity`, `memory`, `mesh`, `models`, `permissions`, `questions`, `schedules`, `search`, `sessions`, `steering`, `storage`, `system`, `tools`, `usage`) |
-| `npm run build` | entry **84.0 kB JS** + **9.7 kB CSS** gzip (budget 120 kB); mermaid and its layout engines stay in their own chunks, fetched only when a diagram renders |
+| `npm run e2e` | **21 passed, 0 failed** (`activity`, `attachments`, `codemode`, `display`, `files`, `fleet`, `identity`, `live-activity`, `memory`, `mesh`, `models`, `permissions`, `questions`, `schedules`, `search`, `sessions`, `steering`, `storage`, `system`, `tools`, `usage`) |
+| `npm run build` | entry **85.5 kB JS** + **9.9 kB CSS** gzip (budget 120 kB); mermaid and its layout engines stay in their own chunks, fetched only when a diagram renders |
 | `npm run shots:replying` | 11 screenshots |
 | `npm run shots` | 70 screenshots captured locally in `docs/ui-review/2026-10-21/` (14 routes × 5 viewports), including boot, automation, diagram, usage and notification states. Not committed: that gate run used the owner's live agents. |
 | `#/usage` | daily/monthly/cache/stateless report + Storage panel; included in the local screenshot gate |
@@ -234,13 +235,19 @@ is no second store to keep in step.
   and includes soft-deleted threads while their rows exist. `entriesToMsgs` derives one run summary — wall time,
   tokens, cache read/write and cost — from the user entry and the assistant/tool entries, so there is no
   second usage log for a normal run.
+- **Display.** customize_ui changes a saved global theme: product name, tagline, logo, colors, font, density,
+  radius and a bounded network-free CSS layer. The server validates every token, writes data/display.json and
+  broadcasts a display frame; a tab that misses the frame sees the same result on refresh. This is not source
+  editing: there is no build, no restart and no code execution. The owner resets from System or with
+  ?display=default.
 - **Generated files.** create_file writes text or base64 into data/artifacts; create_pdf renders Markdown with a
   small built-in PDF writer; publish_file attaches a file the agent already wrote. The entry is the durable
   index, and the download route serves only an artifact id named by that entry. A purge removes the
   conversation's artifacts with its rows.
-- **Mobile composer.** The shell is sized to visualViewport, not only 100dvh, and the viewport meta asks the
-  browser to resize content for the keyboard. The composer is sticky above the safe area and scrolls itself
-  into view on focus, so the chat box is reachable without scrolling down.
+- **Mobile composer.** The shell is pinned to the visualViewport's height and top offset, not only 100dvh, and
+  the viewport meta asks the browser to resize content for the keyboard. The composer is sticky above the safe
+  area and there is no focus-triggered scrollIntoView, so the chat box follows the visible rectangle instead
+  of jumping away. Thread titles flex and ellipsize in the phone drawer instead of being squeezed out.
 - **Cron.** A schedule owns one thread. The tick reads the durable store, skips a thread that is still working,
   submits with a request id keyed to the due minute, and records the answer's duration and tokens. Cron is
   evaluated in the server's local time zone; missed windows are counted, never replayed in a burst.
@@ -739,6 +746,9 @@ These are **not** done — please do not read the status table as claiming other
   viewport and the drawer renders one at a time, but the first diagram is still not cheap.
 - **Desktop notifications need the app tab open.** The page can show a notification while it is hidden or on
   another thread; a notification with the browser fully closed needs push infrastructure and is not implemented.
+- **Display customization is not source editing.** Agents can change a closed token set and a bounded CSS layer,
+  not the Svelte source or the server. A determined stylesheet can still hide parts of the UI; the owner can use
+  ?display=default for a recovery view or reset from System.
 - **Generated files are download-only in the chat card.** There is no inline PDF preview and no zip-all action yet.
 - **PDF uses the base fonts.** Non-Latin glyphs become "?"; an agent that needs an embedded font can generate
   the PDF itself and attach it with publish_file.

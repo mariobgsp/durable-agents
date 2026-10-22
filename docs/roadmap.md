@@ -436,8 +436,8 @@ Evidence:
 | Check | Result |
 | --- | --- |
 | npm run check | tsc clean · svelte-check 0 errors (2 pre-existing Dialog warnings) · lint:lang clean |
-| npm run e2e | **20 passed, 0 failed**, including the mesh, fleet, schedules, usage and files scenarios |
-| npm run build | entry **84.0 kB JS** + **9.7 kB CSS** gzip; mermaid remains in lazy chunks |
+| npm run e2e | **21 passed, 0 failed**, including the mesh, fleet, schedules, usage, files and display scenarios |
+| npm run build | entry **85.5 kB JS** + **9.9 kB CSS** gzip; mermaid remains in lazy chunks |
 | npm run shots | 70 screenshots captured locally in docs/ui-review/2026-10-21 (14 routes × 5 viewports), including boot, automation, diagram, usage and notification states; the folder is not committed because the run used live owner data |
 | Manual proof | The seeded Request flow diagram thread shows Worked 8.2s · 2,600 tokens · 400 cached · $0.0021; the Usage page shows the same totals and per-agent row; the fleet screenshots show idle/disabled status and a cron thread; the E2E demo shows an answered Ann → Bob/Chef delegate batch |
 
@@ -468,9 +468,10 @@ Locked decisions:
   its roots through it.
 - **Cards, not a second transcript.** A generated file is a standalone download card, not an assistant bubble.
   The tool result line remains as the audit trail; the card carries the name, size and a download arrow.
-- **Mobile composer.** The shell follows visualViewport, the viewport meta asks the browser to resize content
-  for the keyboard, the composer is sticky above the safe area, and focusing the textarea brings it into the
-  remaining visible area. A 390×500 screenshot is part of the review evidence.
+- **Mobile composer.** The shell follows visualViewport's height and top offset, the viewport meta asks the
+  browser to resize content for the keyboard, and the composer is sticky above the safe area. Focus does not
+  call scrollIntoView; the app rectangle follows the visible one instead. Thread titles flex with min-width zero
+  so the phone drawer keeps the name visible and ellipsized. A 390×500 screenshot is part of the evidence.
 - **Refresh.** The Fleet has a Refresh button, reloads agents and fleet on every mount, and the AgentEditor
   reloads both lists after create, update and delete. The old first-load-only check was the reason a new agent
   could remain invisible until a full page reload.
@@ -480,8 +481,8 @@ Evidence:
 | Check | Result |
 | --- | --- |
 | npm run check | tsc clean · svelte-check 0 errors (2 pre-existing Dialog warnings) · lint:lang clean |
-| npm run e2e | **20 passed, 0 failed**, including the new files scenario: Markdown, JSON, base64, PDF text extraction through pdftotext, publish_file and artifact storage |
-| npm run build | entry **84.0 kB JS** + **9.7 kB CSS** gzip; Mermaid remains in lazy chunks |
+| npm run e2e | **21 passed, 0 failed**, including the files and display scenarios |
+| npm run build | entry **85.5 kB JS** + **9.9 kB CSS** gzip; Mermaid remains in lazy chunks |
 | npm run shots | 70 screenshots (14 routes × 5 viewports) plus supplementary generated-file, fleet-link, run-summary, usage and mobile-composer evidence, captured locally; not committed because the gate used live owner data |
 | Manual proof | A generated .md and .pdf appear as download cards on desktop and phone; the 390×500 composer stays visible; the fleet refresh shows an externally created agent after one click; the new agent appears in the sidebar immediately after Save |
 
@@ -492,6 +493,43 @@ Remaining limits:
 - Generated files are download-only in the chat card; there is no inline PDF preview or zip-all action.
 - The artifact directory is included in the Storage panel and purged with its conversation, but there is no
   standalone cleanup button for orphaned files.
+
+### Phase 14 — Agent display customization (DONE)
+
+The owner asked for agents to customize the UI so the app can look different without a build or restart.
+
+Locked decisions:
+
+- **A closed display model, not source editing.** display.json stores displayName, tagline, logo, five hex colours,
+  font, density, radius and a bounded CSS layer. An agent cannot change packages/web or the server through this
+  path; the change is data, validated by the server.
+- **Live plus refresh.** customize_ui writes data/display.json and emits a display frame on the presence socket.
+  Every open tab applies the CSS variables and custom stylesheet immediately. A tab that missed the frame gets
+  the same result on its next refresh, because the same file is fetched during boot.
+- **Owner recovery.** The System page has a Display panel with the current token summary and Reset display. The
+  ?display=default query bypasses the saved display for one view if a stylesheet hides the reset control.
+- **Bounded CSS.** No @import, url(), remote URLs, @font-face, javascript:, expression(), behavior or
+  -moz-binding. The 20 kB limit is enforced, and every colour must be a hex literal. A rejected patch leaves the
+  previous display intact.
+- **Global by choice.** The display is app-wide, not per-session. The owner can ask any agent to change it and can
+  reset it from System.
+
+Evidence:
+
+| Check | Result |
+| --- | --- |
+| npm run check | tsc clean · svelte-check 0 errors (2 pre-existing Dialog warnings) · lint:lang clean |
+| npm run e2e | **21 passed, 0 failed**, including the display scenario: agent tool, owner API, live display frame, unsafe CSS rejection, invalid colour rejection and reset |
+| npm run build | entry **85.5 kB JS** + **9.9 kB CSS** gzip; Mermaid remains in lazy chunks |
+| npm run shots | 70 local gate screenshots plus supplementary generated-file, fleet-link, run-summary, usage, mobile-composer and display evidence; not committed because the gate used live owner data |
+| Manual proof | A Night Shift theme (moon logo, blue accent, mono type, compact density, radius 6, custom letter spacing) changes the brand, fleet, chat, mobile shell and System panel without a build; Reset returns the default |
+
+Remaining limits:
+
+- This is deliberately not full self-modification. Agents cannot edit Svelte components, package code or the
+  server through customize_ui; those still require a code change, build and restart.
+- Custom CSS can still hide parts of the UI. Recovery is ?display=default or deleting data/display.json.
+- The boot screen is static; a custom brand appears after the first display fetch on a cold load.
 
 ## Known gaps (do not claim these are done)
 

@@ -1,5 +1,5 @@
 import { token } from "./api.ts";
-import type { Activity, FleetSnapshot, Msg, ToolCall } from "./types.ts";
+import type { Activity, DisplaySnapshot, FleetSnapshot, Msg, ToolCall } from "./types.ts";
 
 /** One tool call, in the shape the chat trace renders. Defined with the other wire mirrors in types.ts. */
 export type { ToolCall };
@@ -18,6 +18,7 @@ export type Frame =
   | { type: "typing"; author: string; state: "start" | "stop" }
   | { type: "presence"; active: string[] }
   | { type: "fleet"; fleet: FleetSnapshot }
+  | { type: "display"; display: DisplaySnapshot }
   | { type: "refresh"; entries: Msg[] }
   | { type: "log"; text: string }
   | { type: "error"; message: string };

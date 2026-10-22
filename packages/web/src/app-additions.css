@@ -1,16 +1,36 @@
 :root {
   --app-height: 100dvh;
+  --app-offset: 0px;
 }
 
-#app,
-.app,
 html,
 body {
+  height: 100dvh;
+}
+
+/* The visual viewport can be shorter and lower than the layout viewport when a phone keyboard is open. */
+#app {
+  position: fixed;
+  top: var(--app-offset);
+  right: 0;
+  left: 0;
   height: var(--app-height);
+}
+
+.app {
+  height: 100%;
 }
 
 /* Fleet, schedules, diagrams, alerts and usage-period additions. Kept separate from the original app.css so
    the design system's responsive rules stay in one piece. */
+
+.brand__logo {
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 14px;
+  letter-spacing: 0;
+  text-transform: none;
+}
 
 .sidebar__head-actions {
   display: flex;
@@ -24,6 +44,16 @@ body {
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+  flex: none;
+}
+
+.thread__title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.thread__slot,
+.thread__purpose {
   flex: none;
 }
 
@@ -420,6 +450,37 @@ body {
   font-size: 11px;
 }
 
+.display-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+
+.display-panel h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.display-panel__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.display-panel__swatch {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+}
+
 .filecards {
   display: flex;
   flex-direction: column;
@@ -701,6 +762,36 @@ body {
 .toast__body span {
   color: var(--muted);
   font-size: 10px;
+}
+
+html[data-density="compact"] .timeline {
+  gap: 10px;
+  padding-top: 16px;
+}
+
+html[data-density="compact"] .page {
+  gap: 12px;
+  padding-top: 14px;
+}
+
+html[data-density="compact"] .sidebar {
+  gap: 8px;
+  padding-top: 12px;
+}
+
+html[data-density="spacious"] .timeline {
+  gap: 24px;
+  padding-top: 32px;
+}
+
+html[data-density="spacious"] .page {
+  gap: 22px;
+  padding-top: 30px;
+}
+
+html[data-density="spacious"] .sidebar {
+  gap: 16px;
+  padding-top: 22px;
 }
 
 @media (max-width: 900px) {

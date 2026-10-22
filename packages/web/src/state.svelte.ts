@@ -1,7 +1,8 @@
 /// <reference types="svelte" />
 import { api } from "./api.ts";
 import { releaseDrafts } from "./lib/files.ts";
-import { IDLE_ACTIVITY, type Activity, type AgentRecord, type ContextInfo, type DraftFile, type FleetSnapshot, type Msg, type Session, type SystemSnapshot } from "./types.ts";
+import { IDLE_ACTIVITY, type Activity, type AgentRecord, type ContextInfo, type DisplaySnapshot, type DraftFile, type FleetSnapshot, type Msg, type Session, type SystemSnapshot } from "./types.ts";
+import { DEFAULT_DISPLAY, applyDisplay } from "./lib/display.ts";
 import { connect, connectPresence, type Frame } from "./ws.ts";
 import { loadNotifyPrefs, playChime, showDesktopNotification } from "./lib/notify.ts";
 
@@ -26,6 +27,8 @@ export const store = $state({
   active: [] as string[],
   /** The live roster and recent A2A links, sent with presence. */
   fleet: null as FleetSnapshot | null,
+  /** The global display, fetched at boot and updated live by the display frame. */
+  display: null as DisplaySnapshot | null,
   /** One small completion notice; a batch of finishes is coalesced into a count. */
   completionToast: null as { sessionId: string; title: string; count: number; at: number } | null,
   /**
@@ -179,6 +182,10 @@ function onFrame(frame: Frame): void {
     }
     case "fleet":
       store.fleet = frame.fleet;
+      break;
+    case "display":
+      store.display = frame.display;
+      applyDisplay(frame.display);
       break;
     case "activity":
       store.activity = frame.activity;
@@ -377,6 +384,19 @@ export async function loadFleet(): Promise<boolean> {
     return true;
   } catch (err) {
     report(err);
+    return false;
+  }
+}
+
+/** Fetch the saved display before the shell is shown; a failure falls back to the built-in defaults. */
+export async function loadDisplay(): Promise<boolean> {
+  try {
+    store.display = await api.display();
+    applyDisplay(store.display);
+    return true;
+  } catch (err) {
+    report(err);
+    applyDisplay({ ...DEFAULT_DISPLAY, updatedAt: Date.now() });
     return false;
   }
 }

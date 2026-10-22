@@ -5,6 +5,7 @@
     store,
     createSession,
     loadAgents,
+    loadDisplay,
     loadSessions,
     openSession,
     unwatchActivity,
@@ -21,6 +22,9 @@
   import NotifyButton from "./components/NotifyButton.svelte";
   import CompletionToast from "./components/CompletionToast.svelte";
   import { bindBootControls, bootFailed, finishBoot, startBootWatch } from "./lib/boot.ts";
+  import { brandOf } from "./lib/display.ts";
+
+  const brand = $derived(brandOf(store.display));
 
   // The screenshot gate can open the phone drawer so the notification popover is photographed in its real
   // context; desktop ignores it because the sidebar is already visible.
@@ -41,7 +45,7 @@
     bindBootControls();
     watchActivity();
     const started = performance.now();
-    const [sessions, agents] = await Promise.all([loadSessions(), loadAgents()]);
+    const [sessions, agents] = await Promise.all([loadSessions(), loadAgents(), loadDisplay()]);
     // A very fast local server would otherwise flash a loading screen for one frame. The minimum is short
     // enough not to delay a real boot and long enough for the screen to read as a transition.
     const elapsed = performance.now() - started;
@@ -92,7 +96,9 @@
   {/if}
   <aside class="sidebar">
     <header class="sidebar__head">
-      <span class="brand">dura-agents</span>
+      <span class="brand" title={brand.tagline}>
+        {#if brand.logo}<span class="brand__logo">{brand.logo}</span>{/if}{brand.name}
+      </span>
       <span class="sidebar__head-actions">
         <NotifyButton />
         <span class="foot-status" title={status} aria-label={"Server " + status}>

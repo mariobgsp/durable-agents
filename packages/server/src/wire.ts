@@ -1,5 +1,6 @@
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import type { FleetSnapshot } from "./fleet.ts";
+import type { DisplaySnapshot } from "./display.ts";
 
 /** Server -> web frame contract. A copy lives in packages/web/src/ws.ts and must stay identical. */
 export type WireRole = "user" | "assistant" | "tool" | "system";
@@ -148,6 +149,8 @@ export type WireFrame =
   | { type: "presence"; active: string[] }
   /** Whole-list fleet snapshot, sent with presence so the roster and the active threads cannot disagree. */
   | { type: "fleet"; fleet: FleetSnapshot }
+  /** Whole display snapshot, sent when an agent changes the global theme. */
+  | { type: "display"; display: DisplaySnapshot }
   | { type: "log"; text: string }
   | { type: "error"; message: string };
 

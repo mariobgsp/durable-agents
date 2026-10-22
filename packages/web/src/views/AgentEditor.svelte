@@ -390,7 +390,8 @@
         {/if}
         <p class="hint">
           File output is always available: create_file, create_pdf and publish_file attach a download card to
-          the thread. publish_file obeys this agent's path policy.
+          the thread. publish_file obeys this agent's path policy. The global look can be changed with
+          customize_ui; the owner can reset it from System.
         </p>
       </fieldset>
 

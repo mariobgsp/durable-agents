@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { loadSystem, startSystemRestart, startSystemUpdate, store, watchSystem } from "../state.svelte.ts";
+  import { api } from "../api.ts";
+  import { loadDisplay, loadSystem, startSystemRestart, startSystemUpdate, store, watchSystem } from "../state.svelte.ts";
   import type { SystemOperation, SystemStep, ToolVersions } from "../types.ts";
   import ActivityIndicator from "../components/ActivityIndicator.svelte";
 
@@ -27,6 +28,22 @@
   const restarting = $derived(
     store.restart?.state === "waiting" || store.restart?.state === "stopping" || phase === "restarting",
   );
+  const display = $derived(store.display);
+  let displayBusy = $state(false);
+  let displayError = $state<string | null>(null);
+
+  async function resetDisplay(): Promise<void> {
+    displayBusy = true;
+    displayError = null;
+    try {
+      await api.resetDisplay();
+      await loadDisplay();
+    } catch (error) {
+      displayError = error instanceof Error ? error.message : String(error);
+    } finally {
+      displayBusy = false;
+    }
+  }
 
   /** "Installed" is what the last package update left on disk; "running" is what this process loaded. */
   const installed = $derived(outcome?.kind === "update" && outcome.mode === "packages" ? outcome.after : null);
@@ -203,6 +220,35 @@
           Nothing supervises this process: the server stops and stays down until you start it again.
         {/if}
       </p>
+    </div>
+
+    <div class="display-panel" data-testid="display-panel">
+      <h3>Display</h3>
+      {#if display}
+        <div class="display-panel__row">
+          <span class="display-panel__swatch" style="background: {display.accent}"></span>
+          <b>{display.logo ? display.logo + " " : ""}{display.displayName}</b>
+          <span class="hint">{display.font} · {display.density} · radius {display.radius}px</span>
+        </div>
+        <p class="hint">
+          {display.tagline || "No tagline"} · {display.customCss.length} bytes of custom CSS
+          {#if display.updatedBy}· last changed by @{display.updatedBy}{/if}
+        </p>
+      {:else}
+        <p class="hint">The default display is active.</p>
+      {/if}
+      {#if displayError}
+        <p class="error" role="alert">{displayError}</p>
+      {/if}
+      <div class="row">
+        <button class="btn btn--small" disabled={displayBusy} onclick={() => void resetDisplay()} data-testid="display-reset">
+          {displayBusy ? "Resetting…" : "Reset display"}
+        </button>
+        <span class="hint">
+          Agents can change this with customize_ui. The change is saved and applied live; a refresh is enough for
+          a tab that missed the frame. Use ?display=default for a temporary recovery view.
+        </span>
+      </div>
     </div>
   {/if}
 </section>

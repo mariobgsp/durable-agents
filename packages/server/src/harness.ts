@@ -15,6 +15,7 @@ import { permissionsExtension } from "./permissions.ts";
 import { questionTool } from "./questions.ts";
 import { meshToolsExtension } from "./mesh-tools.ts";
 import { fileToolsExtension } from "./file-tools.ts";
+import { displayToolsExtension } from "./customize-ui.ts";
 import { rememberTool } from "./remember.ts";
 import { webSearchTool } from "./search.ts";
 import { dataDir, dbPath } from "./paths.ts";
@@ -147,6 +148,10 @@ function installCoreExtensions(): void {
   // File output: create_file, create_pdf and publish_file. Every agent gets these, because producing a
   // deliverable is part of the job; permissions still decide which paths publish_file may read.
   registry.install(fileToolsExtension);
+
+  // Global display customization: a saved, closed token set and a bounded CSS layer, applied live. This is
+  // deliberately not source editing; the owner can reset it without a build.
+  registry.install(displayToolsExtension);
 
   // Diagrams are just markdown, but the model has to know they are supported. Keep the instruction short: it
   // is present on every request, and the diagram itself costs nothing until one is rendered.

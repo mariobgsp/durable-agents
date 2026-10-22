@@ -21,16 +21,27 @@ mount(App, { target });
 function watchViewport(): void {
   const viewport = window.visualViewport;
   const root = document.documentElement;
+  let frame = 0;
   const sync = (): void => {
+    frame = 0;
     const height = viewport?.height ?? window.innerHeight;
     if (!Number.isFinite(height) || height < 240) return;
+    // The visual viewport is a rectangle inside the layout viewport. Both its height and its top offset move
+    // when a phone keyboard opens and the browser pans the focused input into view. Sizing only the height
+    // leaves the composer in the layout viewport while the visible rectangle sits lower, so the box appears to
+    // jump away. Pin the app to both values instead.
     root.style.setProperty("--app-height", Math.round(height) + "px");
+    root.style.setProperty("--app-offset", Math.round(viewport?.offsetTop ?? 0) + "px");
+  };
+  const schedule = (): void => {
+    if (frame !== 0) return;
+    frame = window.requestAnimationFrame(sync);
   };
   sync();
-  viewport?.addEventListener("resize", sync);
-  viewport?.addEventListener("scroll", sync);
-  window.addEventListener("resize", sync);
-  window.addEventListener("orientationchange", sync);
+  viewport?.addEventListener("resize", schedule);
+  viewport?.addEventListener("scroll", schedule);
+  window.addEventListener("resize", schedule);
+  window.addEventListener("orientationchange", schedule);
 }
 watchViewport();
 

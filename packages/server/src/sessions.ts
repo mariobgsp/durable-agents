@@ -14,6 +14,7 @@ import { WATCHDOG_MS, markActive, markIdle, markIdleIfCurrent } from "./activity
 import { context, harnessInstance, toolsByName } from "./harness.ts";
 import { meshToolsFor } from "./mesh-tools.ts";
 import { fileTools } from "./file-tools.ts";
+import { displayTools } from "./customize-ui.ts";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, models, resolveDefaultModel, type ModelRef } from "./models.ts";
 import { sessionsPath } from "./paths.ts";
 import { entriesToMsgs } from "./transcript.ts";
@@ -309,7 +310,7 @@ export function agentChangeOf(files: Awaited<ReturnType<typeof readAgent>>): Age
   const selected = toolsByName(files.record.tools).filter(
     (tool) => !tool.name.startsWith("agents_") || meshNames.has(tool.name),
   );
-  for (const tool of [...selected, rememberTool, ...meshTools, ...fileTools]) {
+  for (const tool of [...selected, rememberTool, ...meshTools, ...fileTools, ...displayTools]) {
     byName.set(tool.name, tool);
   }
   return {
