@@ -279,7 +279,7 @@ export type AgentRecord = {
   mesh?: "off" | "message" | "full";
 };
 
-export type AgentFiles = { record: AgentRecord; policy: AgentPolicy; agentMd: string; soulMd: string };
+export type AgentFiles = { record: AgentRecord; policy: AgentPolicy; agentMd: string; soulMd: string; memoryMd: string };
 
 export type AgentInput = {
   name: string;

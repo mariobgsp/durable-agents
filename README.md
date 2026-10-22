@@ -43,6 +43,9 @@ files, refresh and the mobile composer) complete. Phases 7–9 not started.**
 | Per-agent model picker + capability badges | **Done** |
 | Agent & group identity (colour + emoji) | **Done** |
 | Live "replying" indicator, per session | **Done** |
+| Interactive chat composer | **Done** — auto-grow, formatting toolbar, Enter/Cmd+Enter send and a table-insert action |
+| Responsive Markdown tables | **Done** — sticky-header tables that fill the desktop message and scroll inside their own card on a phone |
+| Memory graph view | **Done** — agent editor Memory drawer with a connected note graph, related-note links and a list view |
 | Responsive layout + design system | **Done** — 5 viewport tiers in the screenshot gate |
 | E2E suite (faux provider, deterministic) | **21 scenarios passing** |
 | Image and document attachments | **Done** — bytes live in the entry the model was given |
@@ -63,7 +66,7 @@ Latest verified run:
 | --- | --- |
 | `npm run check` | `tsc` clean · `svelte-check` **0 errors, 2 warnings** (both in `Dialog.svelte`, untouched) · `lint:lang` clean |
 | `npm run e2e` | **21 passed, 0 failed** (`activity`, `attachments`, `codemode`, `display`, `files`, `fleet`, `identity`, `live-activity`, `memory`, `mesh`, `models`, `permissions`, `questions`, `schedules`, `search`, `sessions`, `steering`, `storage`, `system`, `tools`, `usage`) |
-| `npm run build` | entry **85.5 kB JS** + **9.9 kB CSS** gzip (budget 120 kB); mermaid and its layout engines stay in their own chunks, fetched only when a diagram renders |
+| `npm run build` | entry **89.1 kB JS** + **10.9 kB CSS** gzip (budget 120 kB); mermaid and its layout engines stay in their own chunks, fetched only when a diagram renders |
 | `npm run shots:replying` | 11 screenshots |
 | `npm run shots` | 70 screenshots captured locally in `docs/ui-review/2026-10-21/` (14 routes × 5 viewports), including boot, automation, diagram, usage and notification states. Not committed: that gate run used the owner's live agents. |
 | `#/usage` | daily/monthly/cache/stateless report + Storage panel; included in the local screenshot gate |

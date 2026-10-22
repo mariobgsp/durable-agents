@@ -5,16 +5,22 @@
   import { loadAgents, loadFleet } from "../state.svelte.ts";
   import type { ModelInfo, ProviderRow, ThinkingLevel } from "../types.ts";
   import AgentAvatar from "../components/AgentAvatar.svelte";
+  import MemoryDrawer from "../components/MemoryDrawer.svelte";
   import SchedulePanel from "../components/SchedulePanel.svelte";
 
   let { id }: { id: string } = $props();
   const isNew = $derived(id === "new");
   // Deep link used by the screenshot gate and by a direct link to automation.
   const automationOpen = new URLSearchParams(location.search).has("automation");
+  // Deep link used by the screenshot gate and by a direct link to memory.
+  const memoryOnLoad = new URLSearchParams(location.search).has("memory");
 
   let name = $state("");
   let agentMd = $state("");
   let soulMd = $state("");
+  let memoryMd = $state("");
+  let memoryOpen = $state(false);
+  let memoryBusy = $state(false);
   let responsibility = $state("");
   let tools = $state<string[]>([]);
   let thinkingLevel = $state<ThinkingLevel>("medium");
@@ -113,6 +119,8 @@
       name = files.record.name;
       agentMd = files.agentMd;
       soulMd = files.soulMd;
+      memoryMd = files.memoryMd;
+      if (memoryOnLoad) memoryOpen = true;
       responsibility = files.record.responsibility ?? "";
       tools = [...files.record.tools];
       thinkingLevel = files.record.thinkingLevel;
@@ -133,6 +141,22 @@
       modelId = files.record.modelId;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  /** Read the latest MEMORY.md, not the copy that was loaded when the editor opened. */
+  async function openMemory(): Promise<void> {
+    if (isNew) return;
+    memoryBusy = true;
+    error = null;
+    try {
+      const files = await api.agent(id);
+      memoryMd = files.memoryMd;
+      memoryOpen = true;
+    } catch (failure) {
+      error = failure instanceof Error ? failure.message : String(failure);
+    } finally {
+      memoryBusy = false;
     }
   }
 
@@ -236,11 +260,14 @@
 </script>
 
 <section class="page">
-  <header class="page__head">
+  <header class="page__head agent-editor__head">
     <h2 class="page__title">{isNew ? "New agent" : name || id}</h2>
     <div class="page__actions">
       <button class="btn btn--ghost" onclick={() => go("#/agents")}>Back</button>
       {#if !isNew}
+        <button class="btn btn--ghost" disabled={memoryBusy} onclick={() => void openMemory()} data-testid="agent-memory">
+          {memoryBusy ? "Memory…" : "Memory"}
+        </button>
         <button class="btn btn--ghost" onclick={remove}>Delete</button>
       {/if}
       <button class="btn btn--primary" disabled={busy} onclick={save} data-testid="save-agent">Save</button>
@@ -451,3 +478,7 @@
   </div>
 
 </section>
+
+{#if memoryOpen}
+  <MemoryDrawer agentName={name || id} {memoryMd} onclose={() => (memoryOpen = false)} />
+{/if}

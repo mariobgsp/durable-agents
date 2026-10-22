@@ -1,5 +1,5 @@
 import DOMPurify from "dompurify";
-import { marked } from "marked";
+import { Renderer, marked } from "marked";
 
 /**
  * One slice of a message: ordinary markdown rendered to HTML, or a fenced mermaid diagram that has to become
@@ -121,5 +121,10 @@ function installLinkPolicy(): void {
 /** Render markdown to HTML that is safe to inject into a message bubble. */
 export function renderMarkdown(src: string): string {
   installLinkPolicy();
-  return DOMPurify.sanitize(marked.parse(src, { async: false }) as string);
+  // Tables own a scroll container, so a wide table stays readable on a phone instead of forcing the whole
+  // message bubble sideways. The wrapper is ordinary HTML and passes through the same sanitizer.
+  const renderer = new Renderer();
+  const table = renderer.table.bind(renderer);
+  renderer.table = (token) => '<div class="md-table">' + table(token) + "</div>";
+  return DOMPurify.sanitize(marked.parse(src, { async: false, renderer }) as string);
 }

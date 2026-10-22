@@ -437,7 +437,7 @@ Evidence:
 | --- | --- |
 | npm run check | tsc clean · svelte-check 0 errors (2 pre-existing Dialog warnings) · lint:lang clean |
 | npm run e2e | **21 passed, 0 failed**, including the mesh, fleet, schedules, usage, files and display scenarios |
-| npm run build | entry **85.5 kB JS** + **9.9 kB CSS** gzip; mermaid remains in lazy chunks |
+| npm run build | entry **89.1 kB JS** + **10.9 kB CSS** gzip; mermaid remains in lazy chunks |
 | npm run shots | 70 screenshots captured locally in docs/ui-review/2026-10-21 (14 routes × 5 viewports), including boot, automation, diagram, usage and notification states; the folder is not committed because the run used live owner data |
 | Manual proof | The seeded Request flow diagram thread shows Worked 8.2s · 2,600 tokens · 400 cached · $0.0021; the Usage page shows the same totals and per-agent row; the fleet screenshots show idle/disabled status and a cron thread; the E2E demo shows an answered Ann → Bob/Chef delegate batch |
 
@@ -482,7 +482,7 @@ Evidence:
 | --- | --- |
 | npm run check | tsc clean · svelte-check 0 errors (2 pre-existing Dialog warnings) · lint:lang clean |
 | npm run e2e | **21 passed, 0 failed**, including the files and display scenarios |
-| npm run build | entry **85.5 kB JS** + **9.9 kB CSS** gzip; Mermaid remains in lazy chunks |
+| npm run build | entry **89.1 kB JS** + **10.9 kB CSS** gzip; Mermaid remains in lazy chunks |
 | npm run shots | 70 screenshots (14 routes × 5 viewports) plus supplementary generated-file, fleet-link, run-summary, usage and mobile-composer evidence, captured locally; not committed because the gate used live owner data |
 | Manual proof | A generated .md and .pdf appear as download cards on desktop and phone; the 390×500 composer stays visible; the fleet refresh shows an externally created agent after one click; the new agent appears in the sidebar immediately after Save |
 
@@ -520,7 +520,7 @@ Evidence:
 | --- | --- |
 | npm run check | tsc clean · svelte-check 0 errors (2 pre-existing Dialog warnings) · lint:lang clean |
 | npm run e2e | **21 passed, 0 failed**, including the display scenario: agent tool, owner API, live display frame, unsafe CSS rejection, invalid colour rejection and reset |
-| npm run build | entry **85.5 kB JS** + **9.9 kB CSS** gzip; Mermaid remains in lazy chunks |
+| npm run build | entry **89.1 kB JS** + **10.9 kB CSS** gzip; Mermaid remains in lazy chunks |
 | npm run shots | 70 local gate screenshots plus supplementary generated-file, fleet-link, run-summary, usage, mobile-composer and display evidence; not committed because the gate used live owner data |
 | Manual proof | A Night Shift theme (moon logo, blue accent, mono type, compact density, radius 6, custom letter spacing) changes the brand, fleet, chat, mobile shell and System panel without a build; Reset returns the default |
 
@@ -530,6 +530,35 @@ Remaining limits:
   server through customize_ui; those still require a code change, build and restart.
 - Custom CSS can still hide parts of the UI. Recovery is ?display=default or deleting data/display.json.
 - The boot screen is static; a custom brand appears after the first display fetch on a cold load.
+
+### Phase 15 — Chat surface: composer, tables and memory graph (DONE)
+
+Three requests landed together without adding a runtime dependency:
+
+- **Interactive composer.** The textarea grows with the draft up to 200px, the toolbar inserts bold, italic,
+  inline code, a bullet or a table at the caret, and Enter/Cmd+Enter sends while Shift+Enter keeps a newline.
+- **Responsive tables.** Marked tables are wrapped by the renderer. The wrapper owns horizontal scrolling on a
+  phone; on desktop the table fills the message with a sticky header and zebra rows. The page never scrolls
+  sideways because of a table.
+- **Memory graph.** The agent editor's Memory button reads the latest MEMORY.md and opens a drawer with a
+  connected graph and a list. Each note is a numbered node around the agent; dashed links connect notes sharing
+  a tag or several significant words. Hover/focus highlights connections, tap opens the full note, and the list
+  gives the same data in reading order. Layout is deterministic, with no simulation loop.
+
+Evidence:
+
+| Check | Result |
+| --- | --- |
+| npm run check | tsc clean · svelte-check 0 errors (2 pre-existing Dialog warnings) · lint:lang clean |
+| npm run e2e | **21 passed, 0 failed** (no server contract changed) |
+| npm run build | entry **89.1 kB JS** + **10.9 kB CSS** gzip; Mermaid remains in lazy chunks |
+| Manual proof | The table keeps its card width and scrolls at 390px; the composer toolbar is reachable; the memory drawer shows 7 notes and 3 derived links on desktop, numbered nodes on a phone; the Memory button and Save both fit the mobile editor header |
+
+Remaining limits:
+
+- The graph links are keyword/tag heuristics, not an agent-authored ontology.
+- The composer toolbar inserts Markdown syntax; it is not rich-text editing.
+- Wide tables scroll inside their card; there is no sorting or column picker.
 
 ## Known gaps (do not claim these are done)
 

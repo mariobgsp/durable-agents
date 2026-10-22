@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { MAX_FILE_BYTES, draftOf, releaseDrafts } from "../lib/files.ts";
   import type { DraftFile } from "../types.ts";
 
@@ -34,6 +35,49 @@
   let dragging = $state(false);
   let busy = $state(false);
   let error = $state<string | null>(null);
+
+  /** Grow with the text, up to a comfortable ceiling; the keyboard then has more room than a single line. */
+  function autosize(): void {
+    const element = area;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = Math.min(element.scrollHeight, 200) + "px";
+  }
+
+  $effect(() => {
+    // Track the draft, including programmatic clears and formatting inserts.
+    void text;
+    const frame = window.requestAnimationFrame(autosize);
+    return () => window.cancelAnimationFrame(frame);
+  });
+
+  async function wrap(before: string, after: string, placeholder: string): Promise<void> {
+    const element = area;
+    if (!element) return;
+    const start = element.selectionStart;
+    const end = element.selectionEnd;
+    const selected = text.slice(start, end) || placeholder;
+    text = text.slice(0, start) + before + selected + after + text.slice(end);
+    await tick();
+    element.focus();
+    element.setSelectionRange(start + before.length, start + before.length + selected.length);
+    autosize();
+  }
+
+  async function insertTable(): Promise<void> {
+    const element = area;
+    if (!element) return;
+    const start = element.selectionStart;
+    const end = element.selectionEnd;
+    const leading = start === 0 || text[start - 1] === "\n" ? "" : "\n";
+    const table = leading + "| Column | Column |\n| --- | --- |\n| Value | Value |\n";
+    text = text.slice(0, start) + table + text.slice(end);
+    await tick();
+    element.focus();
+    const firstCell = start + leading.length + 2;
+    element.setSelectionRange(firstCell, firstCell + "Column".length);
+    autosize();
+  }
 
   async function add(list: FileList | null): Promise<void> {
     if (!list) return;
@@ -97,7 +141,7 @@
   }
 
   function onKeydown(event: KeyboardEvent): void {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && (!event.shiftKey || event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       area?.closest("form")?.requestSubmit();
     }
@@ -135,13 +179,25 @@
     </div>
   {/if}
 
+  <div class="composer__tools" aria-label="Formatting">
+    <button type="button" class="composer__tool" title="Bold" aria-label="Bold" onclick={() => void wrap("**", "**", "bold")}>B</button>
+    <button type="button" class="composer__tool" title="Italic" aria-label="Italic" onclick={() => void wrap("_", "_", "italic")}>I</button>
+    <button type="button" class="composer__tool" title="Inline code" aria-label="Inline code" onclick={() => void wrap("`", "`", "code")}>&lt;/&gt;</button>
+    <button type="button" class="composer__tool" title="Bulleted line" aria-label="Bulleted line" onclick={() => void wrap("- ", "", "item")}>•</button>
+    <button type="button" class="composer__tool composer__tool--wide" title="Insert a table" aria-label="Insert a table" onclick={() => void insertTable()}>Table</button>
+  </div>
+
   <div class="composer__row">
     <textarea
       bind:this={area}
       bind:value={text}
       rows="1"
       {placeholder}
+      title="Enter sends · Shift+Enter starts a new line"
+      enterkeyhint="send"
       data-testid="composer"
+      oninput={autosize}
+      onfocus={autosize}
       onkeydown={onKeydown}
     ></textarea>
     {#if attach.allowed}
