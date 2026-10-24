@@ -36,6 +36,10 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
 
+  /** One settle pulse on the send button after the server accepts a message. */
+  let pulse = $state(false);
+  let pulseTimer: number | undefined;
+
   /** Grow with the text, up to a comfortable ceiling; the keyboard then has more room than a single line. */
   function autosize(): void {
     const element = area;
@@ -138,6 +142,12 @@
     text = "";
     releaseDrafts(files);
     files = [];
+    pulse = true;
+    if (pulseTimer) window.clearTimeout(pulseTimer);
+    pulseTimer = window.setTimeout(() => {
+      pulse = false;
+      pulseTimer = undefined;
+    }, 170);
   }
 
   function onKeydown(event: KeyboardEvent): void {
@@ -216,7 +226,7 @@
         ＋
       </button>
     {/if}
-    <button class="btn btn--primary" type="submit" disabled={busy} data-testid="send">
+    <button class="btn btn--primary" class:btn--sent={pulse} type="submit" disabled={busy} data-testid="send">
       {replying ? "Steer" : "Send"}
     </button>
   </div>

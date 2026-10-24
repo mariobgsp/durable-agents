@@ -45,6 +45,9 @@
   let diagramsOpen = $state(false);
   let scroller = $state<HTMLDivElement | undefined>(undefined);
 
+  /** Whether the newest content sits more than a glance below the fold; drives the jump affordance. */
+  let showJump = $state(false);
+
   // A deep link for the screenshot gate and for sharing: ?diagrams=1 opens the drawer once entries arrive.
   onMount(() => {
     if (new URLSearchParams(location.search).has("diagrams")) diagramsOpen = true;
@@ -271,12 +274,49 @@
     });
   }
 
+  function onTimelineScroll(): void {
+    const el = scroller;
+    if (!el) return;
+    showJump = el.scrollHeight - el.scrollTop - el.clientHeight > 320;
+  }
+
+  /**
+   * Jump to the newest message and stay there while the real heights arrive: content-visibility holds
+   * offscreen messages at an 80px estimate, so a far jump lands on estimated layout and the bottom keeps
+   * moving away for a few frames. Re-pin every frame over a bounded window, so the last frame lands on
+   * the settled layout no matter when each height materialises.
+   */
+  function pinToBottom(el: HTMLElement, chase = 30): void {
+    el.scrollTop = el.scrollHeight;
+    if (chase === 0) return;
+    window.requestAnimationFrame(() => {
+      if (el.isConnected) pinToBottom(el, chase - 1);
+    });
+  }
+
+  function jumpToLatest(): void {
+    const el = scroller;
+    if (el) pinToBottom(el);
+  }
+
+  /**
+   * A fresh mount opens at the newest message: the first entries that arrive after the view is created jump
+   * straight to the bottom, and later updates keep the old stick-to-bottom behaviour. Without this, a
+   * remounted timeline starts at scrollTop 0 and the distance check would refuse to pin.
+   */
+  let fresh = true;
+
   $effect(() => {
     const el = scroller;
     const pinned = store.entries.length;
     const live = store.streamingText.length;
     if (!el || (pinned === 0 && live === 0)) return;
     queueMicrotask(() => {
+      if (fresh) {
+        fresh = false;
+        pinToBottom(el);
+        return;
+      }
       if (el.scrollHeight - el.scrollTop - el.clientHeight < 260) el.scrollTop = el.scrollHeight;
     });
   });
@@ -398,6 +438,7 @@
     bind:this={scroller}
     use:inAppLinks
     onloadcapture={onTimelineLoad}
+    onscroll={onTimelineScroll}
     data-testid="timeline"
   >
     {#each store.entries as message, index (message.id)}
@@ -530,6 +571,18 @@
           ? "Empty. Call a member with @name, or just send a message."
           : "Empty. Send the first message to start."}
       </p>
+    {/if}
+
+    {#if showJump}
+      <button
+        class="jump"
+        data-testid="scroll-bottom"
+        title="Jump to the newest message"
+        aria-label="Jump to the newest message"
+        onclick={jumpToLatest}
+      >
+        ↓
+      </button>
     {/if}
   </div>
 

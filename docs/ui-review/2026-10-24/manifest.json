@@ -1,0 +1,425 @@
+{
+  "base": "http://localhost:5173",
+  "shots": [
+    {
+      "route": "00-boot",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-24/00-boot-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "00-boot",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-24/00-boot-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "00-boot",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-24/00-boot-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "00-boot",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-24/00-boot-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "00-boot",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-24/00-boot-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "01-home",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-24/01-home-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "01-home",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-24/01-home-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "01-home",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-24/01-home-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "01-home",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-24/01-home-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "01-home",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-24/01-home-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "02-empty-thread",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-24/02-empty-thread-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "02-empty-thread",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-24/02-empty-thread-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "02-empty-thread",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-24/02-empty-thread-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "02-empty-thread",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-24/02-empty-thread-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "02-empty-thread",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-24/02-empty-thread-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "03-chat-filled",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-24/03-chat-filled-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "03-chat-filled",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-24/03-chat-filled-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "03-chat-filled",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-24/03-chat-filled-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "03-chat-filled",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-24/03-chat-filled-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "03-chat-filled",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-24/03-chat-filled-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "04-agent-list",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-24/04-agent-list-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "04-agent-list",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-24/04-agent-list-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "04-agent-list",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-24/04-agent-list-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "04-agent-list",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-24/04-agent-list-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "04-agent-list",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-24/04-agent-list-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "05-agent-editor",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-24/05-agent-editor-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "05-agent-editor",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-24/05-agent-editor-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "05-agent-editor",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-24/05-agent-editor-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "05-agent-editor",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-24/05-agent-editor-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "05-agent-editor",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-24/05-agent-editor-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "05b-agent-automation",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-24/05b-agent-automation-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "05b-agent-automation",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-24/05b-agent-automation-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "05b-agent-automation",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-24/05b-agent-automation-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "05b-agent-automation",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-24/05b-agent-automation-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "05b-agent-automation",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-24/05b-agent-automation-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "06-group-list",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-24/06-group-list-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "06-group-list",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-24/06-group-list-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "06-group-list",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-24/06-group-list-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "06-group-list",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-24/06-group-list-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "06-group-list",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-24/06-group-list-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "03b-run-summary",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-24/03b-run-summary-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "03b-run-summary",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-24/03b-run-summary-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "03b-run-summary",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-24/03b-run-summary-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "03b-run-summary",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-24/03b-run-summary-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "03b-run-summary",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-24/03b-run-summary-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "10-diagram",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-24/10-diagram-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "10-diagram",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-24/10-diagram-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "10-diagram",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-24/10-diagram-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "10-diagram",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-24/10-diagram-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "10-diagram",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-24/10-diagram-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "08-provider",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-24/08-provider-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "08-provider",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-24/08-provider-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "08-provider",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-24/08-provider-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "08-provider",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-24/08-provider-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "08-provider",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-24/08-provider-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "09-system",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-24/09-system-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "09-system",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-24/09-system-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "09-system",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-24/09-system-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "09-system",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-24/09-system-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "09-system",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-24/09-system-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "11-usage",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-24/11-usage-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "11-usage",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-24/11-usage-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "11-usage",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-24/11-usage-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "11-usage",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-24/11-usage-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "11-usage",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-24/11-usage-390x844.png",
+      "ok": true
+    },
+    {
+      "route": "12-notify",
+      "viewport": "1440x900",
+      "file": "docs/ui-review/2026-10-24/12-notify-1440x900.png",
+      "ok": true
+    },
+    {
+      "route": "12-notify",
+      "viewport": "1280x800",
+      "file": "docs/ui-review/2026-10-24/12-notify-1280x800.png",
+      "ok": true
+    },
+    {
+      "route": "12-notify",
+      "viewport": "1024x700",
+      "file": "docs/ui-review/2026-10-24/12-notify-1024x700.png",
+      "ok": true
+    },
+    {
+      "route": "12-notify",
+      "viewport": "768x900",
+      "file": "docs/ui-review/2026-10-24/12-notify-768x900.png",
+      "ok": true
+    },
+    {
+      "route": "12-notify",
+      "viewport": "390x844",
+      "file": "docs/ui-review/2026-10-24/12-notify-390x844.png",
+      "ok": true
+    }
+  ]
+}

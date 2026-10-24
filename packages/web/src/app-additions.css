@@ -275,6 +275,7 @@ body {
   padding: 0;
   background: rgb(0 0 0 / 58%);
   cursor: default;
+  animation: fade var(--t) var(--ease) backwards;
 }
 
 .drawer {
@@ -287,6 +288,7 @@ body {
   background: var(--panel);
   border-left: 1px solid var(--line-strong);
   box-shadow: -24px 0 48px rgb(0 0 0 / 35%);
+  animation: drawer-in var(--t-slow) var(--ease) backwards;
 }
 
 .drawer__head {
@@ -1073,6 +1075,7 @@ body {
   border-radius: var(--r-md);
   background: var(--panel-2);
   box-shadow: 0 16px 40px rgb(0 0 0 / 55%);
+  animation: rise var(--t) var(--ease) backwards;
 }
 
 .notify__head {
@@ -1111,6 +1114,7 @@ body {
   border-radius: var(--r-md);
   background: var(--panel-2);
   box-shadow: 0 16px 40px rgb(0 0 0 / 55%);
+  animation: rise var(--t) var(--ease) backwards;
 }
 
 .toast__body {
@@ -1265,6 +1269,14 @@ html[data-density="spacious"] .sidebar {
   .toast {
     right: 10px;
     bottom: 10px;
+  }
+}
+
+/* The side drawers enter from their edge; the backdrop fades. Both are the usual opacity + transform. */
+@keyframes drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
   }
 }
 

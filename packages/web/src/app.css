@@ -66,6 +66,9 @@ body {
   font-feature-settings: "cv11", "ss01";
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* A phone never rubber-bands past the shell, and taps never flash a grey highlight over the glass. */
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* A single faint radial mesh, capped at 3% so it can never wash out text. Halved from 6% with the
@@ -173,6 +176,15 @@ button {
   overflow: hidden;
 }
 
+/* One pane per route: the keyed wrapper remounts on navigation, and every mount plays this entrance once.
+   The first mount happens under the opaque boot screen, so it is never seen twice. */
+.view {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  animation: rise var(--t) var(--ease) backwards;
+}
+
 .placeholder {
   display: grid;
   place-items: center;
@@ -268,12 +280,14 @@ button {
   animation: rise var(--t) var(--ease) both;
 }
 
-/* Your own words are tinted with the accent so a conversation reads as two sides, not one list. */
+/* Your own words are tinted with the accent so a conversation reads as two sides, not one list. They also
+   enter from the right while the agent's enter from below, so a thread reads as two directions talking. */
 .msg--user .msg__body {
   background: color-mix(in srgb, var(--accent) 9%, var(--panel-2));
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent),
     inset 0 1px 0 rgb(255 255 255 / 6%);
+  animation-name: rise-user;
 }
 
 .msg__body > :first-child {
@@ -517,6 +531,7 @@ button {
   background: var(--panel-2);
   box-shadow: inset 0 0 0 1px var(--line);
   font-size: 12px;
+  animation: rise var(--t) var(--ease) backwards;
 }
 
 .chip__thumb {
@@ -563,6 +578,45 @@ button {
 .composer textarea:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
+/* ---------- scroll to newest ---------- */
+
+/* Sticky at the end of the timeline: scrolled up it pins a thumb's reach above the composer; scrolled to
+   the bottom it rests after the last message, where the {#if} removes it entirely. */
+.jump {
+  position: sticky;
+  bottom: 12px;
+  align-self: center;
+  z-index: 5;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-2) 90%, transparent);
+  backdrop-filter: blur(6px);
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+  animation: rise var(--t) var(--ease) backwards;
+}
+
+.jump:hover {
+  border-color: var(--line-active);
+}
+
+.jump:focus-visible {
+  outline: 2px solid var(--paper);
+  outline-offset: 2px;
+}
+
+/* One tactile settle after an accepted send: transform-only, shorter than a state change. */
+.btn--sent {
+  animation: send-pop 150ms var(--ease);
 }
 
 /* ---------- atoms ---------- */
@@ -673,6 +727,7 @@ button {
   border-radius: var(--r-sm);
   color: var(--danger);
   font-size: 13px;
+  animation: rise var(--t) var(--ease) backwards;
 }
 
 /* ---------- nav, halaman, form ---------- */
@@ -731,7 +786,8 @@ button {
 
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  /* 280px, the fleet grid's floor: a 768px tablet keeps two columns and a phone fills one cleanly. */
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 12px;
 }
 
@@ -972,6 +1028,7 @@ button {
   background: var(--panel);
   color: var(--muted);
   font-size: 12px;
+  animation: rise var(--t) var(--ease) backwards;
 }
 
 .panel {
@@ -998,6 +1055,20 @@ button {
   from {
     opacity: 0;
     transform: translateY(3px);
+  }
+}
+
+/* The user bubble's own entrance: from its side of the screen, not from below. */
+@keyframes rise-user {
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+}
+
+@keyframes send-pop {
+  40% {
+    transform: scale(0.94);
   }
 }
 
@@ -1405,6 +1476,7 @@ button {
   border-radius: 10px;
   background: color-mix(in srgb, var(--accent) 8%, var(--panel));
   font-size: 13px;
+  animation: rise var(--t) var(--ease) backwards;
 }
 
 @keyframes fade {
@@ -1524,6 +1596,23 @@ button {
 
 .thread:last-child::before {
   border-bottom-left-radius: 8px;
+}
+
+/* A section's threads arrive as a group: the card grid's stagger at 30ms steps, capped after the fourth. */
+.threads > * {
+  animation: rise var(--t) var(--ease) backwards;
+}
+
+.threads > *:nth-child(2) {
+  animation-delay: 30ms;
+}
+
+.threads > *:nth-child(3) {
+  animation-delay: 60ms;
+}
+
+.threads > *:nth-child(n + 4) {
+  animation-delay: 90ms;
 }
 
 .marker {
@@ -2183,6 +2272,35 @@ button {
   cursor: pointer;
 }
 
+/* Three hairline bars that fold into an ✕ while the drawer is out: transforms and opacity only. */
+.drawer-btn__bars {
+  display: grid;
+  gap: 4px;
+  width: 16px;
+}
+
+.drawer-btn__bar {
+  display: block;
+  height: 1.5px;
+  border-radius: 1px;
+  background: currentColor;
+  transition:
+    transform var(--t) var(--ease),
+    opacity var(--t) var(--ease);
+}
+
+.app--drawer .drawer-btn__bar:nth-child(1) {
+  transform: translateY(5.5px) rotate(45deg);
+}
+
+.app--drawer .drawer-btn__bar:nth-child(2) {
+  opacity: 0;
+}
+
+.app--drawer .drawer-btn__bar:nth-child(3) {
+  transform: translateY(-5.5px) rotate(-45deg);
+}
+
 @media (max-width: 1024px) {
   .app {
     grid-template-columns: 216px 1fr;
@@ -2194,6 +2312,27 @@ button {
     grid-template-columns: 1fr;
   }
 
+  /* A phone gives the reading surfaces their room back: 24px of chrome eats a third of a 390px screen. */
+  .timeline {
+    padding: 16px 14px;
+  }
+
+  .page {
+    padding: 14px 14px 24px;
+  }
+
+  .contextbar {
+    padding: 0 14px 12px;
+  }
+
+  .error {
+    margin: 0 14px 8px;
+  }
+
+  .notice {
+    margin: 0 14px;
+  }
+
   .sidebar {
     position: fixed;
     inset: 0 auto 0 0;
@@ -2202,10 +2341,22 @@ button {
     transform: translateX(-100%);
     transition: transform var(--t-slow) var(--ease);
     box-shadow: 1px 0 0 var(--line);
+    /* The drag needs the horizontal moves the browser would otherwise claim. */
+    touch-action: pan-y;
   }
 
   .app--drawer .sidebar {
     transform: none;
+  }
+
+  /* The floating drawer button is the close control and sits over the drawer's own header; clear it. */
+  .app--drawer .sidebar__head {
+    padding-left: 46px;
+  }
+
+  /* While a finger drags the panel, the transform follows the pointer directly. */
+  .sidebar--dragging {
+    transition: none;
   }
 
   .scrim {
@@ -2215,6 +2366,15 @@ button {
     border: none;
     background: rgb(4 5 6 / 62%);
     backdrop-filter: blur(2px);
+    animation: fade var(--t) var(--ease) backwards;
+    transition: opacity var(--t-slow) var(--ease);
+    touch-action: pan-y;
+  }
+
+  /* The exit: the panel slides while the scrim fades, and the node unmounts when both are done. */
+  .scrim--closing {
+    opacity: 0;
+    pointer-events: none;
   }
 
   .drawer-btn {
@@ -2240,7 +2400,7 @@ button {
   .composer {
     position: sticky;
     bottom: 0;
-    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    padding: 10px 14px calc(10px + env(safe-area-inset-bottom, 0px));
   }
 
   /* The header carries an avatar, a title and three chips; on a phone it has to wrap tidily. */
@@ -2267,13 +2427,61 @@ button {
   }
 }
 
+/* A short landscape phone: browser chrome plus the keyboard leave little height, so the composer sheds
+   its formatting row and the panes trim their padding before the input is pushed out of reach. */
+@media (max-height: 520px) and (orientation: landscape) {
+  .composer__tools {
+    display: none;
+  }
+
+  .composer {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  .timeline {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  .chat__head {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+}
+
 /* Touch targets grow on coarse pointers, but never inside the emoji grid. */
 @media (pointer: coarse) {
   .btn,
   .icon-btn,
   .tab,
-  .mode {
+  .mode,
+  .thread,
+  .chip--link,
+  .memory__tab,
+  .contextbar__action {
     min-height: 40px;
+  }
+
+  .composer__tool {
+    height: 40px;
+  }
+
+  .composer__tool--wide {
+    padding: 0 10px;
+  }
+
+  .contextbar__model select {
+    min-height: 40px;
+  }
+
+  .chip--file {
+    min-height: 40px;
+  }
+
+  .chip__remove {
+    width: 36px;
+    height: 36px;
   }
 }
 
@@ -2713,6 +2921,71 @@ button {
   .system__actions .btn {
     width: 100%;
   }
+}
+
+/* ---------- touch and scroll behaviour ---------- */
+
+/* Interactive controls answer a tap immediately: no double-tap-zoom wait, no grey flash. */
+.btn,
+.icon-btn,
+.tab,
+.thread,
+.section__toggle,
+.chip--link,
+.chip__remove,
+.composer__tool,
+.jump,
+.drawer-btn,
+.mode,
+.swatch,
+.emoji,
+.question__option,
+.menu__item,
+.toast__body,
+.chat__avatar,
+.filecard,
+.diagram-list__item,
+.memory__list-item {
+  touch-action: manipulation;
+}
+
+/* The reading panes keep their native vertical scroll; horizontal moves belong to the drawer's edge swipe.
+   The placeholder counts: on the home route it is the pane under the finger. */
+.timeline,
+.page,
+.sections,
+.placeholder,
+.chat__head {
+  touch-action: pan-y;
+}
+
+/* Nothing chains an overscroll past the shell, and scrollers keep their platform momentum. */
+.timeline,
+.page,
+.sections,
+.notify__pop,
+.diagram-list,
+.diagram-viewer,
+.memory-drawer__body,
+.job__log,
+.preview pre {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* The chrome is UI, not copy: drags there belong to gestures, selection stays in the content. */
+.sidebar,
+.sidebar__foot,
+.chat__head,
+.composer__tools,
+.tabs,
+.menu {
+  user-select: none;
+}
+
+.sidebar input,
+.sidebar textarea {
+  user-select: text;
 }
 
 /* No status motion while the tab is hidden: nobody is watching, and the compositor would work for nobody. */

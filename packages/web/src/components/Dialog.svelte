@@ -23,7 +23,10 @@
 <div
   class="overlay"
   role="presentation"
-  onclick={onclose}
+  onclick={(event) => {
+    // Only a click on the backdrop itself closes; clicks inside the dialog are left alone.
+    if (event.target === event.currentTarget) onclose();
+  }}
   onkeydown={(event) => {
     if (event.key === "Escape") onclose();
   }}
@@ -33,8 +36,8 @@
     role="dialog"
     aria-modal="true"
     aria-label={title}
+    tabindex="-1"
     data-testid="dialog"
-    onclick={(event) => event.stopPropagation()}
   >
     <h2 class="dialog__title">{title}</h2>
     <div class="dialog__body">
