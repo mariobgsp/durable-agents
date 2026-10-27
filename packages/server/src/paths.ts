@@ -22,6 +22,17 @@ export const usageLedgerPath = resolve(dataDir, "usage.jsonl");
 /** Global display/theme chosen by an agent or the owner. */
 export const displayPath = resolve(dataDir, "display.json");
 export const credentialsPath = resolve(dataDir, "credentials.json");
+/**
+ * The encrypted secret vault, its key, and the browser profile the owner's sessions live in.
+ *
+ * All three sit under data/, which .gitignore already excludes; the vault directory is also named
+ * explicitly in .gitignore so a future change to the data rule cannot accidentally make it committable.
+ */
+export const vaultDir = resolve(dataDir, "vault");
+export const vaultPath = resolve(vaultDir, "secrets.json");
+export const vaultKeyPath = resolve(vaultDir, "key");
+export const browserProfileDir = resolve(dataDir, "browser", "profile");
+export const browserArtifactDir = resolve(dataDir, "browser", "shots");
 /** The last system operation, written only at a terminal phase. The one writable file outside SQLite. */
 export const systemPath = resolve(dataDir, "system.json");
 /**

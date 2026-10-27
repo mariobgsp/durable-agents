@@ -2,7 +2,15 @@
   import { onMount } from "svelte";
   import { api } from "../api.ts";
   import { loadDisplay, loadSystem, startSystemRestart, startSystemUpdate, store, watchSystem } from "../state.svelte.ts";
-  import type { SystemOperation, SystemStep, ToolVersions } from "../types.ts";
+  import type {
+    BrowserStatus,
+    CodingAvailability,
+    SystemOperation,
+    SystemStep,
+    ToolVersions,
+    VaultEntry,
+    VaultStatus,
+  } from "../types.ts";
   import ActivityIndicator from "../components/ActivityIndicator.svelte";
 
   /**
@@ -13,9 +21,50 @@
    * page came from is intentionally gone, which is why the tracker — not the snapshot — speaks first.
    */
 
+  /**
+   * What this machine can actually do right now: which coding CLIs answer, whether a browser is running, and how
+   * much the vault holds. Probed from the server, never guessed from PATH in the page. A failure here must not
+   * hide the rest of the screen, so it is one line of text.
+   */
+  let coding = $state<CodingAvailability | null>(null);
+  let browser = $state<BrowserStatus | null>(null);
+  let vault = $state<{ status: VaultStatus; entries: VaultEntry[] } | null>(null);
+  let capabilityError = $state<string | null>(null);
+  let browserBusy = $state(false);
+
+  async function loadCapabilities(): Promise<void> {
+    try {
+      const [nextCoding, nextBrowser, nextVault] = await Promise.all([api.coding(), api.browser(), api.vault()]);
+      coding = nextCoding;
+      browser = nextBrowser;
+      vault = nextVault;
+      capabilityError = null;
+    } catch (error) {
+      capabilityError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function closeBrowser(): Promise<void> {
+    browserBusy = true;
+    try {
+      browser = await api.closeBrowser();
+    } catch (error) {
+      capabilityError = error instanceof Error ? error.message : String(error);
+    } finally {
+      browserBusy = false;
+    }
+  }
+
+  function cliLabel(cli: { available: boolean; version?: string; reason?: string } | undefined): string {
+    if (!cli) return "probing…";
+    if (cli.available) return cli.version ?? "installed";
+    return "unavailable · " + (cli.reason ?? "not found");
+  }
+
   onMount(() => {
     void (async () => {
       await loadSystem();
+      void loadCapabilities();
       if (store.system?.current !== null) watchSystem();
     })();
   });
@@ -140,6 +189,60 @@
         <div class="facts__row facts__row--notice">
           <span class="facts__key">Installed</span>
           <span class="facts__value">{installed.piDurable} · restart to load it</span>
+        </div>
+      {/if}
+    </div>
+
+    <div class="facts" data-testid="system-capabilities">
+      <div class="facts__row">
+        <span class="facts__key">Executors</span>
+        <span class="facts__value">
+          pi {cliLabel(coding?.pi)} · opencode {cliLabel(coding?.opencode)}
+        </span>
+      </div>
+      <div class="facts__row">
+        <span class="facts__key">Browser</span>
+        <span class="facts__value">
+          {#if browser}
+            {#if browser.running}
+              running · {browser.mode} · closes after {browser.idleMinutes} idle minutes
+              <button
+                class="btn btn--small"
+                disabled={browserBusy}
+                onclick={() => void closeBrowser()}
+                data-testid="system-browser-close"
+              >
+                Close
+              </button>
+            {:else if browser.binary}
+              idle · starts on the first page action · keeps the owner's profile
+            {:else}
+              unavailable · no chromium on this machine
+            {/if}
+          {:else}
+            probing…
+          {/if}
+        </span>
+      </div>
+      <div class="facts__row">
+        <span class="facts__key">Vault</span>
+        <span class="facts__value">
+          {#if vault}
+            {vault.status.count} {vault.status.count === 1 ? "credential" : "credentials"} · encrypted at rest ·
+            {vault.status.gitIgnored === true
+              ? "git-ignored"
+              : vault.status.gitIgnored === false
+                ? "NOT git-ignored — fix .gitignore"
+                : "git check unavailable"} · always masked
+          {:else}
+            probing…
+          {/if}
+        </span>
+      </div>
+      {#if capabilityError}
+        <div class="facts__row facts__row--notice">
+          <span class="facts__key">Capabilities</span>
+          <span class="facts__value">{capabilityError}</span>
         </div>
       {/if}
     </div>

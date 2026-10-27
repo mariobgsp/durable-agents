@@ -1,6 +1,7 @@
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import { userEntryDataOf, wireFilesOf } from "./attachments.ts";
 import type { WireArtifact, WireMsg, WireRole, WireRun, WireUsage } from "./wire.ts";
+import { redactSecrets } from "./vault-store.ts";
 
 /** Only the assistant is still a builtin here: a user message is read through its own record (below). */
 const BUILTIN_ROLES: Record<string, WireRole> = {
@@ -165,7 +166,7 @@ function toolResultLine(entry: EntryRecord): WireMsg | null {
   return {
     id: String(entry.id),
     role: "tool",
-    text: diagnosticText(entry.data) ?? firstLine(textOf(result.content)),
+    text: redactSecrets(diagnosticText(entry.data) ?? firstLine(textOf(result.content))),
     ts: numberOf(result.timestamp),
     kind: entry.kind,
     author: null,
@@ -288,7 +289,7 @@ export function entryToMsg(entry: EntryRecord): WireMsg | null {
   const user = userEntryDataOf(entry);
   if (user) {
     const files = wireFilesOf(entry);
-    const text = user.text || appText;
+    const text = redactSecrets(user.text || appText);
     if (text.length === 0 && files.length === 0) return null;
     return {
       id: String(entry.id),
@@ -311,7 +312,7 @@ export function entryToMsg(entry: EntryRecord): WireMsg | null {
     return {
       id: String(entry.id),
       role: system ? "system" : author ? "assistant" : "user",
-      text: appText,
+      text: redactSecrets(appText),
       ts: 0,
       kind: entry.kind,
       author,
@@ -325,7 +326,7 @@ export function entryToMsg(entry: EntryRecord): WireMsg | null {
     .filter((part) => part.length > 0)
     .join("\n")
     .trim();
-  const text = modelText || appText;
+  const text = redactSecrets(modelText || appText);
   if (!text) return null;
   const info = assistantInfoOf(entry);
   const usage = usageOf(info?.usage);

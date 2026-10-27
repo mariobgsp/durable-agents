@@ -109,7 +109,8 @@ const routes = [
   { name: "01-home", path: "/#/" },
   ...(empty ? [{ name: "02-empty-thread", path: "/#/s/" + empty.id }] : []),
   ...(rich ? [{ name: "03-chat-filled", path: "/#/s/" + rich.id }] : []),
-  { name: "04-agent-list", path: "/#/agents" },
+  { name: "04-fleet-bubbles", path: "/?view=bubbles#/agents" },
+  { name: "04b-agent-list", path: "/?view=list#/agents" },
   { name: "05-agent-editor", path: "/#/agents/new" },
   ...(automationAgent ? [{ name: "05b-agent-automation", path: "/?automation=1#/agents/" + automationAgent.id }] : []),
   { name: "06-group-list", path: "/#/groups" },
@@ -119,7 +120,7 @@ const routes = [
   { name: "08-provider", path: "/#/providers" },
   { name: "09-system", path: "/#/system" },
   { name: "11-usage", path: "/#/usage" },
-  { name: "12-notify", path: "/?notify=1&drawer=1#/agents" },
+  { name: "12-notify", path: "/?notify=1&drawer=1&view=list#/agents" },
 ];
 
 await mkdir(OUT, { recursive: true });

@@ -34,6 +34,7 @@
   import Composer from "../components/Composer.svelte";
   import Markdown from "../components/Markdown.svelte";
   import QuestionOptions from "../components/QuestionOptions.svelte";
+  import SecretForm from "../components/SecretForm.svelte";
   import RunSummary from "../components/RunSummary.svelte";
   import DiagramDrawer from "../components/DiagramDrawer.svelte";
   import GeneratedFiles from "../components/GeneratedFiles.svelte";
@@ -138,6 +139,23 @@
   );
 
   /** The choices a `chat.question` message offers, or null for every other message. */
+  /** The label and purpose of a vault request, or null for every other message. */
+  function secretRequestOf(message: Msg): { label: string; purpose?: string } | null {
+    if (message.kind !== "chat.secret-request") return null;
+    const data = message.data as { label?: unknown; purpose?: unknown } | undefined;
+    const label = typeof data?.label === "string" ? data.label : "";
+    if (!label) return null;
+    return { label, ...(typeof data?.purpose === "string" && data.purpose ? { purpose: data.purpose } : {}) };
+  }
+
+  /**
+   * The form saved the credential. Tell the thread only that it happened: the value is already encrypted, and
+   * a confirmation is what the next turn needs in order to continue.
+   */
+  async function onSecretSaved(label: string): Promise<boolean> {
+    return onSend({ text: "Vault: saved credentials as " + label + ".", files: [] });
+  }
+
   function questionOptions(message: Msg): string[] | null {
     if (message.kind !== "chat.question") return null;
     const data = message.data as { options?: unknown } | null | undefined;
@@ -461,6 +479,22 @@
         <div class="msg msg--file" data-testid="msg-file">
           <GeneratedFiles sessionId={session.id} entryId={message.id} artifacts={message.artifacts} />
         </div>
+      {:else if secretRequestOf(message)}
+        {@const request = secretRequestOf(message)}
+        {#if request}
+          <article class="msg msg--assistant msg--secret" data-testid="msg-secret-request">
+            <span class="msg__spacer"></span>
+            <div class="msg__stack">
+              <div class="msg__body"><Markdown text={message.text} /></div>
+              <SecretForm
+                label={request.label}
+                purpose={request.purpose}
+                answered={lastUserAt > index}
+                onsave={onSecretSaved}
+              />
+            </div>
+          </article>
+        {/if}
       {:else if message.role === "assistant"}
         {@const identity = identityFor(message)}
         <article class="msg msg--assistant msg--identity" data-testid="msg-assistant">

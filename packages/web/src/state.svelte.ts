@@ -520,12 +520,21 @@ export async function restartThread(id: string): Promise<void> {
   }
 }
 
-export async function setAgentEnabled(id: string, enabled: boolean): Promise<void> {
+/**
+ * Toggle one agent and refresh both views of it.
+ *
+ * The board moves a card by following the fleet snapshot, so the snapshot is reloaded beside the agent list.
+ * The boolean lets the board leave a card where it was when the server refused the change; existing callers
+ * in the sidebar and the chat ignore it.
+ */
+export async function setAgentEnabled(id: string, enabled: boolean): Promise<boolean> {
   try {
     await api.setAgentEnabled(id, enabled);
-    await loadAgents();
+    await Promise.all([loadAgents(), loadFleet()]);
+    return true;
   } catch (err) {
     report(err);
+    return false;
   }
 }
 

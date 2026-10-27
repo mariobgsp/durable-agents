@@ -71,6 +71,13 @@ schedule store. It does not scan transcripts and does not call the usage report.
 whole fleet snapshot with presence on connect and after a debounced change. A failure to compute the snapshot
 must not break presence.
 
+The Agents page draws that snapshot twice: List is the compact roster and its link batches, and Bubbles gives
+each agent one card whose shape carries the state (working / idle / disabled) without a lane to drop it into.
+Nothing is stored and nothing is dragged; availability is a button that writes the agent's enabled flag through
+the existing route. An agent file write is a fleet fact, so writeAgent and deleteAgent emit the same debounced
+snapshot: a create, edit, delete or enable/disable reaches every open view without a refresh. See
+`docs/design/fleet-bubbles.md`.
+
 ## Usage and run summaries
 
 The usage report buckets assistant usage and the stateless ledger by local day and month, from the first recorded

@@ -376,6 +376,100 @@ button {
   font-size: 12px;
 }
 
+/* ---------- masked credential form ---------- */
+
+/* Deliberately looks like a form and not a chat bubble: the owner must be able to tell, at a glance, that
+   this input goes to the vault rather than to the model. */
+.secret {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(460px, 100%);
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--accent) 4%, var(--panel));
+}
+
+.secret__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.secret__lock {
+  color: var(--accent);
+  font-size: 9px;
+}
+
+.secret__mask {
+  flex: none;
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+
+.secret__purpose,
+.secret__note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.secret__field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.secret__field input {
+  padding: 7px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.secret__field input:focus {
+  border-color: var(--line-active);
+  outline: none;
+}
+
+.secret__optional {
+  opacity: 0.6;
+}
+
+.secret__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.secret__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.secret__done {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 /* ---------- mermaid diagram ---------- */
 
 .diagram {

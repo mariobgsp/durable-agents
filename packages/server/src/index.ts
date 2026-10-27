@@ -14,6 +14,7 @@ import {
   listAgents,
   readAgent,
   setAgentEnabled,
+  subscribeAgents,
   suggestResponsibility,
   writeAgent,
   type AgentInput,
@@ -102,6 +103,15 @@ import {
 } from "./sessions.ts";
 import { abortRoom, createRoom, isRoom, postToRoom, updateRoom, type RoomConfig } from "./rooms.ts";
 import { openEventStream } from "./stream.ts";
+import { deleteSecret, listSecrets, putSecret, vaultStatus } from "./vault-store.ts";
+
+// The browser and the coding CLIs are loaded on first use: their modules pull ws, the CDP client and the tool
+// registry, and a server that only serves chat must not pay for any of that at boot.
+let browserLoader: Promise<typeof import("./browser.ts")> | undefined;
+function browserModule(): Promise<typeof import("./browser.ts")> {
+  browserLoader ??= import("./browser.ts");
+  return browserLoader;
+}
 import type { WireFrame } from "./wire.ts";
 
 /** Token: from the environment (dev.mjs), from data/token, or created on the spot (npm start). */
@@ -642,6 +652,68 @@ await app.register(
     /** The compact roster and recent agent-to-agent links. Also sent over the presence socket. */
     api.get("/fleet", async () => fleetSnapshot());
 
+    // ---------- vault and browser ----------
+
+    /**
+     * The vault is write-and-list only. There is no GET that returns a secret: the browser tool is the one
+     * reader, and it types the value into a page without it ever reaching a response body.
+     */
+    api.get("/vault", async () => ({ status: vaultStatus(), entries: listSecrets() }));
+
+    api.post("/vault", async (request, reply) => {
+      const body = (request.body ?? {}) as {
+        label?: unknown;
+        username?: unknown;
+        secret?: unknown;
+        url?: unknown;
+        notes?: unknown;
+      };
+      if (typeof body.label !== "string" || typeof body.secret !== "string") {
+        await reply.code(400).send({ error: "label and secret are required" });
+        return;
+      }
+      try {
+        return putSecret({
+          label: body.label,
+          secret: body.secret,
+          ...(typeof body.username === "string" ? { username: body.username } : {}),
+          ...(typeof body.url === "string" ? { url: body.url } : {}),
+          ...(typeof body.notes === "string" ? { notes: body.notes } : {}),
+        });
+      } catch (error) {
+        await reply.code(400).send({ error: String(error instanceof Error ? error.message : error) });
+        return;
+      }
+    });
+
+    api.delete("/vault/:id", async (request, reply) => {
+      const { id } = request.params as { id: string };
+      if (!deleteSecret(id)) {
+        await reply.code(404).send({ error: "Vault entry not found" });
+        return;
+      }
+      return { ok: true };
+    });
+
+    /** Which local coding CLIs are installed and authenticated; the client shows this before offering one. */
+    api.get("/coding", async () => (await import("./coding.ts")).codingAvailability());
+
+    /** Re-probe after an install, so a freshly authenticated CLI appears without a server restart. */
+    api.post("/coding/refresh", async () => {
+      const module = await import("./coding.ts");
+      module.resetCodingAvailabilityCache();
+      return module.codingAvailability();
+    });
+
+    /** Whether a browser is running, and where its persistent profile lives. Never returns a session. */
+    api.get("/browser", async () => (await browserModule()).browserStatus());
+
+    api.post("/browser/close", async () => {
+      const module = await browserModule();
+      await module.closeBrowser();
+      return module.browserStatus();
+    });
+
     api.get("/schedules", async (request) => {
       const query = (request.query ?? {}) as { agentId?: string };
       return { schedules: await listSchedules(query.agentId), timezone: scheduleTimezone() };
@@ -869,6 +941,7 @@ await app.register(
     });
     subscribeMesh(sendFleet);
     subscribeSchedules(sendFleet);
+    subscribeAgents(sendFleet);
 
     api.get("/ws/presence", { websocket: true }, (socket: WebSocket) => {
       presenceSockets.add(socket);
@@ -914,7 +987,12 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     // Never leave an npm child writing node_modules while the next process starts another.
     stopScheduler();
     disposeSystem();
-    void app.close().then(() => process.exit(0));
+    // The browser holds the largest chunk of this process's memory; it must not outlive the server. It is
+    // only loaded when a route or a tool actually used it, so shutdown does not start one.
+    const stopBrowser = browserLoader
+      ? browserLoader.then((module) => module.closeBrowser()).catch(() => undefined)
+      : Promise.resolve();
+    void stopBrowser.finally(() => app.close().then(() => process.exit(0)));
   });
 }
 

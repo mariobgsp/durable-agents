@@ -70,8 +70,30 @@ export type AgentInput = {
 
 export const agentsDir = resolve(dataDir, "agents");
 
+/**
+ * Agent files are fleet facts: a create, rename, colour change, delete or enabled flag changes the roster
+ * every open tab reads. The listener is deliberately only a notification; the fleet computes the new
+ * snapshot from the files.
+ */
+const listeners = new Set<() => void>();
+
+export function subscribeAgents(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+function emitAgents(): void {
+  for (const listener of listeners) {
+    try {
+      listener();
+    } catch {
+      /* A broken listener must not fail a save. */
+    }
+  }
+}
+
 /** What a new agent gets: the same tool set pi ships with, including code mode. */
-export const DEFAULT_AGENT_TOOLS = ["read", "write", "edit", "bash", "codemode"] as const;
+export const DEFAULT_AGENT_TOOLS = ["read", "write", "edit", "bash", "terminal", "coding", "codemode"] as const;
 
 export const AGENT_TEMPLATE = `# Role
 
@@ -223,6 +245,7 @@ export async function writeAgent(input: AgentInput): Promise<AgentFiles> {
   await ensureAgentTmp(id);
   const files = await readAgent(id);
   if (!files) throw new Error("failed to write agent: " + id);
+  emitAgents();
   return files;
 }
 
@@ -237,6 +260,7 @@ export async function deleteAgent(id: string): Promise<boolean> {
   const record = await readRecord(id);
   if (!record) return false;
   await rm(dirOf(id), { recursive: true, force: true });
+  emitAgents();
   return true;
 }
 
@@ -309,6 +333,26 @@ function memorySection(memoryMd: string): string {
   ].join("\n");
 }
 
+/**
+ * App-level working rules, present on every request.
+ *
+ * The first rule is about choosing an executor: a coding request is the one moment the owner may want the work
+ * to happen in a different CLI that is already logged in, so the agent asks once instead of assuming. The
+ * terminal rule is the complement — the shell is the agent's tool, and the owner reads the result in the
+ * thread, so a reply must never tell them to open a terminal and look for themselves.
+ */
+function workingSection(): string {
+  return [
+    "## Working rules",
+    "",
+    "When the owner asks you to write, fix or refactor code, ask once with the `question` tool which executor to use:",
+    "`Durable agents (me)` keeps the work in this thread; `pi` and `opencode` hand it to that CLI, which is already logged in for this user.",
+    "Do not ask again in a thread where the owner already chose. If one executor is unavailable, say so and offer the rest.",
+    "Use the `terminal` tool for builds, tests, git and inspection. Never tell the owner to open a terminal: report what changed (files, diff stat, the decisive test lines) in your answer.",
+    "When you hand a task to `pi` or `opencode` through the `coding` tool, relay the useful part of its output and name the files it touched.",
+  ].join("\n");
+}
+
 /** Where this agent may write scripts, named explicitly so it never invents a shared directory. */
 function scratchSection(id: string): string {
   return [
@@ -326,6 +370,7 @@ export function renderInstructions(files: AgentFiles): string {
   if (files.agentMd.trim()) parts.push("## AGENT.md\n\n" + files.agentMd.trim());
   const memory = memorySection(files.memoryMd);
   if (memory) parts.push(memory);
+  parts.push(workingSection());
   parts.push(scratchSection(files.record.id));
   return parts.join("\n\n");
 }

@@ -18,6 +18,7 @@ This document is binding. Change the plan here first.
 | Input modalities | pi-ai supports **`["text", "image"]` only** (`pi-ai/dist/providers/model-schema.d.ts:9`). Image: native content blocks. Video: the browser extracts 6 frames and sends them as images. Voice: browser STT (`webkitSpeechRecognition`) plus TTS (`speechSynthesis`). No video or audio reaches a model directly. |
 | Model per agent | Each agent stores its own `provider`/`modelId`; groups may mix models. The editor shows per-model capability badges (image, context window, cost) and only offers thinking levels the model supports. |
 | Navigation | Sidebar is grouped **per agent (one section) with its threads underneath**, plus `No agent` and `Groups` sections. Groups and agent threads carry different markers (see Phase 6.0). |
+| Fleet bubbles | One bubble per agent, and the bubble's brightness is the state: working (breathing ring, run elapsed), idle, disabled (dimmed, a run in flight still finishes). Nothing is stored and nothing is dragged — Working is a report from the activity registry, availability is a button. Threads, links, cron and today's tokens sit inside the bubble. The Agents tab hosts Bubbles (default) and List, so the four-tab footer is unchanged. |
 | Language | All system text English; Indonesian only in `data/` and maintainer briefs; `npm run lint:lang` enforces it. |
 | Animation | **State change**: only `opacity` + `transform`, 120–180 ms, `cubic-bezier(.2,.8,.2,1)`, at most 2 animated elements per frame. **Live indicator** (an element that says work is happening and nothing about how much): continuous motion is allowed under five rules — (1) `opacity` + `transform` only, inside a fixed-size box, so no frame reflows or repaints text; (2) indeterminate: never a percentage, a filling bar, or any shape whose position can be read as progress; (3) at most one animated element per tool row plus one round-level sweep, and per-row motion stops once more than 3 calls are in flight in one round (the round-level sweep still moves); (4) it appears only while the server reports the activity it represents, so an idle frame has no motion at all; (5) under `prefers-reduced-motion: reduce` it is fully static and the same information is carried by the phase word, the counts and the elapsed time in text. **Allowed entrances (2026-10)**, all `opacity` + `transform` at 120-180 ms: one pane-level entrance per navigation (the keyed view wrapper, never its contents), user-driven drawer edge-swipes (the transform follows the pointer with `transition: none` while dragging, the same exemption the diagram drag uses), list-entry staggers on cards and thread rows, entrance animations for newly mounted chips, notices, toasts, drawers and dialogs, and the scroll-to-newest affordance. Idle screens stay motionless and `prefers-reduced-motion` remains a full kill switch. |
 | Mobile web | The phone tiers are first-class: 40px+ tap targets on coarse pointers (the emoji grid excepted), contained overscroll in every scroll container, `touch-action: pan-y` on the reading panes so the drawer's edge-swipe owns horizontal moves, no tap highlight, and 14px chrome padding at the 720px tier. |
@@ -560,6 +561,55 @@ Remaining limits:
 - The graph links are keyword/tag heuristics, not an agent-authored ontology.
 - The composer toolbar inserts Markdown syntax; it is not rich-text editing.
 - Wide tables scroll inside their card; there is no sorting or column picker.
+
+### Phase 16 — Fleet bubbles: the live fleet, without a kanban (DONE)
+
+Phase 16 first shipped a kanban board, then replaced it with bubbles on 2026-10-28: the owner asked for a fleet
+that is more informative about working and idle, in bubbles, and for the kanban to go. Both versions are a view of
+the same fleet snapshot the roster already uses, not a task tracker and not a second source of truth.
+
+Locked decisions:
+
+- **A bubble is an agent; its light is the state.** Working means enabled and at least one thread is generating.
+  Idle means enabled and nothing is generating. Disabled means the enabled flag is false, even when a run is still
+  finishing. Nothing is stored, so a bubble cannot disagree with the server.
+- **Nothing is dragged.** Availability is the existing enabled button; Working is not something the owner can
+  choose, because work starts in a thread. The bubble shows the run's elapsed time, its current thread, owned
+  threads, active links, cron and today's tokens — the information the old lanes could not carry.
+- **The Agents route hosts the bubbles.** Bubbles are the default; a Bubbles/List switch and a view query
+  parameter keep the compact roster and link feed available. The four-tab footer is unchanged.
+- **The fleet snapshot is the source.** Bubbles never scan sessions or transcripts and get no endpoint of their
+  own. A successful agent write emits the same debounced fleet frame as activity, mesh and schedule changes, so
+  create, edit, delete and enable/disable reach every open view.
+- **Drag is an enhancement.** Pointer capture and a fixed ghost implement the movement; every movement also has an
+  Enable/Disable button for keyboard and screen-reader use. A refused move explains itself and changes nothing.
+
+Checklist:
+
+- [x] Board/List switch, view query override and saved preference inside the Agents page
+- [x] Working, Idle and Disabled lanes with live counts, current thread, elapsed time, last active, links and next cron
+- [x] Drag with valid-lane highlighting, cancellation, notices and focus restoration; buttons as the accessible path
+- [x] Fleet broadcast after writeAgent and deleteAgent
+- [x] Deterministic board E2E, screenshot routes and responsive review
+- [x] README, design doc, mesh doc and checklist updated with measured evidence
+
+Evidence:
+
+| Check | Result |
+| --- | --- |
+| npm run check | tsc clean · svelte-check **0 errors, 0 warnings** · lint:lang clean |
+| npm run e2e | **22 passed, 0 failed**, including the new `board` scenario (11.6s): live lanes, enable/disable frames, Working → Disabled with the run still finishing, then Idle after re-enable |
+| npm run build | entry **94.1 kB JS** + **12.3 kB CSS** gzip (budget 120 kB); Mermaid stays in its lazy chunks |
+| npm run shots | **75/75** captures (15 route definitions × 5 viewports); the board was reviewed at 1440/1280/1024/768/390. The screen files are not committed because the gate used live owner agents |
+| Manual proof | Working card with live elapsed; drag Working → Disabled shows Finishing and keeps the run; completion moves it to a finished Disabled card; Enable returns it to Idle; invalid Working drop explains itself; a created agent appears and a deleted one disappears over the presence frame without refresh; Board/List choice survives a reload |
+
+Remaining limits:
+
+- Lanes and ordering are derived, not user-defined or persisted; a custom workflow board would be a different model.
+- The board has no token-spend line; the List view and Usage keep the accounting.
+- Below 1000px the lanes stack instead of showing three squeezed columns; the desktop board is the three-column read.
+- Drag is manually verified in Chromium. The repository still has no puppeteer-core browser suite; the board
+  scenario covers the server contract and the live fleet frame.
 
 ## Known gaps (do not claim these are done)
 

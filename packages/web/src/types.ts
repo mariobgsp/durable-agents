@@ -449,6 +449,42 @@ export type FleetSnapshot = {
   totals: { agents: number; working: number; idle: number; disabled: number; activeLinks: number };
 };
 
+/**
+ * Vault, executors and browser. None of these carries a plaintext credential: the mask is the only value the
+ * client ever receives for a secret.
+ */
+export type VaultEntry = {
+  id: string;
+  label: string;
+  url?: string;
+  hasUsername: boolean;
+  masked: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type VaultStatus = {
+  path: string;
+  count: number;
+  keyPresent: boolean;
+  gitIgnored: boolean | null;
+  masked: string;
+};
+
+export type CliAvailability = { available: boolean; version?: string; reason?: string };
+
+export type CodingAvailability = { pi: CliAvailability; opencode: CliAvailability };
+
+export type BrowserStatus = {
+  running: boolean;
+  mode?: "headless" | "headful";
+  pid?: number;
+  port?: number;
+  profileDir: string;
+  binary: string | null;
+  idleMinutes: number;
+};
+
 export type ScheduleStatus = "running" | "done" | "skipped" | "failed" | "interrupted";
 
 export type Schedule = {

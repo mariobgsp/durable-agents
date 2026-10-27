@@ -22,8 +22,8 @@ Open <http://localhost:5173>.
 ## Status — where we are right now
 
 **Phases 1–4 complete. Phase 5 partial. Phase 5.5 complete. Phases 6 and 6.0 partial. Phase 10 partial (the
-animation half). Phase 12 (agent network, fleet, usage periods, cron, diagrams, alerts and boot) and Phase 13 (generated
-files, refresh and the mobile composer) complete. Phases 7–9 not started.**
+animation half). Phases 11–16 complete (system and display, agent network and fleet, generated files, display
+customization, chat surface, fleet bubbles replacing the kanban). Phases 7–9 not started.**
 
 | Area | State |
 | --- | --- |
@@ -33,6 +33,11 @@ files, refresh and the mobile composer) complete. Phases 7–9 not started.**
 | 3-phase `Nyahut` (claim → answer → oversee) | **Done** |
 | Agent network: multi-target messages and delegation | **Done** — directed inbox/task threads, fan-out, 6-hop guard, request-id idempotency |
 | Fleet roster + live A2A links | **Done** — working/idle/disabled, current thread, token totals, grouped batches over the presence socket |
+| Fleet bubbles (kanban removed) | **Done** — one bubble per agent: working/idle/disabled, run elapsed, current thread, threads/links/cron/today tokens, availability button. No lanes and no drag — state is the server's report. Bubbles are the default and List stays at `?view=list` |
+| Terminal tool | **Done** — a real `/bin/bash` per call in the agent's scratch directory, env scrubbed of tokens/keys, 24k output cap, exit code and timeout in the result; the owner reads the summary, never opens a terminal |
+| Coding hand-off (`pi` / `opencode` / durable) | **Done** — asks once per thread which executor to use, then spawns the already-authenticated CLI headlessly (`pi -p --mode text`) or keeps the work in the thread; a missing CLI is a readable refusal |
+| Browser (headless + headful) | **Done** — lazy Chromium over CDP with one persistent profile, one process and one tab; idle shutdown after 15 min, screenshot artifacts, login filled from the vault without revealing values |
+| Secret vault | **Done** — AES-256-GCM at 0600 in a 0700 directory, masked form instead of a chat paste, transcript redaction, and `data/vault` named again in .gitignore |
 | Usage periods, cache and stateless calls | **Done** — today/month/30 days/all time, daily and monthly series, `usage.jsonl` for Nyahut/suggestions |
 | Task summaries | **Done** — duration, tokens, cached tokens and cost once at the end of the completed task, derived from durable entries; no token footer on intermediate replies |
 | Per-agent cron schedules | **Done** — 5-field cron, dedicated thread, run-now, skip-when-busy, restart-safe |
@@ -47,7 +52,7 @@ files, refresh and the mobile composer) complete. Phases 7–9 not started.**
 | Responsive Markdown tables | **Done** — sticky-header tables that fill the desktop message and scroll inside their own card on a phone |
 | Memory graph view | **Done** — agent editor Memory drawer with a connected note graph, related-note links and a list view |
 | Responsive layout + design system | **Done** — 5 viewport tiers in the screenshot gate |
-| E2E suite (faux provider, deterministic) | **21 scenarios passing** |
+| E2E suite (faux provider, deterministic) | **27 scenarios passing** (including a real headless-browser launch) |
 | Image and document attachments | **Done** — bytes live in the entry the model was given |
 | Generated file output | **Done** — Markdown, text, JSON, PDF, arbitrary base64 and published files become durable download cards under data/artifacts |
 | Agent display customization | **Done** — a closed global theme token set plus a bounded network-free CSS layer, changed by customize_ui and applied live or on refresh |
@@ -64,11 +69,11 @@ Latest verified run:
 
 | Check | Result |
 | --- | --- |
-| `npm run check` | `tsc` clean · `svelte-check` **0 errors, 2 warnings** (both in `Dialog.svelte`, untouched) · `lint:lang` clean |
-| `npm run e2e` | **21 passed, 0 failed** (`activity`, `attachments`, `codemode`, `display`, `files`, `fleet`, `identity`, `live-activity`, `memory`, `mesh`, `models`, `permissions`, `questions`, `schedules`, `search`, `sessions`, `steering`, `storage`, `system`, `tools`, `usage`) |
-| `npm run build` | entry **89.1 kB JS** + **10.9 kB CSS** gzip (budget 120 kB); mermaid and its layout engines stay in their own chunks, fetched only when a diagram renders |
+| `npm run check` | `tsc` clean · `svelte-check` **0 errors, 0 warnings** · `lint:lang` clean |
+| `npm run e2e` | **27 passed, 0 failed** (`activity`, `attachments`, `browser`, `browser-live`, `bubbles`, `coding`, `codemode`, `display`, `files`, `fleet`, `identity`, `live-activity`, `memory`, `mesh`, `models`, `permissions`, `questions`, `schedules`, `search`, `secrets`, `sessions`, `steering`, `storage`, `system`, `terminal`, `tools`, `usage`) |
+| `npm run build` | entry **95.0 kB JS** + **12.5 kB CSS** gzip (budget 120 kB); mermaid and its layout engines stay in their own chunks, fetched only when a diagram renders |
 | `npm run shots:replying` | 11 screenshots |
-| `npm run shots` | 70 screenshots captured locally in `docs/ui-review/2026-10-21/` (14 routes × 5 viewports), including boot, automation, diagram, usage and notification states. Not committed: that gate run used the owner's live agents. |
+| `npm run shots` | **75 screenshots** captured locally (15 route definitions × 5 viewports), including the bubble field at every tier, boot, automation, diagram, usage and notification states. Not committed: that gate run used the owner's live agents. |
 | `#/usage` | daily/monthly/cache/stateless report + Storage panel; included in the local screenshot gate |
 
 The plan of record, with the evidence for each phase, lives in [`docs/roadmap.md`](docs/roadmap.md).
@@ -82,7 +87,7 @@ Older UI review notes and screenshots live in [`docs/ui-review/`](docs/ui-review
 flowchart TB
   subgraph browser["Browser — Svelte 5 SPA · packages/web"]
     direction TB
-    views["Views<br/>Chat · Agents · AgentEditor · Groups · Providers<br/>Usage"]
+    views["Views<br/>Chat · Agents (fleet bubbles) · AgentEditor · Groups<br/>Providers · Usage · System"]
     comps["Components<br/>Sidebar · AgentAvatar · ActivityIndicator<br/>ActivityStrip · Attachments · Composer · Dialog<br/>Markdown · Mermaid · QuestionOptions"]
     store["state.svelte.ts<br/>runes store: sessions, entries,<br/>active, busy, streamingText, activity"]
     ident["lib/identity.ts<br/>colour + emoji identity"]
@@ -231,9 +236,11 @@ is no second store to keep in step.
   can refuse a cycle or an over-budget chain. Every tool call uses a deterministic request id and `api.memo`,
   which makes a replay after a crash reuse the thread and submission instead of duplicating them.
 - **Fleet.** `fleet.ts` builds one snapshot from agents, the session index, the activity registry, the link
-  index and the schedule store. The presence socket sends `presence` and `fleet` together; the Agents page is
-  the compact roster and grouped link batches. Fleet snapshots never scan transcripts; token totals come from
-  the cached usage report.
+  index and the schedule store. The presence socket sends `presence` and `fleet` together. The Agents page has
+  two views of that snapshot: **Bubbles** (default) gives each agent one card whose brightness reports
+  working/idle/disabled, and **List** is the compact roster and grouped link batches. An agent write emits a
+  fresh fleet frame, so a create, edit, delete or enable/disable reaches every open view without a refresh. Fleet snapshots never scan
+  transcripts; token totals come from the cached usage report.
 - **Usage and task summaries.** The report buckets assistant usage plus stateless calls by local day and month,
   and includes soft-deleted threads while their rows exist. `entriesToMsgs` derives one task summary — wall time,
   tokens, cache read/write and cost — from the user entry and the assistant/tool entries, so there is no
@@ -594,7 +601,7 @@ systemd user unit and the iOS/Android install — is in [`docs/tailscale.md`](do
 | `#/groups` | Create a group + the group list |
 | `#/usage` | Usage graphs, the Storage panel and the cleanup |
 | `#/system` | Loaded tool versions, the sandbox and the supervisor, plus Update and Restart |
-| `#/agents`, `#/agents/new`, `#/agents/<id>` | Agent list + the `AGENT.md`/`SOUL.md` editor |
+| `#/agents`, `#/agents/new`, `#/agents/<id>` | Fleet bubbles (default; `?view=list` for the compact list) + the `AGENT.md`/`SOUL.md` editor |
 | `#/providers` | Provider credential status + API key entry |
 
 ### API
@@ -622,7 +629,7 @@ systemd user unit and the iOS/Android install — is in [`docs/tailscale.md`](do
 | `POST` `PUT` | `/api/rooms[/:id]` | Create a group / change its members and mode |
 | `GET` `POST` | `/api/e2e/{state,script}` | The faux-provider script, only when `PI_E2E=1` and the token is right |
 | `GET` | `/api/ws?conversation=<id>` | That conversation's stream |
-| `GET` | `/api/ws/presence` | Activity for every session |
+| `GET` | `/api/ws/presence` | Activity, display and fleet snapshots; a fleet frame also follows every agent write |
 
 ### Debug tools
 
@@ -688,6 +695,11 @@ That makes the whole stack deterministic: no network, no cost, no flakes.
 | `permissions` | The per-thread Full Access grant: stored on the thread, enforced at submit time, and not sticky on the agent |
 | `codemode` | Code mode belongs to the agents that select it: a default thread gets `Tool codemode is not available` and still answers, an agent that lists it runs a script, and that agent's thread still runs one after a restart (the boot scan that re-registers it) |
 | `activity` | An idle thread is not active; a thread is active while streaming and clears after; abort clears immediately; a group stays active across the whole flow; an idle thread is still not active **after a restart** |
+| `bubbles` | The fleet states a bubble renders: Idle/Disabled at rest, Working during a run, Disabled-with-current-thread while a disabled run finishes, then Idle after re-enable. Also asserts the fresh fleet frame after each agent write |
+| `terminal` | The agent's shell: the command line in the thread, the scrubbed environment (the server token is absent), the scratch directory, and exit codes 0 and 3 |
+| `coding` | The durable branch spawns nothing and tells the model to continue; an absent opencode is a readable tool error, not an exception |
+| `secrets` | Ciphertext on disk, 0600 files in a 0700 directory, no plaintext in any API response, transcript redaction of a pasted value, request-then-form flow, delete |
+| `browser` / `browser-live` | Status never starts a browser; close is idempotent; the executors are probed without throwing. The live scenario launches real headless Chromium against a local page, reads it through a tool result, asserts headless, then closes it |
 
 Two E2E findings worth keeping in mind, because both were real bugs the suite caught immediately:
 
@@ -696,9 +708,9 @@ Two E2E findings worth keeping in mind, because both were real bugs the suite ca
 2. **A harness that announces `content-type: application/json` on an empty body gets a 400 from Fastify.**
    `DELETE` looked broken until the harness only claimed a JSON body when it had one.
 
-The screenshot gate is part of testing: `npm run shots` captures 14 routes at 1440/1280/1024/768/390 and
-writes `manifest.json` plus `findings.md`. The 768 and 390 tiers exist because without them a broken mobile
-drawer looks exactly like a working one.
+The screenshot gate is part of testing: `npm run shots` captures the 15 route definitions at
+1440/1280/1024/768/390 and writes `manifest.json` plus `findings.md`. The 768 and 390 tiers exist because without
+them a broken mobile drawer or a squeezed bubble field looks exactly like a working one.
 
 ## Security
 
@@ -707,8 +719,22 @@ WebSocket handshake) with **401**, and allowlists `Host` to `127.0.0.1|localhost
 CORS, so a foreign web page can neither read the app nor reach an API that runs commands. The token is a
 random 32 bytes, stored mode `600`, and injected into the page by the server or Vite.
 
-Agents with the `bash` tool run **real commands on this machine** — that is the point of the tool, and the
-editor warns about it.
+Agents with `bash`, `terminal`, `coding` or `browser` run **real processes on this machine** — that is the
+point of those tools, and the editor warns about it. The terminal and the CLI hand-off give the child a
+scrubbed environment: every key matching `TOKEN|SECRET|PASSWORD|API_KEY|_KEY$|^PI_` is removed, so a command
+cannot print the server token or a provider key.
+
+Credentials live in `data/vault` as AES-256-GCM ciphertext, next to a 0600 key inside a 0700 directory. The
+chat never asks for a password: an agent calls `vault` with `action=request`, the client shows a masked form,
+and the value goes straight to `POST /api/vault`. No response, transcript, tool result or model request ever
+carries it back — `GET /api/vault` returns labels and a fixed `••••••` mask, and every transcript entry is
+redacted against the stored values before it is rendered. `data/vault/` and `data/browser/` are named in
+`.gitignore` even though `data/` already covers them, and `git check-ignore` is reported by the vault status
+rather than assumed.
+
+The browser keeps the owner's logins in one persistent profile under `data/browser/profile`, which is also
+session data and is never served by an API. It starts only when a page action runs, uses one process and one
+tab, and closes itself after fifteen idle minutes; the server also closes it on shutdown.
 
 ## Language policy
 
@@ -776,6 +802,21 @@ These are **not** done — please do not read the status table as claiming other
   run the desktop app twice — that would start two servers over one `app.sqlite`.
 - **The fleet link index is bounded.** The store keeps the newest 1000 links and the roster shows the newest 30
   batches; it is an operational view, not a permanent audit log.
+- **The fleet has no lanes and no custom order.** Status is derived from the server's activity registry, and a
+  bubble cannot be dragged into "working" because only a run can report that. Ordering is fixed (working
+  longest-first, then most recently active, then name); user-defined order and per-card notes are not
+  implemented. Bubbles do not show spend beyond today's tokens (List and Usage carry the full report).
+- **A browser is memory, not free.** One process and one tab with a renderer limit, plus a 15-minute idle
+  close, but a page-heavy run still costs hundreds of megabytes. Headful mode is opt-in per call and needs a
+  display; there is no screenshot-per-step history, and the CDP surface is intentionally small (open, read,
+  click, type, login, screenshot, close).
+- **The vault has no rotation or recovery UI.** Replacing a label overwrites in place, deleting removes the
+  entry, and a lost `data/vault/key` means the ciphertext is unrecoverable by design. Redaction masks a known
+  value wherever it is rendered, but the durable entry the owner wrote still contains what they typed — use
+  purge when the thread itself must not keep it.
+- **The coding hand-off is one-shot.** `pi` and `opencode` run headlessly with a self-contained prompt; they do
+  not share this conversation, so the agent has to write the brief. `opencode` is probed and offered only when
+  it is on PATH; on this machine it is not installed, and the UI says so instead of failing at spawn time.
 - **Tap targets are 40 px on coarse pointers, not the 44 px Apple figure.**
 - **The double bezel on cards and panels is a single-element read** (outer ring + hairline + inner
   highlight) rather than true nesting. Real nesting is used on the hero surfaces where the depth shows.

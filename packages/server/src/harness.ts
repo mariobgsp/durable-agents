@@ -118,6 +118,43 @@ async function anAgentWantsCodemode(): Promise<boolean> {
 }
 
 /**
+ * The tools that cost something to load, installed on first use rather than at boot.
+ *
+ * A shell tool, a CLI hand-off, a vault and a browser are four different graphs: child_process, the pi-durable
+ * tool schema, node:crypto, and ws plus the CDP client. A thread that only chats must not pay for any of them.
+ * `require()` is synchronous, and toolsByName() is synchronous, so the list an agent asks for is complete by
+ * the time it is built. The measured effect is the point: boot stays at the pre-feature resident size and no
+ * child process exists until an action actually runs.
+ */
+const lazyInstalled = new Set<string>();
+const lazyLoaders: Record<string, () => void> = {
+  terminal: () => {
+    const module = nodeRequire("./terminal.ts") as typeof import("./terminal.ts");
+    registry.install(defineExtension({ name: "terminal", tools: [module.terminalTool] }));
+  },
+  coding: () => {
+    const module = nodeRequire("./coding.ts") as typeof import("./coding.ts");
+    registry.install(defineExtension({ name: "coding", tools: [module.codingTool] }));
+  },
+  vault: () => {
+    const module = nodeRequire("./vault-tool.ts") as typeof import("./vault-tool.ts");
+    registry.install(defineExtension({ name: "vault", tools: [module.vaultTool] }));
+  },
+  browser: () => {
+    const module = nodeRequire("./browser.ts") as typeof import("./browser.ts");
+    registry.install(defineExtension({ name: "browser", tools: [module.browserTool] }));
+  },
+};
+
+function installLazyTool(name: string): void {
+  if (lazyInstalled.has(name)) return;
+  const loader = lazyLoaders[name];
+  if (!loader) return;
+  loader();
+  lazyInstalled.add(name);
+}
+
+/**
  * The extensions this app owns, installed at boot and again by a sandboxed Update.
  *
  * `registry.install` replaces an extension with its name in place, so re-running this refreshes the live
@@ -172,6 +209,8 @@ function installCoreExtensions(): void {
   // Web search: keyless, because pi-ai has no provider-native search and this machine has no search credential.
   registry.install(defineExtension({ name: "search", tools: [webSearchTool] }));
 
+
+
   // The sandbox is behind a proxy so its module loads on the first script that actually runs. `start()` is
   // synchronous, so the tool's wrapper is what awaits the import before the original `execute()` can call it; the
   // extension gets the same interface, so it cannot tell. The wrap has no target when code mode is not installed,
@@ -200,6 +239,8 @@ export function reloadTools(): string[] {
   installCoreExtensions();
   // A reload must not change the code-mode policy: if it was installed, re-register it; if not, leave it out.
   if (codemodeInstalled) installCodemode();
+  // A lazily installed module is already in memory; re-run its loader so an Update refreshes it in place.
+  for (const name of lazyInstalled) lazyLoaders[name]?.();
   return registry.snapshot().installed().map((extension) => extension.name);
 }
 
@@ -245,6 +286,8 @@ export function toolsByName(names: readonly string[]): ToolRegistration[] {
   const wanted = new Set(names);
   // An agent created or rebound after boot asks for code mode here, synchronously, before its tool list is built.
   if (wanted.has("codemode")) installCodemode();
+  // Same rule for the four optional modules: the first agent that names one loads it, and only that one.
+  for (const name of wanted) installLazyTool(name);
   return registry
     .snapshot()
     .tools()

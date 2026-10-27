@@ -32,7 +32,7 @@ export type PermissionPolicy = {
  * tools. A tier called "Standard" that left both switched on would be a rename of Full Access, so Standard
  * refuses them by name.
  */
-export const ESCAPE_HATCHES = ["bash", "codemode"] as const;
+export const ESCAPE_HATCHES = ["bash", "terminal", "coding", "browser", "codemode"] as const;
 
 /** Tools whose `path` argument is checked against the agent's roots. */
 const PATH_TOOLS = new Set(["read", "write", "edit", "publish_file"]);

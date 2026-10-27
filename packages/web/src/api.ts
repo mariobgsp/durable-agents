@@ -4,6 +4,8 @@ import type {
   AgentInput,
   AgentRecord,
   Artifact,
+  BrowserStatus,
+  CodingAvailability,
   ContextInfo,
   DisplaySnapshot,
   FleetSnapshot,
@@ -17,6 +19,8 @@ import type {
   SystemOperation,
   SystemSnapshot,
   UsageReport,
+  VaultEntry,
+  VaultStatus,
 } from "./types.ts";
 
 export type {
@@ -39,6 +43,8 @@ export type {
   SystemSnapshot,
   ThinkingLevel,
   UsageReport,
+  VaultEntry,
+  VaultStatus,
 } from "./types.ts";
 
 type Boot = { token: string; apiBase: string };
@@ -230,4 +236,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ soulMd }),
     }),
+
+  /**
+   * The vault is write-and-list only: no call here returns a secret. The masked form posts the value straight
+   * to the server, which encrypts it before anything can render it.
+   */
+  vault: () => req<{ status: VaultStatus; entries: VaultEntry[] }>("/api/vault"),
+  saveSecret: (input: { label: string; secret: string; username?: string; url?: string; notes?: string }) =>
+    req<VaultEntry>("/api/vault", { method: "POST", body: JSON.stringify(input) }),
+  deleteSecret: (id: string) =>
+    req<{ ok: boolean }>("/api/vault/" + encodeURIComponent(id), { method: "DELETE" }),
+
+  /** Local executors the owner can hand a coding task to, and the browser lifecycle. */
+  coding: () => req<CodingAvailability>("/api/coding"),
+  browser: () => req<BrowserStatus>("/api/browser"),
+  closeBrowser: () => req<BrowserStatus>("/api/browser/close", { method: "POST" }),
 };

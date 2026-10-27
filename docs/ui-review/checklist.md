@@ -5,7 +5,7 @@ Used every time screenshots are taken. Each finding must be written as **what is
 
 ## How to take them
 ```
-npm run shots            # 8 routes x 5 viewports -> docs/ui-review/<date>/
+npm run shots            # every route in packages/web/scripts/shots.mjs x 5 viewports -> docs/ui-review/<date>/
 npm run shots:replying   # the "replying" indicator, on a throwaway E2E server
 ```
 
@@ -35,6 +35,10 @@ actually prove the responsive layout — without them a broken mobile drawer loo
     `var(--font-mono)` (Geist Mono).
 12. **Replying indicator** — at most one per frame: dots on every sidebar row for a thread generating
     elsewhere, and in the chat either the phase bubble or the round strip, never both.
+13. **Fleet bubbles** — at 390px the bubble field is one column with no horizontal overflow and the
+    Bubbles/List switch and bubble actions keep 40px targets; a disabled bubble with an active run says it is
+    finishing; nothing animates when no run is generating, and the bubble's breathing ring is off under
+    `prefers-reduced-motion`.
 
 ## Output files
 - `docs/ui-review/<date>/<nn>-<name>-<viewport>.png` — one file per route per viewport

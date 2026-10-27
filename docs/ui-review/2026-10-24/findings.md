@@ -29,3 +29,30 @@ Step: mobile responsiveness + animation polish (drawer gestures, view transition
 - `npm run check` — tsc + svelte-check (0 errors, 0 warnings) + language lint clean.
 - `npm run e2e` — 21 passed, 0 failed.
 - `npm run build` — clean production build.
+
+---
+
+## Agent board pass (Phase 16)
+
+> Superseded 2026-10-28: the kanban was replaced by the fleet bubble field (see
+> `docs/design/fleet-bubbles.md`). The findings below are kept as the record of that pass; the current
+> screenshot gate writes `04-fleet-bubbles` instead of `04-agent-board`.
+
+Step: the Board/List fleet view at `#/agents`. The board screenshots were captured locally at
+1440×900, 1280×800, 1024×700, 768×900 and 390×844 and are not checked in because the gate used live owner
+agents; the images in this folder are from the earlier pass. Findings from that board review:
+
+| # | Screenshot | Finding | Fix | Status |
+| --- | --- | --- | --- | --- |
+| 1 | 04-agent-board-768 | Three columns left roughly 150px per card at 768px, so names, model meta and the action row wrapped or clipped. | Stack the lanes below 1000px; 1024px keeps three columns, 768px gets full-width cards. | Fixed |
+| 2 | 04-agent-board-1440 | Empty Working/Disabled lanes collapsed to a short box beside a tall Idle lane, so the board read as three unrelated cards. | Stretch the grid items to the row height; the lanes now share one board surface. | Fixed |
+| 3 | 04-agent-board-768, 04-agent-board-1024 | The header summary squeezed between Refresh and New agent and wrapped awkwardly. | Below 900px the header wraps and the summary takes a full line; the primary action stays at the end of the control row. | Fixed |
+| 4 | 04-agent-board-390 | The board was stacked correctly, but the card action row mixed the thread count, links and cron without counting singular values. | Use thread/link singular and plural labels; the same pass kept the filter and actions inside the 14px mobile chrome. | Fixed |
+| 5 | live working/finishing capture | A pointer drag that disabled an agent left a visible focus ring on the moved card's Enable button. | Restore focus only after a button-driven change; pointer drags move the card without taking focus. | Fixed |
+| 6 | 04-agent-board-1024 | The model/policy meta ellipsized at the narrowest three-column width. | Keep it one line with ellipsis; the List view carries the full string, so nothing is lost. | Fixed |
+
+Verified in the same pass: 75/75 screenshots succeeded; the board was readable at all five tiers with no
+horizontal page overflow; the Working card showed the observed elapsed time, Working → Disabled produced the
+Finishing card while the run continued, completion left a disabled card with no current thread, Enable returned
+it to Idle, and an invalid drop into Working produced the refusal notice. `npm run check` was clean,
+`npm run e2e` passed 22 scenarios including `board`, and the production build stayed under budget.

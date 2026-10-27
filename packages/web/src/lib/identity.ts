@@ -50,7 +50,14 @@ export function initialsOf(label: string): string {
   return ((first[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase();
 }
 
-export function identityOfAgent(agent: AgentRecord): Identity {
+/**
+ * The minimal identity fields. A full AgentRecord satisfies this, and so does a FleetAgent; the board reads
+ * fleet rows, and forcing them through a fake record would be a second shape to keep in sync.
+ */
+export type AgentIdentitySource = Pick<AgentRecord, "id" | "name"> &
+  Partial<Pick<AgentRecord, "color" | "avatar">>;
+
+export function identityOfAgent(agent: AgentIdentitySource): Identity {
   return {
     id: agent.id,
     label: agent.name || agent.id,
