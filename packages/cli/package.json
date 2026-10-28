@@ -1,0 +1,11 @@
+{
+  "name": "@durable-agents/cli",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "dura": "./bin/dura.ts"
+  },
+  "scripts": {
+    "start": "node bin/dura.ts start"
+  }
+}

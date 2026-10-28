@@ -1,831 +1,267 @@
 # dura-agents
 
-The application is called **dura-agents**; the repository and its directory keep the name `durable-agents`.
-
-A local, single-user web app for **durable agent work**: threads that survive restarts, agents defined by two
-markdown files, group chats where several agents talk to each other, and a directed agent network where one
-agent can message or delegate to several others in their own sessions, produce files the owner can download, and restyle the app's display.
-
-Built on [`@earendil-works/pi-durable`](https://www.npmjs.com/package/@earendil-works/pi-durable) — every
-message, tool call and generation is a durable task in SQLite, so closing the browser or killing the server
-does not lose work in flight.
-
-```bash
-npm install
-npm run dev          # server on 8787 + Vite on 5173, one token created in data/token
-```
-
-Open <http://localhost:5173>.
-
----
-
-## Status — where we are right now
-
-**Phases 1–4 complete. Phase 5 partial. Phase 5.5 complete. Phases 6 and 6.0 partial. Phase 10 partial (the
-animation half). Phases 11–16 complete (system and display, agent network and fleet, generated files, display
-customization, chat surface, fleet bubbles replacing the kanban). Phases 7–9 not started.**
-
-| Area | State |
-| --- | --- |
-| Durable chat + streaming over WebSocket | **Done** — `resume()` replays interrupted work |
-| Agents from `AGENT.md` + `SOUL.md` | **Done** — hot-reloaded into existing threads (`rebindAgent`) |
-| Group chat with modes (`Nyahut` / `Moderator` / `Silent`) | **Done** |
-| 3-phase `Nyahut` (claim → answer → oversee) | **Done** |
-| Agent network: multi-target messages and delegation | **Done** — directed inbox/task threads, fan-out, 6-hop guard, request-id idempotency |
-| Fleet roster + live A2A links | **Done** — working/idle/disabled, current thread, token totals, grouped batches over the presence socket |
-| Fleet bubbles (kanban removed) | **Done** — one bubble per agent: working/idle/disabled, run elapsed, current thread, threads/links/cron/today tokens, availability button. No lanes and no drag — state is the server's report. Bubbles are the default and List stays at `?view=list` |
-| Terminal tool | **Done** — a real `/bin/bash` per call in the agent's scratch directory, env scrubbed of tokens/keys, 24k output cap, exit code and timeout in the result; the owner reads the summary, never opens a terminal |
-| Coding hand-off (`pi` / `opencode` / durable) | **Done** — asks once per thread which executor to use, then spawns the already-authenticated CLI headlessly (`pi -p --mode text`) or keeps the work in the thread; a missing CLI is a readable refusal |
-| Browser (headless + headful) | **Done** — lazy Chromium over CDP with one persistent profile, one process and one tab; idle shutdown after 15 min, screenshot artifacts, login filled from the vault without revealing values |
-| Secret vault | **Done** — AES-256-GCM at 0600 in a 0700 directory, masked form instead of a chat paste, transcript redaction, and `data/vault` named again in .gitignore |
-| Usage periods, cache and stateless calls | **Done** — today/month/30 days/all time, daily and monthly series, `usage.jsonl` for Nyahut/suggestions |
-| Task summaries | **Done** — duration, tokens, cached tokens and cost once at the end of the completed task, derived from durable entries; no token footer on intermediate replies |
-| Per-agent cron schedules | **Done** — 5-field cron, dedicated thread, run-now, skip-when-busy, restart-safe |
-| Mermaid diagram drawer | **Done** — per-session gallery, render one at a time, inline diagrams render when near the viewport |
-| Completion sound, toast and desktop notification | **Done** — client preferences, one shared AudioContext, permission requested from a user gesture |
-| Static boot screen | **Done** — paints before the bundle, removed after sessions and agents are ready |
-| PWA + provider credential screen | **Partial** — installable; no push notifications |
-| Per-agent model picker + capability badges | **Done** |
-| Agent & group identity (colour + emoji) | **Done** |
-| Live "replying" indicator, per session | **Done** |
-| Interactive chat composer | **Done** — auto-grow, formatting toolbar, Enter/Cmd+Enter send and a table-insert action |
-| Responsive Markdown tables | **Done** — sticky-header tables that fill the desktop message and scroll inside their own card on a phone |
-| Memory graph view | **Done** — agent editor Memory drawer with a connected note graph, related-note links and a list view |
-| Responsive layout + design system | **Done** — 5 viewport tiers in the screenshot gate |
-| E2E suite (faux provider, deterministic) | **27 scenarios passing** (including a real headless-browser launch) |
-| Image and document attachments | **Done** — bytes live in the entry the model was given |
-| Generated file output | **Done** — Markdown, text, JSON, PDF, arbitrary base64 and published files become durable download cards under data/artifacts |
-| Agent display customization | **Done** — a closed global theme token set plus a bounded network-free CSS layer, changed by customize_ui and applied live or on refresh |
-| Live activity indicator (phase, calls, elapsed) | **Done** — derived from `pi.live`, never a guess |
-| Storage: size report, cleanup, purge | **Done** — the `#/usage` panel prints the bytes the cleanup actually gave back |
-| System panel: update + restart | **Done** — `#/system` reports the loaded versions, the sandbox and the supervisor; Update installs packages only where the repo is writable, and reloads the live tools where it is read-only |
-| The `question` tool + keyless web search | **Done** — a durable `chat.question` with option buttons; DuckDuckGo's HTML endpoint, no key |
-| Hyperlinks and mermaid diagrams in an answer | **Done** — external links open away, a diagram fetches its library only when it is there |
-| Code mode | **Done, agent-selected** — `codemode` is registered only for an agent whose tool list names it, so a fresh default thread answers `Tool codemode is not available` and keeps going (see [docs/roadmap.md](docs/roadmap.md)) |
-| Voice, video | **Not started** |
-| MCP servers, per-agent hooks, skills/curator | **Not started** |
-
-Latest verified run:
-
-| Check | Result |
-| --- | --- |
-| `npm run check` | `tsc` clean · `svelte-check` **0 errors, 0 warnings** · `lint:lang` clean |
-| `npm run e2e` | **27 passed, 0 failed** (`activity`, `attachments`, `browser`, `browser-live`, `bubbles`, `coding`, `codemode`, `display`, `files`, `fleet`, `identity`, `live-activity`, `memory`, `mesh`, `models`, `permissions`, `questions`, `schedules`, `search`, `secrets`, `sessions`, `steering`, `storage`, `system`, `terminal`, `tools`, `usage`) |
-| `npm run build` | entry **95.0 kB JS** + **12.5 kB CSS** gzip (budget 120 kB); mermaid and its layout engines stay in their own chunks, fetched only when a diagram renders |
-| `npm run shots:replying` | 11 screenshots |
-| `npm run shots` | **75 screenshots** captured locally (15 route definitions × 5 viewports), including the bubble field at every tier, boot, automation, diagram, usage and notification states. Not committed: that gate run used the owner's live agents. |
-| `#/usage` | daily/monthly/cache/stateless report + Storage panel; included in the local screenshot gate |
-
-The plan of record, with the evidence for each phase, lives in [`docs/roadmap.md`](docs/roadmap.md).
-Older UI review notes and screenshots live in [`docs/ui-review/`](docs/ui-review/); the 2026-10-21 run is local-only because it contains live agent data.
-
----
-
-## Architecture
-
-```mermaid
-flowchart TB
-  subgraph browser["Browser — Svelte 5 SPA · packages/web"]
-    direction TB
-    views["Views<br/>Chat · Agents (fleet bubbles) · AgentEditor · Groups<br/>Providers · Usage · System"]
-    comps["Components<br/>Sidebar · AgentAvatar · ActivityIndicator<br/>ActivityStrip · Attachments · Composer · Dialog<br/>Markdown · Mermaid · QuestionOptions"]
-    store["state.svelte.ts<br/>runes store: sessions, entries,<br/>active, busy, streamingText, activity"]
-    ident["lib/identity.ts<br/>colour + emoji identity"]
-    wsc["ws.ts<br/>connect() per conversation<br/>connectPresence() for activity"]
-    views --> store
-    comps --> store
-    comps --> ident
-    store --> wsc
-  end
-
-  subgraph server["Fastify server — bound to 127.0.0.1 · packages/server"]
-    direction TB
-    auth["auth.ts<br/>X-PI-Token + Host allowlist"]
-    api["index.ts<br/>REST routes + WS upgrade"]
-    sess["sessions.ts<br/>session index · transcript<br/>sendMessage · rebindAgent"]
-    rooms["rooms.ts<br/>group orchestration"]
-    router["router.ts<br/>planTargets() — pure"]
-    nyahut["nyahut.ts<br/>claimAll / overseeAll"]
-    activity["activity.ts<br/>who is generating right now"]
-    stream["stream.ts<br/>conversation.watch() to frames"]
-    agents["agents.ts<br/>AGENT.md + SOUL.md"]
-    models["models.ts + capabilities.ts<br/>providers · model catalog"]
-    storage["storage.ts<br/>size report · checkpoint · purge"]
-    tools["questions.ts · search.ts<br/>question + web-search tools"]
-    api --> auth
-    api --> sess
-    api --> rooms
-    api --> stream
-    api --> activity
-    api --> storage
-    rooms --> router
-    rooms --> nyahut
-    rooms --> agents
-    sess --> agents
-    sess --> models
-  end
-
-  subgraph durable["pi-durable Harness — pinned 1.3.0"]
-    harness["Harness<br/>conversations · submissions · durable tasks"]
-    db[("SQLite<br/>data/app.sqlite")]
-    harness --> db
-  end
-
-  harness -->|installs| tools
-
-  llm["pi-ai providers<br/>opencode-go / deepseek-v4.1-flash<br/>faux provider when PI_E2E=1"]
-
-  wsc <-->|"HTTP + WebSocket · X-PI-Token"| api
-  sess --> harness
-  rooms --> harness
-  stream --> harness
-  harness --> llm
-```
-
-### Component responsibilities
-
-| Module | Owns |
-| --- | --- |
-| `packages/server/src/index.ts` | Every REST route, the WebSocket upgrade, the boot-time activity scan |
-| `auth.ts` | Rejects any request without `X-PI-Token`, allowlists `Host` |
-| `sessions.ts` | The session index (`data/sessions.json`), transcripts, `sendMessage`, `rebindAgent` |
-| `rooms.ts` | Group orchestration; `roomOf()` rebuilds `RoomConfig` field by field |
-| `router.ts` | `planTargets()` — a **pure** function deciding who answers |
-| `nyahut.ts` | The claim and oversee passes (short, stateless calls) |
-| `activity.ts` | In-memory registry of sessions that are generating |
-| `stream.ts` | Turns `conversation.watch()` into wire frames, reading partials from `pi.live` |
-| `agents.ts` | Reads/writes `data/agents/<slug>/{agent.json,AGENT.md,SOUL.md}` |
-| `models.ts`, `capabilities.ts` | Provider credentials and the per-model capability catalog |
-| `storage.ts` | What the data directory holds, the checkpoint + vacuum, and the purge that exports before it deletes |
-| `questions.ts`, `search.ts` | The `question` tool (a durable `chat.question` entry) and the keyless DuckDuckGo `web-search` tool |
-| `mesh.ts`, `mesh-tools.ts`, `roster.ts` | Directed inbox/task threads, multi-target fan-out, hop guards, the link index, and the shared ownership/activity map |
-| `fleet.ts` | The compact roster + grouped A2A links snapshot sent over REST and the presence socket |
-| `cron.ts`, `schedules.ts` | The 5-field cron parser, the per-agent schedule store, and the 15-second scheduler tick |
-| `usage-ledger.ts` | Append-only spend from stateless calls that have no conversation entry |
-| `wire.ts` | The server→web frame contract (mirrored in `packages/web/src/ws.ts`) |
-| `packages/web/src/state.svelte.ts` | The single runes store; the only place frames mutate state |
-| `packages/web/src/lib/identity.ts` | One normaliser for agent/group/member identity |
-| `packages/web/src/lib/markdown.ts` | Markdown → sanitized HTML, mermaid fences, and the external/internal link policy |
-| `packages/web/src/views/Usage.svelte` | The usage graphs and the Storage panel |
-| `packages/web/src/ws.ts` | Per-conversation socket plus the presence socket |
-
-### Data model
-
-```mermaid
-erDiagram
-  SESSION ||--o| ROOM : "is a group"
-  SESSION }o--|| AGENT : "belongs to"
-  ROOM }o--o{ AGENT : members
-  SESSION ||--|| CONVERSATION : "one thread = one conversation"
-  CONVERSATION ||--o{ ENTRY : contains
-
-  SESSION {
-    string id "conversation id"
-    string title
-    string agent "agent id, empty for a plain thread"
-    string kind "plain | agent | group"
-    string purpose "inbox | delegate | schedule"
-    string meshKey "idempotent purpose-thread key"
-    number deletedAt "soft delete"
-    number updatedAt
-  }
-  ROOM {
-    string[] members
-    string mode "nyahut | moderator | silent"
-    string moderator
-    number maxHops
-    number maxResponders
-    string ifNobodyClaims "highest | silent"
-    string color
-    string avatar
-  }
-  AGENT {
-    string id "slug"
-    string name
-    string provider
-    string modelId
-    string thinkingLevel
-    string[] tools
-    string vision "auto | off"
-    string responsibility "one line, drives Nyahut"
-    boolean enabled
-    string mesh "off | message | full"
-    string color
-    string avatar
-  }
-  ENTRY {
-    string id
-    string kind "pi.user | pi.assistant | pi.tool-result | chat.user | room.* | schedule.note"
-    json model "the messages the provider was given"
-    json data "what the UI shows: text, author, files[], via, mesh, run"
-  }
-```
-
-One thread is one conversation. A group **is** a thread whose session record carries a `room`; each member
-gets its own conversation under `room.conversations`, created on first use.
-
-A user message is one `chat.user` entry. `entry.model` holds the messages the provider was given — image
-blocks included — and `entry.data.files[]` describes them, so an attachment has exactly one home and there
-is no second store to keep in step.
-
-### Agent network, fleet, schedules and diagrams
-
-- **Agent network.** `agents_message` delivers to one directed inbox thread per sender–recipient pair; a fan-out
-  addresses up to 16 targets, or `all` except the sender. `agents_delegate` creates one task thread per target
-  (at most four) and waits for the answers. The inbound entry carries the chain and hop, so a later tool call
-  can refuse a cycle or an over-budget chain. Every tool call uses a deterministic request id and `api.memo`,
-  which makes a replay after a crash reuse the thread and submission instead of duplicating them.
-- **Fleet.** `fleet.ts` builds one snapshot from agents, the session index, the activity registry, the link
-  index and the schedule store. The presence socket sends `presence` and `fleet` together. The Agents page has
-  two views of that snapshot: **Bubbles** (default) gives each agent one card whose brightness reports
-  working/idle/disabled, and **List** is the compact roster and grouped link batches. An agent write emits a
-  fresh fleet frame, so a create, edit, delete or enable/disable reaches every open view without a refresh. Fleet snapshots never scan
-  transcripts; token totals come from the cached usage report.
-- **Usage and task summaries.** The report buckets assistant usage plus stateless calls by local day and month,
-  and includes soft-deleted threads while their rows exist. `entriesToMsgs` derives one task summary — wall time,
-  tokens, cache read/write and cost — from the user entry and the assistant/tool entries, so there is no
-  second usage log for a normal run. Chat shows that summary once at the end of the timeline and hides it while a run is active.
-- **Display.** customize_ui changes a saved global theme: product name, tagline, logo, colors, font, density,
-  radius and a bounded network-free CSS layer. The server validates every token, writes data/display.json and
-  broadcasts a display frame; a tab that misses the frame sees the same result on refresh. This is not source
-  editing: there is no build, no restart and no code execution. The owner resets from System or with
-  ?display=default.
-- **Generated files.** create_file writes text or base64 into data/artifacts; create_pdf renders Markdown with a
-  small built-in PDF writer; publish_file attaches a file the agent already wrote. The entry is the durable
-  index, and the download route serves only an artifact id named by that entry. A purge removes the
-  conversation's artifacts with its rows.
-- **Mobile composer.** The shell is pinned to the visualViewport's height and top offset, not only 100dvh, and
-  the viewport meta asks the browser to resize content for the keyboard. The composer is sticky above the safe
-  area and there is no focus-triggered scrollIntoView, so the chat box follows the visible rectangle instead
-  of jumping away. Thread titles flex and ellipsize in the phone drawer instead of being squeezed out.
-- **Cron.** A schedule owns one thread. The tick reads the durable store, skips a thread that is still working,
-  submits with a request id keyed to the due minute, and records the answer's duration and tokens. Cron is
-  evaluated in the server's local time zone; missed windows are counted, never replayed in a burst.
-- **Diagrams.** A fenced mermaid block stays in the message that produced it. The chat renders inline diagrams
-  only when they are near the viewport; the per-session Diagram drawer lists all fences and renders exactly one
-  selected diagram at a time. Mermaid is initialized once and imported only on the first render.
-- **Alerts and boot.** Completion is a presence transition (an active session that goes idle), filtered to real
-  session IDs. Sound is a shared Web Audio context; desktop notifications request permission only from a click.
-  The static boot screen is inline HTML/CSS, removed after the first sessions/agents snapshot.
-
----
-
-## How it works right now
-
-### The streaming contract
-
-Streaming is the least obvious part of the system, and it exists in its current shape for a concrete
-reason: **`message_update` is never emitted by `watchEvents` for the `opencode-go` provider**, so partials
-never arrive as translated view changes. The server therefore reads the assistant message in flight
-straight out of the durable `pi.live` document and diffs it:
-
-```ts
-// packages/server/src/stream.ts — the core of live streaming
-const watch = await conversation.watch(streamContext);
-for (const entry of watch.value.entries) seen.add(String(entry.id));
-send({ type: "snapshot", entries: entriesToMsgs(watch.value.entries) });
-
-watch.start((view) => publish(view));
-
-function publish(view: ViewLike): void {
-  for (const entry of view.entries) {
-    const id = String(entry.id);
-    if (seen.has(id)) continue;
-    seen.add(id);
-    const message = entryToMsg(entry);
-    if (message) send({ type: "entry", entry: message });
-    if (entry.kind === "pi.assistant") send({ type: "message-end", text: message?.text ?? "" });
-  }
-
-  const next = liveText(view);              // reads docs["pi.live"].generation.message.content
-  if (next.startsWith(partial)) {
-    const chunk = next.slice(partial.length);
-    if (chunk) {
-      if (partial === "") send({ type: "message-start" });
-      send({ type: "delta", text: chunk });
-    }
-    partial = next;
-  }
-}
-```
-
-The wire sequence a client actually sees, captured with `node scripts/ws-probe.mjs <id> "hello"`:
-
-```text
-snapshot       { entries: [...] }        # durable transcript so far
-entry          { role: "user" }          # the message you just sent
-message-start                            # a bubble opens
-delta          { text: "Ahoy, " }        # partials, ~80 ms apart
-delta          { text: "I am the " }
-delta          { text: "pirate captain " }
-entry          { role: "assistant" }     # the committed entry
-message-end    { text: "Ahoy, I am the pirate captain of this crew." }
-```
-
-`watchEvents` also emits start/end events for **user** entries, so only `pi.assistant` entries are allowed
-to close the bubble.
-
-### Attachments live in the entry
-
-A message carries its own files: one request, one commit, one entry. The reason it can be that simple is a
-property of the durable layer — an input's entry stores the message the provider was given (`appendInput`
-builds `model: [userMessage]` for *any* entry kind that does not start with `pi.`), so the bytes the model
-saw are already durable. Copying them anywhere else would be the copy.
-
-```mermaid
-sequenceDiagram
-  participant U as User
-  participant SPA as Browser
-  participant API as Fastify
-  participant H as pi-durable
-  participant LLM as Model
-
-  U->>SPA: drops a photo and a PDF
-  SPA->>SPA: lib/files.ts: base64 + a local preview
-  SPA->>API: POST /api/sessions/:id/messages { text, attachments, requestId }
-  API->>API: prepareUserMessage: shape → budget → policy → convert
-  Note over API: a refusal throws here, so nothing durable exists yet
-  API->>H: submit({ content: [text, image, docText], entry: { kind: "chat.user", data } })
-  H-->>API: submissionId — the bytes are durable now
-  API-->>SPA: { submissionId }
-  H->>LLM: the same content, as native blocks
-  SPA->>API: GET /api/sessions/:id/attachments/:entryId/:index?token=…
-  API-->>SPA: the bytes, read out of that entry
-```
-
-What that buys, and what it costs:
-
-- **No upload route, no temporary file, no garbage collection.** A file exists exactly where the model read
-  it, so a reload and a restart are trivially faithful — there is nothing to lose track of. The retrieval
-  route resolves the entry, checks it belongs to *that* conversation, and serves the block.
-- **The server normalizes, not the browser.** Images go through the same Photon processor `read` uses, to
-  the model's own `inputLimits`. One limit table instead of two, and no canvas code to re-implement EXIF
-  orientation. Photon's worker needs a plain `Uint8Array`: a Node `Buffer` makes `prepare()` return
-  `undefined`, which would silently omit every uploaded image.
-- **Documents become text**, detected by decoding rather than by extension; PDFs go to `pdftotext` on stdin
-  and never through a path. An over-long document is truncated with the same numbers shown to the model and
-  to the user, and a file that cannot be read keeps its place in the bubble with the reason.
-- **A refusal is free.** `prepareUserMessage` validates and converts before `submit`, so a 400 means the
-  draft is intact: nothing was written, no model call was spent.
-- **Groups refuse attachments** (400, readable reason). Each member conversation is its own model-visible
-  entry, so supporting it would keep one copy of every byte per member.
-- **The costs accepted:** the same photo attached twice is stored twice, `app.sqlite` grows with the images
-  it holds, and the message route declares its own 24 MiB body limit because a message carries its files.
-
-### Storage: report first, then give some back
-
-The data directory is not one file, and "cleanup" means three different things that are worth keeping
-apart. `storage.ts` reports the parts a reader would recognise — `app.sqlite`, its `-wal` and `-shm`
-siblings, the session index and the agents' own files — and the `#/usage` panel draws them as shares of that
-total.
-
-- **A checkpoint** folds the write-ahead log back into the database. The log grows independently of the data
-  and is pure overhead once every reader has passed it, so `POST /api/storage/cleanup` runs
-  `wal_checkpoint(TRUNCATE)` and then `VACUUM`, on a **second connection** with a short busy timeout instead
-  of reaching into the harness's own.
-- **A vacuum** rewrites the file without the space deletions left behind.
-- **A purge** removes one conversation's rows for good.
-
-The response is the point: cleanup returns `{ before, after, reclaimedBytes }`, and the panel prints the
-measured number — including the honest **`0 B reclaimed`** of a second run that had nothing to give back.
-The page never claims space it did not get.
-
-A purge is the destructive one, which is why it is not a delete:
-
-```mermaid
-sequenceDiagram
-  participant U as User
-  participant API as Fastify
-  participant S as storage.ts
-  participant DB as SQLite
-  U->>API: POST /api/sessions/:id/purge
-  API->>S: purgeConversation(id, transcript)
-  S->>S: write data/exports/<id>.json — before anything is removed
-  S->>DB: PRAGMA table_info per table, then DELETE … WHERE <conversation column> = ?
-  Note over DB: the column is discovered from the schema, never assumed:<br/>a guessed name either fails or matches nothing while reporting success
-  S->>DB: write-ahead log checkpoint
-  S-->>API: { exportPath, removedRows, reclaimedBytes }
-  API->>API: remove the session record — not a soft delete
-  API-->>U: the export path and the row counts
-```
-
-Two consequences follow from that shape. The rows are the only copy of the transcript, so the export happens
-first and its path comes back with the result. And because the rows are gone, `Restore` could never work — so
-the session record is removed outright and the route 404s afterwards, instead of pretending a thread is
-hidden when it is empty. `npm run e2e storage` proves the rows left the `entries` table, not just the list.
-There is no purge control in the UI yet; the panel states what a purge would do instead of offering one.
-
-### Asking, and searching without a key
-
-Two tools exist because the model has a hole where they belong.
-
-- **`question`** asks the user and ends the turn. It writes a durable `chat.question` entry
-  (`{ text, author, options }`) instead of printing the question as model text, so the transcript mapper
-  needs no special case: the entry already has `text` and `author`, and `data.options` is what the client
-  reads to draw the buttons. The answer is an ordinary user message, which is why the tool writes nothing
-  else and tells the model its turn is over. A question is answerable once — a later user message in the
-  thread locks its buttons.
-- **`web-search`** goes to DuckDuckGo's keyless HTML endpoint over the built-in `fetch`: no MCP server, no
-  dependency, no credential, because pi-ai has no provider-native search and this machine has no search key.
-  That is a **shape dependency, not an API**, so the tool names the provider in every result and reports a
-  changed page (`… returned no recognizable results, so its markup may have changed`) or an HTTP failure as
-  a failure. A query with genuinely nothing to show is the only case that answers with no results.
-
-### Links and diagrams in an answer
-
-Markdown comes from a model, so both of these are security-relevant rather than cosmetic.
-
-- **A link is either this app or the web.** `renderMarkdown` installs a DOMPurify hook that gives every
-  external anchor `target="_blank"` with `rel="noreferrer noopener"` — after sanitizing, so raw HTML in a
-  message goes through the same rule — and strips `target`/`rel` from a same-page `#` link, which belongs to
-  the in-app router. `javascript:` never reaches the hook; DOMPurify drops the attribute first.
-- **A diagram is a component, not an image.** A fenced ```mermaid block is split out before markdown is
-  rendered and handed to `Mermaid.svelte`, which imports `mermaid` **inside** its render effect, so a thread
-  with no diagram downloads none of it (`mermaid.core` and `elk` are separate chunks).
-  `securityLevel: "strict"` is not optional when the source is a model: it keeps labels as text instead of
-  letting them inject HTML or click handlers. Pan, zoom and reset are plain transform math on a wrapper, and
-  an unclosed fence stays an ordinary code block until its closing fence arrives, so a diagram still
-  streaming in does not flash an error.
-
-### Who is replying
-
-The sidebar and the chat both need to know which sessions are generating, including sessions you are not
-looking at. Rather than polling, the server tracks it in memory and pushes it:
-
-```mermaid
-sequenceDiagram
-  participant U as User
-  participant SPA as Browser (Svelte)
-  participant API as Fastify
-  participant H as pi-durable Harness
-  participant LLM as Model
-
-  U->>SPA: types a message, presses Enter
-  SPA->>SPA: store.busy = true (instant local echo)
-  SPA->>API: POST /api/sessions/:id/messages
-  API->>H: conversation.submit({ type: "input" })
-  H-->>API: submissionId (durable already)
-  API->>API: markActive(id) + start waitForIdle waiter
-  API-->>SPA: { submissionId }
-  Note over API,SPA: presence socket
-  API-->>SPA: { type: "presence", active: ["550"] }
-  SPA->>API: WS /api/ws?conversation=550
-  API->>H: conversation.watch()
-  H->>LLM: generation starts
-  LLM-->>H: tokens
-  H-->>API: pi.live partials
-  API-->>SPA: message-start, delta, delta…
-  LLM-->>H: done
-  H-->>API: pi.assistant entry
-  API-->>SPA: entry, message-end
-  H-->>API: waitForIdle() resolves
-  API->>API: markIdle(id)
-  API-->>SPA: { type: "presence", active: [] }
-```
-
-`waitForIdle()` is the harness's own signal, so there is no polling and no transcript scanning. The clear
-is epoch-guarded, so a waiter that resolves late cannot wipe the mark of a generation that started in
-between, and a 10-minute watchdog stops a hung provider from pinning a spinner forever.
-
-### What the indicator is allowed to say
-
-"Replying" is not enough to look at, and a fake progress bar is worse than no indicator. So the phase is
-*derived* on the server from `pi.live` and `pi.inbox`, and every row below is a signal that was actually
-observed:
-
-| Condition (first match wins) | phase |
-| --- | --- |
-| `compactions` non-empty | `compacting` |
-| `generation.retry` present | `retrying` |
-| some call is not `done` | `tool` |
-| the partial has a non-empty text block | `writing` |
-| the partial has a non-empty thinking block | `thinking` |
-| `run` present, no generation yet | `starting` |
-| nothing running | `null` — no motion at all |
-
-"Thinking" therefore requires thinking tokens and "writing" requires text: a model that emits neither says
-`starting`, which is true, instead of guessing. The phase, the calls, the counts and the queued inputs
-arrive as **one `activity` snapshot** (the same snapshot-never-diff rule as presence and the tool trace), so
-a phase and a call list that describe one round cannot disagree.
-
-Two honesty rules are worth stating because they removed features rather than adding them:
-
-- **Elapsed time comes from the run task's durable `startedAt`**, read once per run, so a reconnect reports
-the real elapsed time instead of restarting the clock at zero — and when it cannot be read, no timer is
-shown at all.
-- **There is no per-call timer.** With `toolExecution: "parallel"` a call is already `running` on the first
-publish that mentions it, so no connection can observe when it began; a stamp taken at first sight would
-really mean "since I connected". The row keeps the indeterminate sweep and the round keeps the real elapsed
-time.
-
-Motion follows the roadmap's rule: only `opacity` + `transform`, inside fixed-size clipped boxes, at most one
-sweep per row (and one round-level sweep past three calls in flight), nothing at all while the tab is
-hidden, and fully static under `prefers-reduced-motion` — where the sweep is hidden outright, because a
-frozen bar in an arbitrary position reads as progress.
-
-### Group chat: `Nyahut`
-
-```mermaid
-flowchart TB
-  A["POST /api/rooms/:id/messages"] --> B["write chat.user entry"]
-  B --> C{"mode"}
-  C -->|nyahut| D["claimAll()<br/>one short stateless call per member<br/>'is this yours?'"]
-  D --> E["claimants sorted by confidence,<br/>capped at maxResponders"]
-  E -->|nobody claims| F["ifNobodyClaims:<br/>highest, or silent + a system note"]
-  C -->|moderator / silent| G["planTargets()<br/>an @mention always wins"]
-  G --> H
-  E --> H
-  F --> H
-  H["loop while queue and hops &lt; maxHops"] --> I["write chat.typing start"]
-  I --> J["member conversation.submit(prompt)<br/>submission.wait()"]
-  J --> K["write chat.agent-message"]
-  K --> L["@mentions in the answer join the queue<br/>one agent answers once per user message"]
-  L --> M["write chat.typing stop"]
-  M --> H
-  H --> N["overseeAll()<br/>non-responders may add one sentence"]
-  N --> O["updateSessionRecord(updatedAt)"]
-```
-
-Claim and oversee are **short stateless calls** (`models.completeSimple`), while answers are full durable
-calls. A user message therefore costs roughly `2N − R` short calls plus `R` full ones, where `N` is the
-member count and `R` the number of responders.
-
----
+Durable agents with a CLI and Telegram bots. The daemon owns the durable state; Telegram is the only chat
+surface; the terminal provides setup, administration, log inspection and a read-only fleet monitor.
+
+Built on [@earendil-works/pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) 1.3.0: every message,
+tool call and generation is a durable task in SQLite, so killing the daemon or losing the network does not lose work
+in flight.
+
+~~~text
+dura CLI  ── unix socket ──►  daemon  ──►  Telegram Bot API (one poller per bot)
+   │                            │
+   └─ fleet TUI                 └─ SQLite · agents · schedules · mesh · vault · artifacts
+~~~
+
+## Why this shape
+
+- **One process owns durability.** The harness, SQLite, the scheduler, the agent network and the provider registry
+  live in the daemon. Telegram is a transport: it can fail, rate-limit or be replaced without losing a run.
+- **No listening port.** The CLI and TUI connect over a 0600 Unix socket. Nothing is exposed to the network except
+  the outbound Bot API calls.
+- **Telegram is the product surface.** Threads, groups, questions, files, usage, memory and admin actions are
+  commands and menus in chat. No browser, no build step, no PWA.
+- **The fleet is monitoring, not a second UI.** `dura monitor` renders the live roster; its only write is an
+  explicit add-agent form.
 
 ## Quick start
 
 ```bash
 npm install
-npm run dev
+npm link                       # optional: puts `dura` on PATH; otherwise use node packages/cli/bin/dura.ts
+dura init
+dura status
 ```
 
-The dev command creates a 32-byte token in `data/token` (mode `600`), starts Fastify on `8787` and Vite on
-`5173`, and injects the token into the page as `window.__PI_BOOT__`.
+`dura init` is a strictly sequential wizard:
 
-Credentials resolve in this order: `~/.pi/agent/auth.json` → `OPENCODE_API_KEY` → `data/credentials.json`.
-The `#/providers` screen writes the last one. To run the whole thing as one process:
+| Step | What it does |
+| --- | --- |
+| 1 Agents | Creates the orchestrator (always asked when missing; asks to replace when present) and any extra agents. Model and bot are deferred to steps 2 and 3. |
+| 2 Provider | Detects existing credentials, defaults to opencode-go / deepseek-v4.1-flash, or adds any built-in pi-ai provider by API key (validated before saving). |
+| 3 Telegram | Adds one or more bots (getMe validated), binds the owner with a short /start code or --owner-id, assigns a home bot to every agent, then writes the staged agents. |
+| 4 Service | Offers the systemd user unit and reports zram/sysctl tuning. |
+| 5 Connection test | Starts the daemon and proves provider completion, bot identity, owner delivery, socket/no-TCP, SQLite and one live agent round-trip. Writes setup.verifiedAt only on success. |
+
+A re-run resumes at the first unfinished step. `--yes` accepts the current/default value everywhere;
+`--skip-test` records the test as skipped and leaves setup unverified.
 
 ```bash
-npm run build && npm start      # one Fastify process serving UI + API + WS on 8787
+dura verify                    # the same checks, any time
+dura monitor                   # fleet TUI (q quit, r refresh, a add agent)
+dura logs -f                  # JSON lines: lifecycle, connection, conversations, errors
 ```
 
-### Reaching it from a phone
-
-The server listens on loopback only and speaks plain HTTP, so a phone needs TLS and a route in front of it
-before the UI can be installed as an app. The runbook — Tailscale, the `PI_ALLOWED_HOSTS` allowlist, the
-systemd user unit and the iOS/Android install — is in [`docs/tailscale.md`](docs/tailscale.md).
-
-### Commands
+## CLI
 
 | Command | Purpose |
 | --- | --- |
-| `npm run dev` | Token + server + Vite in one command |
-| `npm run build` | Build the UI into `packages/web/dist` |
-| `npm start` | Local production: one process for UI + API + WS |
-| `npm run check` | `tsc` (server) + `svelte-check` (web) + `lint:lang` |
-| `npm run e2e` | Every E2E scenario against a throwaway server |
-| `npm run e2e:real` | Also run the optional real-model scenario |
-| `npm run shots` | 14 routes × 5 viewports → `docs/ui-review/<date>/` |
-| `npm run shots:replying` | The replying indicator, the attachment cards, each activity phase and the Full Access control, on a throwaway E2E server |
-| `npm run smoke` | Harness + storage + one real question to the model |
-| `npm run smoke:image` | The same, with an image attachment: proves a real model sees it |
-| `npm run seed` | Seed demo threads (no model calls) |
-| `npm run lint:lang` | Fail on Indonesian text in system files |
+| `dura init` | Five-step setup wizard |
+| `dura start` / `stop` / `restart` | Daemon lifecycle (foreground on a TTY, background otherwise) |
+| `dura status` | Daemon, bots, agents, runs, memory, verification time |
+| `dura verify` | Connection test against a running daemon (or `--start` one) |
+| `dura logs` | Read or follow the daemon log |
+| `dura agent list \| show \| create \| set \| enable \| disable \| delete \| docs \| edit-doc \| restore-doc \| suggest` | Agent records and personas |
+| `dura orchestrator show \| set \| create \| replace` | The orchestrator pointer |
+| `dura provider list \| add \| models \| test \| remove \| default` | Providers and API keys |
+| `dura bot list \| add \| remove \| default \| enable \| disable \| test` | Telegram bot registry |
+| `dura user list \| add \| remove \| owner \| pending \| approve \| deny \| invite` | Allowlist and group invite links |
+| `dura group list \| create \| show \| mode` | Durable groups (bind one in Telegram with /bind) |
+| `dura thread list \| prune \| delete \| restore \| purge` | Thread hygiene: prune by age, purge with export, vacuum |
+| `dura mcp list \| add \| remove \| reload \| tools` | Global MCP servers (stdio) available to every agent |
+| `dura monitor [--json] [--read-only]` | Fleet TUI |
+| `dura usage` / `memory` / `schedule` / `storage` / `vault` | Reports and data |
+| `dura config get \| set \| edit \| validate` | config.json |
+| `dura service install \| uninstall \| status` | systemd user unit |
+| `dura tune status \| apply` | zram/sysctl report; applies only missing defaults |
+| `dura migrate` | Copy an older data directory into DURA_HOME |
+| `dura doctor` | Diagnostics, without making model calls |
+| `dura telegram whoami \| test` | Bot identity and owner self-test |
+| `dura bench` | Five-agent memory benchmark |
 
-### Routes
+Global flags: `--json`, `--home <path>`, `--help`, `--version`. Exit codes: 0 ok, 1 runtime error, 2 usage,
+3 daemon unavailable, 4 refused.
 
-| Route | Contents |
-| --- | --- |
-| `#/` | Empty state + new-thread button |
-| `#/s/<id>` | Chat — plain thread, agent thread, or a group with the mode switch |
-| `#/groups` | Create a group + the group list |
-| `#/usage` | Usage graphs, the Storage panel and the cleanup |
-| `#/system` | Loaded tool versions, the sandbox and the supervisor, plus Update and Restart |
-| `#/agents`, `#/agents/new`, `#/agents/<id>` | Fleet bubbles (default; `?view=list` for the compact list) + the `AGENT.md`/`SOUL.md` editor |
-| `#/providers` | Provider credential status + API key entry |
+## Telegram
 
-### API
+**One bot is one agent.** Each Telegram bot belongs to exactly one agent; a message to that bot goes to that agent,
+never to a shared roster. `/new` starts a thread, `/threads` lists the agent's threads, and replies route to the
+thread that produced the message. An agent without a bot is not unreachable: the orchestrator can message or
+delegate to it. Adding a bot creates a pairing job: `dura bot connect <label> <agent>`, `/bots` for buttons, or ask
+the orchestrator to connect it. An unpaired bot answers the owner with a pairing prompt and refuses everyone else.
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| `GET` | `/api/health` | Liveness |
-| `GET` | `/api/system` | The app's own facts and the current/last operation |
-| `POST` | `/api/system/{update,restart}` | Start (or join) an update / record a restart and leave after the reply is flushed |
-| `GET` `POST` `PATCH` `DELETE` | `/api/sessions[/:id]` | `?includeDeleted=1` lists soft-deleted threads |
-| `POST` | `/api/sessions/:id/{restore,move,restart,abort}` | Restore, move to another agent, fresh context, abort |
-| `POST` | `/api/sessions/:id/permissions` | Grant or revoke Full Access for that thread alone |
-| `POST` | `/api/sessions/:id/purge` | Exports the transcript to `data/exports/<id>.json`, then deletes its rows and the session record — irreversible |
-| `GET` `POST` | `/api/sessions/:id/context` · `/api/sessions/:id/compact` | Context used against the model's window / compact now |
-| `PUT` | `/api/sessions/:id/model` | The composer's model switch (on an agent thread it moves the agent) |
-| `GET` `POST` | `/api/sessions/:id/messages` | Transcript / send. A message carries its own attachments |
-| `GET` | `/api/sessions/:id/attachments/:entryId/:index` | One file of a message, read out of that entry |
-| `GET` `POST` | `/api/storage[/cleanup]` | Sizes split by what a reader recognises / checkpoint + vacuum, returning the sizes before and after and `reclaimedBytes` |
-| `GET` `POST` `PUT` `DELETE` | `/api/agents[/:id]` | `PUT` returns `rebound`: how many threads took the new files |
-| `GET` `PUT` | `/api/providers[/:id/key]` | Credential status and key entry |
-| `GET` | `/api/models?provider=` | Capability catalog: image support, context, cost, thinking levels |
-| `POST` | `/api/models/test` | One cheap round trip to prove a model works |
-| `GET` | `/api/activity` | Which sessions are generating right now |
-| `GET` | `/api/usage` | The Usage screen's numbers, read from the durable log |
-| `POST` `PUT` | `/api/rooms[/:id]` | Create a group / change its members and mode |
-| `GET` `POST` | `/api/e2e/{state,script}` | The faux-provider script, only when `PI_E2E=1` and the token is right |
-| `GET` | `/api/ws?conversation=<id>` | That conversation's stream |
-| `GET` | `/api/ws/presence` | Activity, display and fleet snapshots; a fleet frame also follows every agent write |
+Groups can be bound to a durable group thread (`/bind <id>`); the group keeps its nyahut/moderator/silent modes
+and one speaker bot. A group is the deliberate multi-agent surface; direct chats are strictly one-to-one.
 
-### Debug tools
+The command menu is scoped and rewritten on every start, so an older integration's commands cannot linger:
+`/new` (thread), `/threads`, `/plan [goal]` (plan without executing), `/model` (show, or choose a model from
+buttons for the current thread), `/usage`, `/reload` (owner: tools and thread rebind), `/restart` (owner:
+service restart, with confirmation), `/agents`, `/memory`, `/schedules`, `/group`, `/bind`, `/status`,
+`/whoami`, `/compact`, `/abort`, `/grant`, `/orchestrator`, `/bots`, `/settings`, `/mcp`, `/prune`, `/help`.
+Answers stream by editing one status message; the final edit carries the answer, a run summary (duration, tokens,
+cost) and any
+generated files. The `question` tool renders inline buttons.
 
-| Command | Purpose |
-| --- | --- |
-| `node scripts/ws-probe.mjs <id> "message"` | Attach to a stream, post, print arriving frames |
-| `node packages/server/scripts/events-probe.ts <id> "message"` | Print raw pi-durable events |
-| `node packages/server/scripts/live-probe.ts <id>` | Watch the `pi.live` document during generation |
-| `node packages/server/scripts/stream-probe.ts` | Provider streaming, bypassing the harness |
-| `node packages/server/scripts/settle-probe.ts <id>` | Shape of the `submission.wait()` record |
-| `node packages/server/scripts/nyahut-probe.ts` | Exercise the claim and oversee passes |
+The allowlist is global across bots. Unknown users are refused, queued as pending, and the owner gets
+Approve/Block buttons. A bot cannot add members to a group itself; `dura user invite --chat <id>` prints a
+single-use invite link, and `dura user add <id>` authorises them.
 
----
+### Orchestrator
 
-## Project layout
+The config stores one pointer. The orchestrator receives administrative tools that other agents never get:
+
+- `agent_admin_list`, `agent_read`, `agent_create`, `agent_update`, `agent_set_enabled`, `agent_delete`,
+  `agent_suggest`
+- `agent_write_doc`: change another agent's AGENT.md/SOUL.md with a sha256 guard, replace/append/patch modes,
+  a 64 KiB cap, five versions of history and an immediate rebind of every existing thread.
+- The existing mesh tools: `agents_list`, `agents_message`, `agents_delegate`.
+
+When several bots exist, `agent_create` without a bot returns an instruction to ask the owner with the question
+tool, then retries with the chosen label. The orchestrator can never edit MEMORY.md, read vault values, drop the
+pointer or delete itself.
+
+Any agent can ask to take the role with `orchestrator_claim`. If no orchestrator exists the claim takes effect at
+once and the owner is notified; if one exists the owner gets Approve/Deny buttons in Telegram. An approved claim
+rebinds the conversations so the administrative tools move immediately.
+
+The orchestrator also owns the bot-to-agent map: `bot_list`, `bot_assign` and `bot_release` let it connect a newly
+added bot to an unpaired agent (release the previous holder, rebind both), which is the "sync and connect" path when
+the owner adds another bot.
+
+## MCP (global)
+
+MCP servers are installed once and belong to every agent. The daemon speaks the stdio transport: a command, its
+arguments and optional environment. Installing or removing a server connects/disconnects it, re-registers its tools
+as `mcp__<server>__<tool>` and rebinds every conversation, so existing threads gain or lose the tools immediately.
+
+~~~bash
+dura mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem /home/mariobgsp
+dura mcp list
+dura mcp remove filesystem
+~~~
+
+From Telegram the owner can use `/mcp add <name> <command> [args…]`, `/mcp remove`, `/mcp reload`, or simply ask
+the orchestrator to install one (it has `mcp_add`, `mcp_list` and `mcp_remove`). MCP tool calls run in the server
+process with the daemon's OS permissions, so the server command is trusted code; only the owner may install.
+
+## Thread storage
+
+New threads are one row in `sessions.json` plus a conversation in SQLite; the index is written atomically. Stale
+threads are handled without loading conversations in bulk:
+
+~~~bash
+dura thread prune --days 3 --dry-run               # preview
+dura thread prune --days 3 --yes                   # soft delete (recoverable)
+dura thread prune --days 3 --purge --vacuum --yes  # export, delete rows/artifacts, vacuum
+~~~
+
+Retention is **automatic** by default: every six hours and at boot, threads older than **3 days** are soft-deleted,
+and tombstones older than another 3 days are purged (transcripts exported first) and vacuumed. The values live in
+`config.json` under `storage` (`auto`, `pruneAfterDays`, `purgeAfterDays`, `intervalHours`). Before a batch disappears,
+a **single summary per agent** is appended to that agent's MEMORY.md — titles, last request and last answer, capped
+at 12 detailed threads plus a count — so the gist survives without one note per thread.
+
+A prune reads the index once and writes it once, whether it deletes one thread or a thousand. Purge processes one
+thread at a time (transcript to `~/.dura-file/exports`, rows, artifacts) so peak memory is one transcript, then
+vacuum reclaims the file. Purpose threads (inbox/delegate/schedule) are kept unless `--include-purpose`. From
+Telegram, `/prune [days]` offers Delete or Purge with confirmation. The Telegram binding self-heals when its thread
+was pruned.
+
+## Data layout
 
 ```text
-packages/server/src/     Fastify + pi-durable: harness, models, sessions, rooms, stream, activity, auth
-packages/web/src/        Svelte 5 + Vite: views, components, state, ws, identity
-packages/web/scripts/    shots.mjs, shots-replying.mjs (Chromium screenshot harness)
-scripts/dev.mjs          One dev command (token + server + Vite)
-scripts/e2e/             Deterministic E2E: harness.mjs, run.mjs, scenarios/
-apps/desktop/            Tauri shell — never compiled; see Known gaps
-data/                    gitignored: app.sqlite, sessions.json, token, credentials.json, agents/
-docs/                    roadmap.md, tailscale.md (phone access), ui-review/ (screenshots + findings)
-deploy/                  dura-agents.service (systemd user unit)
+~/.dura-file/                  (DURA_HOME overrides; PI_DATA_DIR is a one-release alias)
+  config.json                  0600
+  credentials.json             provider keys, 0600
+  secrets/telegram.json        bot tokens, 0600
+  app.sqlite                   durable conversations, tasks, entries
+  agents/<id>/                 agent.json, AGENT.md, SOUL.md, MEMORY.md, .history/
+  artifacts/<conversation>/    generated files
+  vault/                       AES-256-GCM secrets and key
+  telegram/                    users.json, state.json (offsets, bindings)
+  logs/daemon.log[.1..3]       JSON lines, rotated
+  run/daemon.sock              0600 control socket
+  work is wherever an agent's cwd points (default $HOME)
 ```
 
-## Design system
+Agents default to permission tier **full**, cwd **$HOME**, and every tool. Tiers, blocked tools and per-thread grants
+remain available. The tier is a policy, not a sandbox: the operating-system account is the boundary.
 
-The UI follows an **Ethereal Glass** language: a near-black OLED base (`#08090b`), one faint radial mesh
-capped at 6% so it can never wash out text, and hairline rings (`rgb(255 255 255 / 7%)`) instead of solid
-grey borders.
+## Providers
 
-- **Type** — Geist Variable for UI, Geist Mono for code, self-hosted via `@fontsource-variable`.
-- **Radii** — a 20 / 14 / 10 px scale (`--r-lg` / `--r-md` / `--r-sm`), never a hardcoded value.
-- **Depth** — the "double bezel": an outer shell plus an inner core with a top highlight, used on the hero
-  surfaces (empty state, identity card) and read on cards and panels.
-- **Motion** — one curve, `cubic-bezier(0.32, 0.72, 0, 1)`, at 180 / 320 / 700 ms. Only `opacity` and
-  `transform` are ever animated, and `prefers-reduced-motion` leaves everything statically legible.
-- **Identity** — every agent and group has a colour and an emoji face, normalised in one place
-  (`lib/identity.ts`) so the sidebar, chat header and bubbles can never disagree.
+The wizard and `dura provider` accept any of pi-ai's 42 built-in providers. Key-only providers (opencode-go,
+openai, anthropic, google, deepseek, openrouter, groq, mistral, xai, nvidia, together, fireworks and others) are
+configured with an API key. Providers that need an endpoint, region or OAuth (azure, bedrock, vertex, cloudflare,
+github-copilot) are listed with that requirement instead of a half-working form. Keys can come from a hidden
+prompt, stdin (`--key-stdin`) or the environment; they are never taken from argv or sent through Telegram.
 
-The layout is a fixed-height shell: only inner panes scroll (`grid-template-rows: minmax(0, 1fr)`), so the
-composer is always visible. Below 1024 px the sidebar narrows, below 720 px it becomes an off-canvas drawer.
+```bash
+dura provider list --all              # the whole catalog and what is configured
+dura provider add groq                # hidden key prompt, validated, saved 0600
+dura provider test opencode-go deepseek-v4.1-flash
+dura provider default opencode-go deepseek-v4.1-flash
+```
+
+## Memory and performance
+
+The design target is an **8 GB host** with five agents running full tools concurrently, under a 2 GB daemon cap.
+The measured budget is five agents running full tools concurrently under 2 GB. The daemon opens at ~130 MB RSS;
+the benchmark runs the same scripted complex task in five conversations at once — a CPU-bound shell loop, a 20 KiB
+file write and read, and a memory note per round, eight rounds each — with the faux provider and two transport
+pollers. It samples PSS for the daemon and every descendant every 100 ms.
+
+| Run | Completed | Wall | Peak PSS | p95 | p50 | Gate |
+| --- | --- | --- | --- | --- | --- | --- |
+| `npm run bench` | **5/5** | 4.6 s | **246 MB** | 190 MB | 105 MB | < 2048 MB |
+
+	extit{This run used the offline faux provider; see the caveat at the end of this README.}
+
+Levers: a five-slot run semaphore with a bounded queue; harness retention (partial commits 250 ms, context 30 s,
+documents 60 s); code mode capped at 128 MB; one Chromium with idle shutdown; bounded render caches; watchers only
+for conversations with an active chat; one provider module per configured provider (the catalog is imported only by
+the CLI). The systemd unit sets `MemoryHigh=1700M`, `MemoryMax=2G`, `MemorySwapMax=1G`.
+
+`dura tune` checks zram and the VM settings before changing anything, writes only missing sysctl values with a
+sudo operation, and never overwrites a custom value. This host already had zram0 (zstd) and swappiness 150.
 
 ## Testing
 
-**E2E only — there are no unit tests.** Every scenario boots its own throwaway server (own port, own data
-directory, own token) with `PI_E2E=1`, which swaps every real provider for the official **faux provider**.
-That makes the whole stack deterministic: no network, no cost, no flakes.
+```bash
+npm run check     # tsc + language lint
+npm run e2e       # eighteen daemon-driven scenarios, offline
+npm run bench     # the five-agent memory gate
+```
 
-| Scenario | Asserts |
-| --- | --- |
-| `sessions` | Create → stream deltas → rename → delete → restore → move → restart persistence |
-| `identity` | An agent's and a group's colour + emoji are stored, survive a restart, and — the point — survive a later patch that touches an unrelated field |
-| `models` | The capability catalog is served over HTTP; the model set per agent is the model that answers; switching it switches the answer |
-| `storage` | The report adds up; a purge exports the transcript first, deletes the rows (asserted against the `entries` table, not the list), leaves the thread list and 404s afterwards; cleanup reports its before/after sizes and a second run is harmless |
-| `attachments` | The model's own view of the bytes, the entry's own bytes after a restart, the 400 when the model cannot see images, the per-message budgets |
-| `live-activity` | The phase ladder (`starting`, `queued`, `tool`, `writing`), the counts and the run's durable elapsed time, including across a reconnect |
-| `questions` | The `question` tool writes a `chat.question` entry with its options and ends the turn; the answer arrives as the next user message |
-| `search` | The DuckDuckGo parser (`uddg` redirects, entities, `<b>` highlighting) and the paths that must not look like "no results": 429, unreadable markup, unreachable provider. `fetch` is stubbed, so no network is involved |
-| `permissions` | The per-thread Full Access grant: stored on the thread, enforced at submit time, and not sticky on the agent |
-| `codemode` | Code mode belongs to the agents that select it: a default thread gets `Tool codemode is not available` and still answers, an agent that lists it runs a script, and that agent's thread still runs one after a restart (the boot scan that re-registers it) |
-| `activity` | An idle thread is not active; a thread is active while streaming and clears after; abort clears immediately; a group stays active across the whole flow; an idle thread is still not active **after a restart** |
-| `bubbles` | The fleet states a bubble renders: Idle/Disabled at rest, Working during a run, Disabled-with-current-thread while a disabled run finishes, then Idle after re-enable. Also asserts the fresh fleet frame after each agent write |
-| `terminal` | The agent's shell: the command line in the thread, the scrubbed environment (the server token is absent), the scratch directory, and exit codes 0 and 3 |
-| `coding` | The durable branch spawns nothing and tells the model to continue; an absent opencode is a readable tool error, not an exception |
-| `secrets` | Ciphertext on disk, 0600 files in a 0700 directory, no plaintext in any API response, transcript redaction of a pasted value, request-then-form flow, delete |
-| `browser` / `browser-live` | Status never starts a browser; close is idempotent; the executors are probed without throwing. The live scenario launches real headless Chromium against a local page, reads it through a tool result, asserts headless, then closes it |
+The E2E harness starts a real daemon in a temporary home with the faux provider and a fake Bot API; it injects
+Telegram updates and inspects the resulting messages, edits, callbacks, files and SQLite state. Scenarios:
+`init-wizard`, `provider-catalog`, `command-scopes`, `telegram-chat`, `telegram-question`, `telegram-plan`,
+`telegram-admin-commands`, `bot-pairing`, `telegram-orchestrator`, `orchestrator-docs`, `orchestrator-claim`,
+`orchestrator-claim-approval`, `mcp-global`, `memory-tool`, `thread-prune`, `retention`, `verify`, `tui-json`.
+`verify` is also tested against the real API on this machine: bot @samriobot, opencode-go, a live
+agent answer in ~2.8 s.
 
-Two E2E findings worth keeping in mind, because both were real bugs the suite caught immediately:
+## Migrating from the web version
 
-1. **An instant faux answer never streams.** With the default speed the answer completed before the first
-   partial commit, so no `delta` frames appeared. The faux provider now streams at `tokensPerSecond: 12`.
-2. **A harness that announces `content-type: application/json` on an empty body gets a 400 from Fastify.**
-   `DELETE` looked broken until the harness only claimed a JSON body when it had one.
+`dura migrate` (offered by the wizard when the repository has an old `data/` directory) checkpoints the source
+SQLite WAL, copies the database, agents, artifacts, vault, schedules and credentials into `~/.dura-file`, verifies
+the copy with `PRAGMA integrity_check` and never deletes the source. Existing agents are assigned the default bot;
+reassign with `dura agent set <id> bot=<label>`.
 
-The screenshot gate is part of testing: `npm run shots` captures the 15 route definitions at
-1440/1280/1024/768/390 and writes `manifest.json` plus `findings.md`. The 768 and 390 tiers exist because without
-them a broken mobile drawer or a squeezed bubble field looks exactly like a working one.
+Retired with the web UI: the Fleet bubbles screen (replaced by the TUI), display customization, PWA/service worker,
+the boot screen, completion sounds/toasts, the hash router, the composer toolbar, the mermaid drawer (diagrams are
+code blocks now), the memory graph (use `dura memory`) and the screenshot gate.
 
-## Security
+## Known limits
 
-The server binds `127.0.0.1`, rejects any request without the `X-PI-Token` header (or `?token=` on the
-WebSocket handshake) with **401**, and allowlists `Host` to `127.0.0.1|localhost`. There is no permissive
-CORS, so a foreign web page can neither read the app nor reach an API that runs commands. The token is a
-random 32 bytes, stored mode `600`, and injected into the page by the server or Vite.
-
-Agents with `bash`, `terminal`, `coding` or `browser` run **real processes on this machine** — that is the
-point of those tools, and the editor warns about it. The terminal and the CLI hand-off give the child a
-scrubbed environment: every key matching `TOKEN|SECRET|PASSWORD|API_KEY|_KEY$|^PI_` is removed, so a command
-cannot print the server token or a provider key.
-
-Credentials live in `data/vault` as AES-256-GCM ciphertext, next to a 0600 key inside a 0700 directory. The
-chat never asks for a password: an agent calls `vault` with `action=request`, the client shows a masked form,
-and the value goes straight to `POST /api/vault`. No response, transcript, tool result or model request ever
-carries it back — `GET /api/vault` returns labels and a fixed `••••••` mask, and every transcript entry is
-redacted against the stored values before it is rendered. `data/vault/` and `data/browser/` are named in
-`.gitignore` even though `data/` already covers them, and `git check-ignore` is reported by the vault status
-rather than assumed.
-
-The browser keeps the owner's logins in one persistent profile under `data/browser/profile`, which is also
-session data and is never served by an API. It starts only when a page action runs, uses one process and one
-tab, and closes itself after fifteen idle minutes; the server also closes it on shutdown.
-
-## Language policy
-
-All system text is English: code, comments, UI labels, API messages, model prompts, templates and docs.
-Indonesian is allowed only in `data/` (your own threads, conversations, agent `SOUL.md`/`AGENT.md`) and in
-the maintainer's briefs. `npm run lint:lang` enforces this; a `lang-allow` comment exempts a line that must
-contain Indonesian, such as a keyword list.
-
----
-
-## What's next
-
-In the order I would do them:
-
-1. **Phase 9 — voice and video.** Video: the browser extracts 6 evenly spaced frames plus a duration
-   caption. Voice: STT with feature detection (the mic button appears only when supported, and says why when
-   it is not) and TTS through `speechSynthesis`, with a per-agent `autoRead`.
-2. **Phase 7 — MCP servers and hooks per agent.**
-3. **Phase 8 — many skills per agent plus a curator**, which proposes reusable skills after a run and
-   promotes them on acceptance.
-4. **Phase 10 leftovers** — skeleton loaders, `:focus-visible` rings, `text-wrap: balance`,
-   `tabular-nums`, ≥44 px tap targets.
-5. **Phase 6.0 leftovers** — the browser-level UI E2E (`ui.test.mjs`; `puppeteer-core` is not installed) and
-   the agent editor's `vision` toggle.
-
-Phase 10's animation work is delivered (the phase indicator, the tool-call motion and the responsive gate);
-the remaining items are polish.
-
-## Known gaps
-
-These are **not** done — please do not read the status table as claiming otherwise.
-
-- **A purge has no UI.** `POST /api/sessions/:id/purge` is the only way to remove a thread's rows for good.
-  The thread menu's delete stays a soft delete, and the Storage panel explains the difference rather than
-  offering the button.
-- **A diagram is a large lazy download.** mermaid and its layout engines are their own chunks, fetched on the
-  first diagram a thread renders — `elk` alone is ≈456 kB gzip. Inline diagrams wait until they are near the
-  viewport and the drawer renders one at a time, but the first diagram is still not cheap.
-- **Desktop notifications need the app tab open.** The page can show a notification while it is hidden or on
-  another thread; a notification with the browser fully closed needs push infrastructure and is not implemented.
-- **Display customization is not source editing.** Agents can change a closed token set and a bounded CSS layer,
-  not the Svelte source or the server. A determined stylesheet can still hide parts of the UI; the owner can use
-  ?display=default for a recovery view or reset from System.
-- **Generated files are download-only in the chat card.** There is no inline PDF preview and no zip-all action yet.
-- **PDF uses the base fonts.** Non-Latin glyphs become "?"; an agent that needs an embedded font can generate
-  the PDF itself and attach it with publish_file.
-- **The artifact directory has no standalone cleanup.** It is measured in Storage and removed when its
-  conversation is purged, but orphaned files from an interrupted create_file call have no separate cleaner.
-- **Cron is local-time and has no backfill.** A schedule whose window passed while the server was off is counted
-  as missed, not replayed; per-schedule time zones are not offered.
-- **Compaction spend is not itemized.** Assistant answers and stateless calls are counted; pi-durable exposes
-  background compaction only in the aggregate usage document, without a timestamp to bucket by day.
-- **Schedules are owner-managed.** There is no agent-facing tool to create or cancel a schedule yet.
-- **Run duration can be unavailable.** When a provider reports neither a response duration nor a tool call, the
-  footer says "Duration unavailable" rather than inventing a number.
-- **Web search follows DuckDuckGo's HTML.** Keyless and dependency-free, but the markup is a shape
-  dependency: when it changes the tool reports a failure rather than an empty result list, and the `search`
-  E2E asserts against a stubbed page instead of the live endpoint.
-- **Attachments cannot be sent in a group thread.** Refused with a readable reason: each member
-  conversation is its own model-visible entry, so supporting it would keep one copy of every byte per
-  member.
-- **There is no per-call elapsed time.** With parallel tool execution a call is already running on its
-  first publish, so its start is not observable; the round's own elapsed time is real and is shown instead.
-- **The Tauri shell has never been compiled.** `tauri-plugin-single-instance` is not installed, so do not
-  run the desktop app twice — that would start two servers over one `app.sqlite`.
-- **The fleet link index is bounded.** The store keeps the newest 1000 links and the roster shows the newest 30
-  batches; it is an operational view, not a permanent audit log.
-- **The fleet has no lanes and no custom order.** Status is derived from the server's activity registry, and a
-  bubble cannot be dragged into "working" because only a run can report that. Ordering is fixed (working
-  longest-first, then most recently active, then name); user-defined order and per-card notes are not
-  implemented. Bubbles do not show spend beyond today's tokens (List and Usage carry the full report).
-- **A browser is memory, not free.** One process and one tab with a renderer limit, plus a 15-minute idle
-  close, but a page-heavy run still costs hundreds of megabytes. Headful mode is opt-in per call and needs a
-  display; there is no screenshot-per-step history, and the CDP surface is intentionally small (open, read,
-  click, type, login, screenshot, close).
-- **The vault has no rotation or recovery UI.** Replacing a label overwrites in place, deleting removes the
-  entry, and a lost `data/vault/key` means the ciphertext is unrecoverable by design. Redaction masks a known
-  value wherever it is rendered, but the durable entry the owner wrote still contains what they typed — use
-  purge when the thread itself must not keep it.
-- **The coding hand-off is one-shot.** `pi` and `opencode` run headlessly with a self-contained prompt; they do
-  not share this conversation, so the agent has to write the brief. `opencode` is probed and offered only when
-  it is on PATH; on this machine it is not installed, and the UI says so instead of failing at spawn time.
-- **Tap targets are 40 px on coarse pointers, not the 44 px Apple figure.**
-- **The double bezel on cards and panels is a single-element read** (outer ring + hairline + inner
-  highlight) rather than true nesting. Real nesting is used on the hero surfaces where the depth shows.
-- **No multi-user, remote deployment, billing, mobile app or marketplace.** This is a local, single-user
-  tool by design.
-- The `pi-lens` checker can report **stale** findings for web files. When it contradicts `grep`,
-  `npx tsc -p packages/web/tsconfig.json --noEmit`, `svelte-check` and `npm run build`, trust those four.
-  If it insists, delete `~/.pi-lens/projects/*/cache/project-snapshot.json.gz` and re-scan.
+- Direct chats are strictly one bot per agent; a group remains a multi-agent surface with one speaker bot, and the
+  nyahut flow is exercised by the unit-level room code, not yet by an E2E scenario.
+- MCP supports the stdio transport only (no HTTP/streamable transport yet).
+- The benchmark uses the faux provider, so it measures the daemon's memory under tool load, not a real model's
+  network buffers.
+- Voice and video are not implemented. MCP servers, per-agent hooks and a skills curator are not started.
+- `dura tune` does not install packages; when no zram device exists it prints the zram-generator configuration to
+  apply.
 
 ## License
 
-[MIT](LICENSE)
+MIT. See [LICENSE](LICENSE).

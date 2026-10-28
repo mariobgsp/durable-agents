@@ -17,14 +17,12 @@ const ROOT = resolve(import.meta.dirname, "..");
 
 /** Where system text lives. Anything not listed here is not checked. */
 const TARGETS = [
-  "packages/server/src",
-  "packages/server/scripts",
-  "packages/web/src",
-  "packages/web/scripts",
-  "packages/web/public",
-  "packages/web/index.html",
-  "packages/web/vite.config.ts",
+  "packages/core/src",
+  "packages/telegram/src",
+  "packages/cli/src",
+  "packages/cli/bin",
   "scripts",
+  "deploy",
   "docs",
   "README.md",
   ".env.example",
