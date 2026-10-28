@@ -62,6 +62,9 @@ export async function startFakeTelegram() {
           reply(response, 200, { ok: true, result: true });
           return;
         case "deleteMessage":
+          entry.deleted.push({ chatId: Number(body.chat_id), messageId: Number(body.message_id) });
+          reply(response, 200, { ok: true, result: true });
+          return;
         case "sendChatAction":
         case "answerCallbackQuery":
           reply(response, 200, { ok: true, result: true });
@@ -130,7 +133,7 @@ export async function startFakeTelegram() {
   return {
     base,
     addBot({ label, username, id, token }) {
-      const record = { id: String(id), username, label, updates: [], sent: [], edits: [], documents: [], commandSets: [], commandDeletes: [], menuButton: null, nextId: 1000 };
+      const record = { id: String(id), username, label, updates: [], sent: [], edits: [], deleted: [], documents: [], commandSets: [], commandDeletes: [], menuButton: null, nextId: 1000 };
       bots.set(token, record);
       tokenByLabel.set(label, token);
       return token;
@@ -148,6 +151,9 @@ export async function startFakeTelegram() {
     },
     documents(label) {
       return botFor(tokenByLabel.get(label)).documents;
+    },
+    deletedMessages(label) {
+      return botFor(tokenByLabel.get(label)).deleted;
     },
     commandSets(label) {
       return botFor(tokenByLabel.get(label)).commandSets;

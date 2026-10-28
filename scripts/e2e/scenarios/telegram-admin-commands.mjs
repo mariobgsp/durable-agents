@@ -6,6 +6,20 @@ export default {
   async run() {
     const h = await startHarness({ agents: [{ id: "helper", name: "Helper" }] });
     try {
+      h.text("main", 100, "/help");
+      await h.waitFor(
+        () => h.fake.sent("main").find((message) => message.text.includes("Commands")),
+        15_000,
+        "the help reply",
+      );
+
+      h.text("main", 100, "/mcp");
+      await h.waitFor(
+        () => h.fake.sent("main").find((message) => message.text.includes("No MCP servers")),
+        15_000,
+        "the MCP usage reply",
+      );
+
       h.text("main", 100, "/reload");
       await h.waitFor(
         () => h.fake.sent("main").find((message) => message.text.includes("Reloaded") && message.text.includes("Bot commands resynced")),

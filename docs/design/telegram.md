@@ -19,9 +19,9 @@ of waiting out the 50-second long poll.
 
 ## Streaming
 
-Submit → status message → coalescing sink over `openEventStream` (phase, elapsed, calls, partial text) → edits at
-`editIntervalMs` → after the submission settles, read the durable transcript and write the final answer, footer,
-question buttons and generated files. Edits older than 48 h are replaced by new messages.
+Submit → a single `thinking…` placeholder (no periodic edits) → wait for the durable submission → read the
+transcript and replace the placeholder with the final answer, footer, question buttons and generated files.
+`/stop` aborts the run and withdraws queued messages; grouped runs still stream room entries.
 
 ## Command menu
 
@@ -39,6 +39,8 @@ integration's commands cannot survive. The menu button is set to the command lis
 | /restart | Owner: confirmation, then a service restart |
 | /agents, /memory, /schedules, /group, /bind | Data and groups |
 | /status, /whoami, /compact, /abort, /grant | Thread and identity |
+| /connect <agent> <token> | Owner: add a bot from a token, pair it and delete the token message |
+| /stop | Abort the active run and withdraw every queued message in this chat |
 | /orchestrator, /bots, /settings | Owner administration |
 | /mcp | Owner: list/add/remove/reload global MCP servers; tools go to every agent |
 | /prune [days] | Owner: stale thread preview; delete or purge with confirmation |

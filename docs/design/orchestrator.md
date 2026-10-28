@@ -11,7 +11,7 @@ added to a conversation only when its agent is the orchestrator, and each tool r
   when another orchestrator already exists.
 - `agent_write_doc`: sha256 guard, replace/append/patch, 64 KiB cap, five history entries, immediate rebind.
 - Mesh: `agents_list`, `agents_message`, `agents_delegate`.
-- Bots: `bot_list`, `bot_assign`, `bot_release` (one bot is one agent).
+- Bots: `bot_list`, `bot_assign`, `bot_release`, `bot_connect` (token only; never browser automation).
 - MCP: `mcp_list`, `mcp_add`, `mcp_remove` (global tools; every agent receives them).
 
 ## Rules

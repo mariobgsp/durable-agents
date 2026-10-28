@@ -34,13 +34,20 @@ import {
 
 export type BotValidator = (label: string) => Promise<boolean>;
 export type BotLister = () => Promise<string[]>;
+/** Adds a bot from an owner-provided token, starts its poller and returns its identity. */
+export type BotConnector = (input: { token: string; label?: string }) => Promise<{ label: string; username: string }>;
 
 let validateBot: BotValidator = async () => true;
 let listBots: BotLister = async () => [];
+let connectBot: BotConnector | undefined;
 
 export function setBotResolver(resolver: { validate: BotValidator; list: BotLister }): void {
   validateBot = resolver.validate;
   listBots = resolver.list;
+}
+
+export function setBotConnector(connector: BotConnector | undefined): void {
+  connectBot = connector;
 }
 
 export type AdminEvent =
@@ -854,6 +861,41 @@ export const mcpRemoveTool = defineTool({
   },
 });
 
+export const botConnectTool = defineTool({
+  name: "bot_connect",
+  description:
+    "Connect a Telegram bot to an agent using a token the owner supplied. Never open a browser or the Telegram web app " +
+    "to obtain tokens: ask the owner for the token instead. The bot is started immediately and the agent is rebound.",
+  parameters: Type.Object({
+    agent: Type.String({ description: "Agent id" }),
+    token: Type.String({ description: "Bot token from @BotFather, provided by the owner" }),
+    label: Type.Optional(Type.String({ description: "Registry label; derived from the username when omitted" })),
+  }),
+  async execute(args, api) {
+    const guard = await requireOrchestrator(String(api.conversationId));
+    if (typeof guard !== "string") return guard;
+    if (!connectBot) return refusal("Bot connection is not available in this process.");
+    try {
+      const bot = await connectBot({ token: args.token, ...(args.label ? { label: args.label } : {}) });
+      const result = await assignBotToAgent(bot.label, args.agent, "orchestrator");
+      return {
+        output: [
+          {
+            type: "text" as const,
+            text:
+              "Bot @" + bot.username + " (" + bot.label + ") now belongs to " + args.agent +
+              (result.freed.length ? "; unpaired " + result.freed.join(", ") : "") +
+              ". Do not use a browser for this.",
+          },
+        ],
+        details: { label: bot.label, username: bot.username, agent: args.agent } as never,
+      };
+    } catch (error) {
+      return refusal(error instanceof Error ? error.message : String(error));
+    }
+  },
+});
+
 export const agentAdminTools: ToolRegistration[] = [
   agentAdminListTool,
   agentReadTool,
@@ -869,6 +911,7 @@ export const agentAdminTools: ToolRegistration[] = [
   mcpListTool,
   mcpAddTool,
   mcpRemoveTool,
+  botConnectTool,
 ];
 
 export const agentAdminExtension = defineExtension({

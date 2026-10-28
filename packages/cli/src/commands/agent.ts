@@ -277,7 +277,7 @@ export async function runAgent(parsed: Parsed): Promise<void> {
     const result = await writeAgentDoc({
       agentId: target,
       doc,
-      mode: flag(parsed, "append") ? "append" : "replace",
+      mode: has(parsed, "append") ? "append" : "replace",
       content: text,
       caller: "cli",
     });

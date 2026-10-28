@@ -8,7 +8,7 @@ import { startOperation } from "../../core/src/system.ts";
 import { syncBotCommands } from "./command-catalog.ts";
 import { errorFields, log } from "../../core/src/logger.ts";
 import { orchestratorId, setOrchestrator, subscribeOrchestrator } from "../../core/src/orchestrator.ts";
-import { assignBotToAgent, releaseBot, setBotResolver, subscribeAdmin } from "../../core/src/agent-admin.ts";
+import { assignBotToAgent, releaseBot, setBotConnector, setBotResolver, subscribeAdmin } from "../../core/src/agent-admin.ts";
 import { subscribeDocChanges } from "../../core/src/doc-store.ts";
 import { isRoom, postToRoom, updateRoom } from "../../core/src/rooms.ts";
 import {
@@ -63,7 +63,7 @@ import {
   setOwner,
   type Users,
 } from "./users.ts";
-import { escapeHtml, markdownToHtml, questionKeyboard, renderAnswer, renderLive, splitMessage, buttons } from "./render.ts";
+import { escapeHtml, markdownToHtml, questionKeyboard, renderAnswer, splitMessage, buttons } from "./render.ts";
 import type { TgCallbackQuery, TgChat, TgMessage, TgUpdate } from "./types.ts";
 
 /**
@@ -78,6 +78,7 @@ const MENU_ROWS = [
   [{ text: "Agents", data: "cmd:agents" }, { text: "New thread", data: "cmd:new" }],
   [{ text: "Threads", data: "cmd:threads" }, { text: "Plan", data: "cmd:plan" }],
   [{ text: "Model", data: "cmd:model" }, { text: "Usage", data: "cmd:usage" }],
+  [{ text: "Stop", data: "cmd:stop" }, { text: "Abort", data: "cmd:abort" }],
   [{ text: "Reload", data: "cmd:reload" }, { text: "Restart", data: "cmd:restart" }],
   [{ text: "Group", data: "cmd:group" }, { text: "Schedules", data: "cmd:schedules" }],
   [{ text: "Memory", data: "cmd:memory" }, { text: "Bots", data: "cmd:bots" }],
@@ -104,6 +105,8 @@ export class TelegramRuntime {
   private readonly handles = new Map<string, BotHandle>();
   private stopping = false;
   private readonly seen = new Map<string, number>();
+  /** Placeholder messages per session, so /stop can turn every pending card into "stopped." */
+  private readonly thinking = new Map<string, Map<number, { chatId: number; threadId?: number; label: string }>>();
   private stateQueue: Promise<void> = Promise.resolve();
   private unsubscribers: (() => void)[] = [];
 
@@ -115,6 +118,7 @@ export class TelegramRuntime {
       validate: async (label) => this.registry.bots.some((bot) => bot.label === label),
       list: async () => this.registry.bots.map((bot) => bot.label),
     });
+    setBotConnector((input) => this.connectBotToken(input));
 
     this.unsubscribers.push(
       subscribeDocChanges((event) => {
@@ -479,7 +483,9 @@ export class TelegramRuntime {
             "/whoami — your id and role",
             "/compact — compact this thread",
             "/abort — abort the current run",
-            "/group — group settings · /bind <id> — owner",
+            "/group — group settings · /bind &lt;id&gt; — owner",
+            "/connect &lt;agent&gt; &lt;token&gt; — pair a bot from a token, no browser (owner)",
+            "/stop — stop the current run and every queued message",
             "/mcp — MCP servers and tools for all agents (owner)",
             "/prune [days] — remove stale threads (owner)",
             "/reload — reload tools and threads (owner)",
@@ -519,6 +525,12 @@ export class TelegramRuntime {
         return;
       case "rename":
         await this.renameThread(handle, message, argument);
+        return;
+      case "stop":
+        await this.stopEverything(handle, message);
+        return;
+      case "connect":
+        await this.connectCommand(handle, message, argument, owner);
         return;
       case "abort":
         await this.abortCurrent(handle, message);
@@ -857,7 +869,7 @@ export class TelegramRuntime {
   private async groupCommand(handle: BotHandle, message: TgMessage, argument: string, owner: boolean): Promise<void> {
     if (message.chat.type === "private") return void (await handle.api.sendMessage(message.chat.id, "This command is for a bound group."));
     const binding = getChat(this.state, handle.label, chatKey(message.chat.id, message.message_thread_id));
-    if (!binding?.sessionId) return void (await handle.api.sendMessage(message.chat.id, "No group bound here. Owner: /bind <id>"));
+    if (!binding?.sessionId) return void (await handle.api.sendMessage(message.chat.id, "No group bound here. Owner: /bind &lt;id&gt;"));
     const [field, ...rest] = argument.split(/\s+/);
     if (!field) {
       const record = await findSession(binding.sessionId);
@@ -890,7 +902,7 @@ export class TelegramRuntime {
       await handle.api.sendMessage(message.chat.id, "Speaker bot: " + label);
       return;
     }
-    await handle.api.sendMessage(message.chat.id, "Usage: /group [mode nyahut|moderator|silent | speaker <label>]");
+    await handle.api.sendMessage(message.chat.id, "Usage: /group [mode nyahut|moderator|silent | speaker &lt;label&gt;]");
   }
 
   private async approve(handle: BotHandle, message: TgMessage, argument: string, owner: boolean): Promise<void> {
@@ -923,7 +935,7 @@ export class TelegramRuntime {
     if (rooms.length === 0) {
       await handle.api.sendMessage(
         message.chat.id,
-        "No groups yet. Create one on the host: dura group create --title <name> --members a,b",
+        "No groups yet. Create one on the host: dura group create --title &lt;name&gt; --members a,b",
       );
       return;
     }
@@ -932,7 +944,7 @@ export class TelegramRuntime {
     );
     await handle.api.sendMessage(
       message.chat.id,
-      "<b>Groups</b>\n" + escapeHtml(lines.join("\n")) + "\n\nIn a group chat, the owner sends /bind <id> to attach it here.",
+      "<b>Groups</b>\n" + escapeHtml(lines.join("\n")) + "\n\nIn a group chat, the owner sends /bind &lt;id&gt; to attach it here.",
     );
   }
 
@@ -959,6 +971,28 @@ export class TelegramRuntime {
     return home.find((agent) => agent.id === orchestratorId()) ?? home[0];
   }
 
+  private trackThinking(sessionId: string, messageId: number, chatId: number, threadId: number | undefined, label: string): void {
+    const map = this.thinking.get(sessionId) ?? new Map();
+    map.set(messageId, { chatId, label, ...(threadId ? { threadId } : {}) });
+    this.thinking.set(sessionId, map);
+  }
+
+  private untrackThinking(sessionId: string, messageId: number): void {
+    const map = this.thinking.get(sessionId);
+    if (!map) return;
+    map.delete(messageId);
+    if (map.size === 0) this.thinking.delete(sessionId);
+  }
+
+  private async finishThinking(sessionId: string, text: string): Promise<void> {
+    const map = this.thinking.get(sessionId);
+    if (!map) return;
+    this.thinking.delete(sessionId);
+    for (const [messageId, entry] of map) {
+      await this.apiFor(entry.label).editMessage(entry.chatId, messageId, text).catch(() => undefined);
+    }
+  }
+
   private async unpairedAgents(): Promise<AgentRecord[]> {
     return (await listAgents()).filter((agent) => agent.enabled !== false && !agent.telegramBot);
   }
@@ -975,7 +1009,7 @@ export class TelegramRuntime {
       await handle.api.sendMessage(
         message.chat.id,
         "This bot (@" + (bot?.username ?? handle.label) + ") has no agent. One bot is one agent. Create one on the host:\n" +
-          "dura agent create --name <name> --bot " + handle.label,
+          "dura agent create --name &lt;name&gt; --bot " + handle.label,
         { threadId: message.message_thread_id },
       );
       return;
@@ -1054,11 +1088,12 @@ export class TelegramRuntime {
     const busy = activeIds().includes(sessionId);
     const placeholder = await handle.api.sendMessage(
       message.chat.id,
-      (busy ? "⏳ queued — " : "⏳ working — ") + escapeText(binding?.agentId ?? "agent"),
+      busy ? "queued · thinking…" : "thinking…",
       { replyTo: message.message_id, threadId: message.message_thread_id },
     );
     rememberMessage(this.state, handle.label, message.chat.id, placeholder.message_id, sessionId);
-    await handle.api.sendChatAction(message.chat.id, "typing").catch(() => undefined);
+    this.trackThinking(sessionId, placeholder.message_id, message.chat.id, message.message_thread_id, handle.label);
+    if (!busy) void handle.api.sendChatAction(message.chat.id, "typing").catch(() => undefined);
 
     const session = await findSession(sessionId);
     void this.runSession({
@@ -1120,7 +1155,7 @@ export class TelegramRuntime {
       message.chat.id,
       "<b>Stale threads</b>\n" + preview.candidates.length + " thread(s) older than " + olderThanDays + " days:\n" +
         lines.join("\n") + (preview.candidates.length > 12 ? "\n… " + (preview.candidates.length - 12) + " more" : "") +
-        "\n\nDeleting is recoverable (dura thread restore <id>). Purge is CLI-only.",
+        "\n\nDeleting is recoverable (dura thread restore &lt;id&gt;). Purge is CLI-only.",
       {
         threadId: message.message_thread_id,
         keyboard: buttons([
@@ -1140,7 +1175,7 @@ export class TelegramRuntime {
       const command = rest[1];
       const args = rest.slice(2);
       if (!name || !command) {
-        await handle.api.sendMessage(message.chat.id, "Usage: /mcp add <name> <command> [args…]");
+        await handle.api.sendMessage(message.chat.id, "Usage: /mcp add &lt;name&gt; &lt;command&gt; [args…]");
         return;
       }
       try {
@@ -1157,7 +1192,7 @@ export class TelegramRuntime {
     }
     if (sub === "remove") {
       const name = rest[0];
-      if (!name) return void (await handle.api.sendMessage(message.chat.id, "Usage: /mcp remove <name>"));
+      if (!name) return void (await handle.api.sendMessage(message.chat.id, "Usage: /mcp remove &lt;name&gt;"));
       try {
         const result = await removeMcpServer(name);
         await handle.api.sendMessage(message.chat.id, result.removed ? "Removed " + escapeText(name) + " · " + result.rebound + " agents rebound." : "No MCP server " + escapeText(name) + ".");
@@ -1176,8 +1211,8 @@ export class TelegramRuntime {
     if (servers.length === 0) {
       await handle.api.sendMessage(
         message.chat.id,
-        "No MCP servers. Add one from the host: dura mcp add <name> -- <command>\n" +
-          "or from here: /mcp add <name> <command> [args…]\nMCP tools become available to every agent.",
+        "No MCP servers. Add one from the host: dura mcp add &lt;name&gt; -- &lt;command&gt;\n" +
+          "or from here: /mcp add &lt;name&gt; &lt;command&gt; [args…]\nMCP tools become available to every agent.",
       );
       return;
     }
@@ -1189,8 +1224,95 @@ export class TelegramRuntime {
       message.chat.id,
       "<b>MCP</b> (for all agents)\n" + escapeHtml(lines.join("\n")) +
         (tools.length ? "\n\n" + escapeHtml(tools.map((tool) => tool.registeredName).slice(0, 20).join(", ")) : "") +
-        "\n\n/mcp add <name> <command> [args…] · /mcp remove <name> · /mcp reload",
+        "\n\n/mcp add &lt;name&gt; &lt;command&gt; [args…] · /mcp remove &lt;name&gt; · /mcp reload",
     );
+  }
+
+  /** Add a bot from a token and start its poller. The token never reaches the model. */
+  private async connectBotToken(input: { token: string; label?: string }): Promise<{ label: string; username: string }> {
+    const token = input.token.trim();
+    if (!token.includes(":")) throw new Error("that does not look like a bot token");
+    const existing = this.registry.bots.find((bot) => bot.token === token);
+    if (existing) {
+      await this.startBot(existing.label);
+      return { label: existing.label, username: existing.username };
+    }
+    const config = await readConfig();
+    const api = new BotApi({ token, apiBase: config.telegram.apiBase });
+    const me = await api.getMe();
+    if (!me.username) throw new Error("the bot has no username");
+    const fallback = me.username.replace(/_?bot$/i, "").replace(/[^a-zA-Z0-9-]+/g, "-").toLowerCase().slice(0, 32) || "bot";
+    const label = (input.label ?? fallback).toLowerCase();
+    if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(label)) throw new Error("label must be lower-case letters, digits and dashes");
+    if (botByLabel(this.registry, label)) throw new Error("a bot labelled " + label + " already exists");
+    this.registry = await addBot({ label, token, botId: String(me.id), username: me.username });
+    await this.startBot(label);
+    void this.notifyOwner("Bot @" + me.username + " (" + label + ") is connected and ready. One bot is one agent.");
+    return { label, username: me.username };
+  }
+
+  private async connectCommand(handle: BotHandle, message: TgMessage, argument: string, owner: boolean): Promise<void> {
+    if (!owner) return void (await handle.api.sendMessage(message.chat.id, "Owner only."));
+    const [agentId, token] = argument.split(/\s+/).filter(Boolean);
+    if (!agentId || !token) {
+      await handle.api.sendMessage(
+        message.chat.id,
+        "Usage: /connect &lt;agent-id&gt; &lt;bot-token&gt;\nThe token is used once, the message is deleted, and the bot is paired. No browser opens.",
+      );
+      return;
+    }
+    // Remove the token from chat as soon as it has been read.
+    const removed = await handle.api.deleteMessage(message.chat.id, message.message_id).then(() => true).catch(() => false);
+    try {
+      const bot = await this.connectBotToken({ token });
+      const result = await assignBotToAgent(bot.label, agentId, "telegram");
+      await handle.api.sendMessage(
+        message.chat.id,
+        "Connected @" + escapeText(bot.username) + " to " + escapeText(agentId) +
+          (result.freed.length ? " · unpaired " + escapeText(result.freed.join(", ")) : "") +
+          (removed ? " · token message deleted" : " · delete the token message manually"),
+      );
+      log.info("telegram.bot_connected", { label: bot.label, agentId, freed: result.freed });
+    } catch (error) {
+      await handle.api.sendMessage(message.chat.id, escapeText(error instanceof Error ? error.message : String(error)));
+    }
+  }
+
+  private async stopEverything(handle: BotHandle, message: TgMessage): Promise<void> {
+    const paired = await this.pairedAgent(handle.label);
+    const binding = getChat(this.state, handle.label, chatKey(message.chat.id, message.message_thread_id));
+    const active = new Set(activeIds());
+    const { listSessions } = await import("../../core/src/sessions.ts");
+    const sessions = await listSessions();
+    const targets = new Set<string>();
+    if (binding?.sessionId) targets.add(binding.sessionId);
+    for (const session of sessions) {
+      if (paired && session.agent === paired.id && active.has(session.id)) targets.add(session.id);
+    }
+    // Anything still showing a thinking card in this chat is part of the stop.
+    for (const [sessionId, cards] of this.thinking) {
+      if ([...cards.values()].some((card) => card.chatId === message.chat.id)) targets.add(sessionId);
+    }
+
+    let stopped = 0;
+    for (const sessionId of targets) {
+      const ok = await abortSession(sessionId).catch(() => false);
+      if (ok) stopped += 1;
+      await this.finishThinking(sessionId, "stopped.");
+    }
+    if (binding?.sessionId && (await isRoom(binding.sessionId))) {
+      const { abortRoom } = await import("../../core/src/rooms.ts");
+      await abortRoom(binding.sessionId).catch(() => undefined);
+      await this.finishThinking(binding.sessionId, "stopped.");
+    }
+    await handle.api.sendMessage(
+      message.chat.id,
+      stopped > 0
+        ? "Stopped " + stopped + " run(s). Queued messages were withdrawn."
+        : "Nothing is running here. Every pending thinking card was cleared.",
+      { threadId: message.message_thread_id },
+    );
+    log.info("telegram.stop", { chatId: message.chat.id, sessions: [...targets], stopped });
   }
 
   private async reload(handle: BotHandle, message: TgMessage, owner: boolean): Promise<void> {
@@ -1231,43 +1353,13 @@ export class TelegramRuntime {
     requestId: string;
   }): Promise<void> {
     const { handle, chatId, threadId, sessionId, placeholderId } = input;
-    const config = await readConfig();
     const started = Date.now();
     const before = (await transcript(sessionId)).length;
-    let live = "";
-    let phase = "starting";
-    let calls = 0;
-    let finished = false;
     const edit = async (html: string): Promise<void> => {
-      try {
-        await handle.api.editMessage(chatId, placeholderId, html);
-      } catch (error) {
-        if (BotApi.isEditableFailure(error)) finished = true;
-      }
+      await handle.api.editMessage(chatId, placeholderId, html).catch(() => undefined);
     };
-    const timer = setInterval(() => {
-      if (finished) return;
-      void edit(renderLive(phase + " · " + age(Date.now() - started) + (calls ? " · " + calls + " tools" : ""), live));
-      void handle.api.sendChatAction(chatId, "typing").catch(() => undefined);
-    }, Math.max(1000, config.telegram.editIntervalMs));
 
-    let stopStream: (() => Promise<void>) | undefined;
-    try {
-      const conversation = await harnessInstance().conversation(Number(sessionId) as never, context);
-      if (!conversation) throw new Error("conversation not found");
-      const stream = await openEventStream(harnessInstance(), conversation.id, context, (frame) => {
-        if (frame.type === "delta") live += frame.text;
-        else if (frame.type === "message-end" && frame.text) live = frame.text;
-        else if (frame.type === "activity") {
-          phase = frame.activity.phase ?? "working";
-          calls = frame.activity.calls.length;
-        }
-      });
-      stopStream = stream.stop;
-    } catch (error) {
-      log.debug("telegram.stream_unavailable", { sessionId, ...errorFields(error) });
-    }
-
+    let unanswered = false;
     try {
       const submission = await sendMessage(sessionId, {
         text: input.text,
@@ -1275,26 +1367,24 @@ export class TelegramRuntime {
         requestId: input.requestId,
       });
       if (!submission) throw new Error("the thread disappeared");
-      const submissionId = submission.submissionId;
-      const record = await harnessInstance().submission(Number(submissionId) as never, context);
+      const record = await harnessInstance().submission(Number(submission.submissionId) as never, context);
       if (record) {
-        await Promise.race([
+        const settled = await Promise.race([
           record.wait(context),
-          new Promise((_done, reject) => setTimeout(() => reject(new Error("the run did not settle within 30 minutes")), 30 * 60_000)),
+          new Promise<never>((_done, reject) => setTimeout(() => reject(new Error("the run did not settle within 30 minutes")), 30 * 60_000)),
         ]);
+        // A question tool ends the turn without an answer; only an unanswered submission with no
+        // question entry is a stopped run.
+        unanswered = (settled as { status?: unknown }).status === "unanswered";
       }
     } catch (error) {
-      finished = true;
-      clearInterval(timer);
-      await stopStream?.().catch(() => undefined);
-      await edit("⚠️ " + escapeText(error instanceof Error ? error.message : String(error)));
-      log.error("telegram.run_failed", { sessionId, ...errorFields(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      await edit(/abort|cancel/i.test(message) ? "stopped." : "⚠️ " + escapeText(message));
+      this.untrackThinking(sessionId, placeholderId);
+      if (!/abort|cancel/i.test(message)) log.error("telegram.run_failed", { sessionId, ...errorFields(error) });
       return;
     }
-
-    finished = true;
-    clearInterval(timer);
-    await stopStream?.().catch(() => undefined);
+    this.untrackThinking(sessionId, placeholderId);
 
     const entries = await transcript(sessionId);
     const fresh = entries.slice(before);
@@ -1324,7 +1414,8 @@ export class TelegramRuntime {
       for (const chunk of chunks.slice(1)) await handle.api.sendMessage(chatId, chunk, { threadId });
       await this.sendArtifacts(handle, chatId, threadId, fresh);
     } else {
-      await edit("(no answer)");
+      await edit(unanswered ? "stopped." : "(no answer)");
+      if (unanswered) log.info("telegram.run_stopped", { sessionId });
     }
 
     log.info("telegram.conversation", {
