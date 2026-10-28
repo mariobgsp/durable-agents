@@ -1,8 +1,18 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["es2023", "dom"],
-    "types": ["node", "svelte"]
+    "lib": [
+      "es2023"
+    ],
+    "types": [
+      "node"
+    ]
   },
-  "include": ["packages/server/src/**/*.ts", "packages/server/scripts/**/*.ts", "scripts/**/*.mjs"]
+  "include": [
+    "packages/core/src/**/*.ts",
+    "packages/telegram/src/**/*.ts",
+    "packages/cli/src/**/*.ts",
+    "packages/cli/bin/**/*.ts",
+    "scripts/**/*.mjs"
+  ]
 }

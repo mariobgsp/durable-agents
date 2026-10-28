@@ -1,0 +1,6 @@
+{
+  "name": "@durable-agents/telegram",
+  "private": true,
+  "type": "module",
+  "dependencies": {}
+}

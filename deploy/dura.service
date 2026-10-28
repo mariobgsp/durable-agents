@@ -1,0 +1,52 @@
+# dura-agents as a systemd user service.
+#
+#   dura service install
+#   # or, manually:
+#   cp deploy/dura.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now dura
+#   loginctl enable-linger "$USER"
+#
+# The daemon has no TCP listener: it talks to Telegram outbound and to the CLI over ~/.dura-file/run/daemon.sock.
+# Provider keys and bot tokens live in 0600 files, never in this unit.
+
+[Unit]
+Description=dura-agents daemon (CLI + Telegram bots)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/durable-agents
+Environment=DURA_HOME=%h/.dura-file
+Environment=DURA_LOG_LEVEL=info
+Environment=NODE_OPTIONS=--max-old-space-size=1400 --max-semi-space-size=16
+Environment=NODE_COMPILE_CACHE=%h/.dura-file/cache/node
+ExecStart=/usr/bin/env node %h/Projects/durable-agents/packages/cli/bin/dura.ts start --foreground
+
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# Five agents with full tools under 2 GB. MemoryHigh throttles, MemoryMax is the hard bound.
+MemoryHigh=1700M
+MemoryMax=2G
+MemorySwapMax=1G
+TasksMax=512
+
+# The permission tier is a policy, not a sandbox. The account and MemoryMax are the real boundary.
+ProtectSystem=strict
+ReadWritePaths=%h
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

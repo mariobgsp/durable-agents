@@ -9,20 +9,13 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "dev": "node scripts/dev.mjs",
-    "dev:server": "npm -w @durable-agents/server run dev",
-    "dev:web": "npm -w @durable-agents/web run dev",
-    "start": "node packages/server/src/index.ts",
-    "build": "npm -w @durable-agents/web run build",
-    "smoke": "npm -w @durable-agents/server run smoke",
-    "smoke:image": "npm -w @durable-agents/server run smoke:image",
-    "seed": "node packages/server/scripts/seed-demo.ts",
-    "shots": "node packages/web/scripts/shots.mjs",
-    "shots:replying": "node packages/web/scripts/shots-replying.mjs",
-    "check": "tsc -p tsconfig.json && npm -w @durable-agents/web run check && node scripts/check-language.mjs",
+    "start": "node packages/cli/bin/dura.ts start",
+    "dev": "node packages/cli/bin/dura.ts start --watch",
+    "check": "tsc -p tsconfig.json && node scripts/check-language.mjs",
     "lint:lang": "node scripts/check-language.mjs",
     "e2e": "node scripts/e2e/run.mjs",
-    "e2e:real": "node scripts/e2e/run.mjs --real"
+    "e2e:real": "node scripts/e2e/run.mjs --real",
+    "bench": "node scripts/bench/five-agents.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
