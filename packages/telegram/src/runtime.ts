@@ -18,6 +18,7 @@ import {
   findSession,
   restartSession,
   sendMessage,
+  sessionBusy,
   transcript,
   updateSessionRecord,
 } from "../../core/src/sessions.ts";
@@ -71,6 +72,44 @@ import type { TgCallbackQuery, TgChat, TgMessage, TgUpdate } from "./types.ts";
  * thin transport over the core services — every durable decision (session, room, schedule, agent)
  * belongs to core. A Telegram failure can stop a poller; it cannot lose a run.
  */
+
+function modelKeyboard(provider: string, ids: string[], page: number): ReturnType<typeof buttons> {
+  const perPage = 10;
+  const pages = Math.max(1, Math.ceil(ids.length / perPage));
+  const current = Math.min(Math.max(0, page), pages - 1);
+  const slice = ids.slice(current * perPage, (current + 1) * perPage);
+  const rows: { text: string; data: string }[][] = [];
+  for (let index = 0; index < slice.length; index += 2) {
+    rows.push(
+      slice.slice(index, index + 2).map((id) => ({
+        text: id.length > 28 ? id.slice(0, 27) + "…" : id,
+        data: "sm:" + provider + "|" + id,
+      })),
+    );
+  }
+  const nav: { text: string; data: string }[] = [];
+  if (current > 0) nav.push({ text: "Prev", data: "smp:" + provider + ":" + (current - 1) });
+  if (current < pages - 1) nav.push({ text: "Next", data: "smp:" + provider + ":" + (current + 1) });
+  if (nav.length > 0) rows.push(nav);
+  return buttons(rows);
+}
+
+function progressLine(tool: string, step: number): string {
+  const name = tool.toLowerCase();
+  let label: string;
+  if (name === "read" || name === "list") label = "Read · opening files";
+  else if (name === "write" || name === "edit" || name === "create_file") label = "Code · editing files";
+  else if (name === "bash" || name === "terminal") label = "Bash · running a command";
+  else if (name === "grep" || name === "glob" || name === "find") label = "Search · scanning the repo";
+  else if (name === "web_search" || name === "web_fetch") label = "Search · checking the web";
+  else if (name === "browser") label = "Browser · opening a page";
+  else if (name === "coding") label = "Code · running a coding agent";
+  else if (name.startsWith("agents_")) label = "Team · messaging an agent";
+  else if (name.startsWith("mcp__")) label = "MCP · " + tool.split("__").slice(2).join("__");
+  else if (name === "question") label = "Question · asking you";
+  else label = "Tool · " + tool;
+  return label + " · step " + step;
+}
 
 type BotHandle = { label: string; api: BotApi; loop: Promise<void> | undefined; stopping: boolean; abort: AbortController };
 
@@ -747,13 +786,13 @@ export class TelegramRuntime {
           const available = await models.getAvailable(provider);
           const ids = available
             .map((model) => (model as { id?: unknown }).id)
-            .filter((id): id is string => typeof id === "string")
-            .slice(0, 8);
+            .filter((id): id is string => typeof id === "string");
           if (ids.length > 0) {
-            await handle.api.sendMessage(message.chat.id, "Choose a model for this thread:", {
-              threadId: message.message_thread_id,
-              keyboard: buttons(ids.map((id) => [{ text: id, data: "sm:" + provider + "|" + id }])),
-            });
+            await handle.api.sendMessage(
+              message.chat.id,
+              "Choose a model for this thread · " + provider + " · " + ids.length + " models",
+              { threadId: message.message_thread_id, keyboard: modelKeyboard(provider, ids, 0) },
+            );
           }
         } catch {
           // Offline or no credentials: the textual form /model provider/model still works.
@@ -1085,28 +1124,65 @@ export class TelegramRuntime {
       await setChat(this.state, handle.label, key, binding);
     }
 
-    const busy = activeIds().includes(sessionId);
-    const placeholder = await handle.api.sendMessage(
-      message.chat.id,
-      busy ? "queued · thinking…" : "thinking…",
-      { replyTo: message.message_id, threadId: message.message_thread_id },
-    );
+    const busy = activeIds().includes(sessionId) || (await sessionBusy(sessionId));
+    if (busy) {
+      try {
+        const submission = await sendMessage(
+          sessionId,
+          {
+            text,
+            ...(attachments.length > 0 ? { attachments } : {}),
+            requestId: "tg:" + handle.label + ":" + message.chat.id + ":" + message.message_id,
+          },
+          "steer",
+        );
+        if (!submission) throw new Error("the thread disappeared");
+        await handle.api.sendMessage(message.chat.id, "Steer · added to the current run", {
+          replyTo: message.message_id,
+          threadId: message.message_thread_id,
+        });
+        log.info("telegram.steer", { sessionId, submission: submission.submissionId });
+      } catch (error) {
+        await handle.api.sendMessage(
+          message.chat.id,
+          "Steer failed: " + escapeText(error instanceof Error ? error.message : String(error)),
+          { threadId: message.message_thread_id },
+        );
+      }
+      return;
+    }
+
+    const placeholder = await handle.api.sendMessage(message.chat.id, "Think · planning the next step", {
+      replyTo: message.message_id,
+      threadId: message.message_thread_id,
+    });
     rememberMessage(this.state, handle.label, message.chat.id, placeholder.message_id, sessionId);
     this.trackThinking(sessionId, placeholder.message_id, message.chat.id, message.message_thread_id, handle.label);
-    if (!busy) void handle.api.sendChatAction(message.chat.id, "typing").catch(() => undefined);
 
     const session = await findSession(sessionId);
-    void this.runSession({
-      handle,
-      chatId: message.chat.id,
-      threadId: message.message_thread_id,
-      sessionId,
-      placeholderId: placeholder.message_id,
-      agentId: session?.agent ?? "agent",
-      text,
-      attachments,
-      requestId: "tg:" + handle.label + ":" + message.chat.id + ":" + message.message_id,
-    });
+    const requestId = "tg:" + handle.label + ":" + message.chat.id + ":" + message.message_id;
+    try {
+      const submission = await sendMessage(
+        sessionId,
+        { text, ...(attachments.length > 0 ? { attachments } : {}), requestId },
+        "followUp",
+      );
+      if (!submission) throw new Error("the thread disappeared");
+      void this.runSession({
+        handle,
+        chatId: message.chat.id,
+        threadId: message.message_thread_id,
+        sessionId,
+        placeholderId: placeholder.message_id,
+        agentId: session?.agent ?? "agent",
+        submissionId: submission.submissionId,
+      });
+    } catch (error) {
+      this.untrackThinking(sessionId, placeholder.message_id);
+      await handle.api
+        .editMessage(message.chat.id, placeholder.message_id, "⚠️ " + escapeText(error instanceof Error ? error.message : String(error)))
+        .catch(() => undefined);
+    }
   }
 
   private async plan(handle: BotHandle, message: TgMessage, argument: string, _owner: boolean): Promise<void> {
@@ -1348,42 +1424,64 @@ export class TelegramRuntime {
     sessionId: string;
     placeholderId: number;
     agentId: string;
-    text: string;
-    attachments: AttachmentDraft[];
-    requestId: string;
+    submissionId: string;
   }): Promise<void> {
     const { handle, chatId, threadId, sessionId, placeholderId } = input;
     const started = Date.now();
-    const before = (await transcript(sessionId)).length;
     const edit = async (html: string): Promise<void> => {
       await handle.api.editMessage(chatId, placeholderId, html).catch(() => undefined);
     };
 
+    let stopStream: (() => Promise<void>) | undefined;
     let unanswered = false;
+    const seenCalls = new Set<string>();
+    let progressSent = 0;
+    let writing = false;
+    const before = (await transcript(sessionId)).length;
     try {
-      const submission = await sendMessage(sessionId, {
-        text: input.text,
-        ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
-        requestId: input.requestId,
-      });
-      if (!submission) throw new Error("the thread disappeared");
-      const record = await harnessInstance().submission(Number(submission.submissionId) as never, context);
-      if (record) {
-        const settled = await Promise.race([
-          record.wait(context),
-          new Promise<never>((_done, reject) => setTimeout(() => reject(new Error("the run did not settle within 30 minutes")), 30 * 60_000)),
-        ]);
-        // A question tool ends the turn without an answer; only an unanswered submission with no
-        // question entry is a stopped run.
-        unanswered = (settled as { status?: unknown }).status === "unanswered";
+      const conversation = await harnessInstance().conversation(Number(sessionId) as never, context);
+      if (conversation) {
+        const stream = await openEventStream(harnessInstance(), conversation.id, context, (frame) => {
+          if (frame.type !== "activity") return;
+          for (const call of frame.activity.calls) {
+            if (seenCalls.has(call.callId)) continue;
+            seenCalls.add(call.callId);
+            if (call.status === "done" || progressSent >= 20) continue;
+            progressSent += 1;
+            void handle.api
+              .sendMessage(chatId, progressLine(call.name, progressSent), { threadId })
+              .catch(() => undefined);
+          }
+          if (frame.activity.phase === "writing" && !writing) {
+            writing = true;
+            void edit("Writing the answer…");
+          }
+        });
+        stopStream = stream.stop;
       }
     } catch (error) {
+      log.debug("telegram.stream_unavailable", { sessionId, ...errorFields(error) });
+    }
+
+    try {
+      const record = await harnessInstance().submission(Number(input.submissionId) as never, context);
+      if (!record) throw new Error("the submission disappeared");
+      const settled = await Promise.race([
+        record.wait(context),
+        new Promise<never>((_done, reject) => setTimeout(() => reject(new Error("the run did not settle within 30 minutes")), 30 * 60_000)),
+      ]);
+      // A question tool ends the turn without an answer; only an unanswered submission with no
+      // question entry is a stopped run.
+      unanswered = (settled as { status?: unknown }).status === "unanswered";
+    } catch (error) {
+      await stopStream?.().catch(() => undefined);
       const message = error instanceof Error ? error.message : String(error);
       await edit(/abort|cancel/i.test(message) ? "stopped." : "⚠️ " + escapeText(message));
       this.untrackThinking(sessionId, placeholderId);
       if (!/abort|cancel/i.test(message)) log.error("telegram.run_failed", { sessionId, ...errorFields(error) });
       return;
     }
+    await stopStream?.().catch(() => undefined);
     this.untrackThinking(sessionId, placeholderId);
 
     const entries = await transcript(sessionId);
@@ -1635,6 +1733,28 @@ export class TelegramRuntime {
     if (data.startsWith("ocno:")) {
       if (!owner) return void (await handle.api.sendMessage(chatId, "Owner only."));
       await handle.api.editMessage(chatId, message.message_id, "Orchestrator request denied.").catch(() => undefined);
+      return;
+    }
+
+    if (data.startsWith("smp:")) {
+      if (!owner) return void (await handle.api.sendMessage(chatId, "Owner only."));
+      const payload = data.slice(4);
+      const split = payload.lastIndexOf(":");
+      if (split <= 0) return;
+      const provider = payload.slice(0, split);
+      const page = Number.parseInt(payload.slice(split + 1), 10) || 0;
+      const available = await models.getAvailable(provider);
+      const ids = available
+        .map((model) => (model as { id?: unknown }).id)
+        .filter((id): id is string => typeof id === "string");
+      await handle.api
+        .editMessage(
+          chatId,
+          message.message_id,
+          "Choose a model for this thread · " + escapeText(provider) + " · " + ids.length + " models",
+          modelKeyboard(provider, ids, page),
+        )
+        .catch(() => undefined);
       return;
     }
 

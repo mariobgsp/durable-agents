@@ -14,7 +14,7 @@ export default {
     try {
       h.text("main", 100, "run a slow task");
       await h.waitFor(
-        () => h.fake.sent("main").find((message) => message.text.includes("thinking")),
+        () => h.fake.sent("main").find((message) => message.text.includes("Think")),
         15_000,
         "the thinking placeholder",
       );

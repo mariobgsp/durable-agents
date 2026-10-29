@@ -132,6 +132,19 @@ The orchestrator also owns the bot-to-agent map: `bot_list`, `bot_assign`, `bot_
 one takes an owner-provided bot token, starts the poller, pairs the agent and rebinds both sides; it never opens a
 browser or Telegram web. That is the "sync and connect" path when the owner adds another bot.
 
+## Models
+
+The provider catalog is the full pi-ai catalog, not a shortlist: `opencode-go` alone exposes 29 models in this
+version. Telegram's `/model` shows every model in pages of ten (Prev/Next), and `/model provider/model` accepts any
+id directly. `dura provider models opencode-go` prints the full table for scripts.
+
+## Orchestrator edits the system
+
+The orchestrator can read and edit the durable-agents checkout like any other file tree. `repo_info` shows the
+branch and working-tree changes, and `system_apply` runs `npm run check` and then restarts the service. Because the
+systemd unit runs from the same checkout, the restart loads the edited source and config. A failed check applies
+nothing. This is meant for workflow and system changes, not for replacing the owner's uncommitted work.
+
 ## MCP (global)
 
 MCP servers are installed once and belong to every agent. The daemon speaks the stdio transport: a command, its
@@ -232,7 +245,7 @@ sudo operation, and never overwrites a custom value. This host already had zram0
 
 ```bash
 npm run check     # tsc + language lint
-npm run e2e       # twenty daemon-driven scenarios, offline
+npm run e2e       # twenty-three daemon-driven scenarios, offline
 npm run bench     # the five-agent memory gate
 ```
 
@@ -240,8 +253,8 @@ The E2E harness starts a real daemon in a temporary home with the faux provider 
 Telegram updates and inspects the resulting messages, edits, callbacks, files and SQLite state. Scenarios:
 `init-wizard`, `provider-catalog`, `command-scopes`, `telegram-chat`, `telegram-question`, `telegram-plan`,
 `telegram-admin-commands`, `bot-pairing`, `telegram-orchestrator`, `orchestrator-docs`, `orchestrator-claim`,
-`orchestrator-claim-approval`, `mcp-global`, `memory-tool`, `thread-prune`, `retention`, `telegram-stop`,
-`bot-token-connect`, `verify`, `tui-json`. `verify` is also tested against the real API on this machine:
+`orchestrator-claim-approval`, `orchestrator-repo`, `mcp-global`, `memory-tool`, `thread-prune`, `retention`,
+`telegram-stop`, `telegram-steer`, `telegram-progress`, `bot-token-connect`, `verify`, `tui-json`. `verify` is also tested against the real API on this machine:
 bot @samriobot, opencode-go, a live
 agent answer in ~2.8 s.
 

@@ -814,6 +814,18 @@ export async function sendMessage(
   return { submissionId: String(submission.id) };
 }
 
+/** True when the conversation still owns a live run. Unlike the in-memory activity mark, this
+ * reads the durable task scope, so it stays correct between a generation and its tool task. */
+export async function sessionBusy(id: string, probeMs = 75): Promise<boolean> {
+  const conversation = await conversationOf(id);
+  if (!conversation) return false;
+  const idle = await Promise.race([
+    conversation.waitForIdle(context).then(() => true).catch(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), probeMs)),
+  ]);
+  return !idle;
+}
+
 export async function abortSession(id: string): Promise<boolean> {
   const conversation = await conversationOf(id);
   if (!conversation) return false;
