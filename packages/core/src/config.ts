@@ -2,6 +2,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { configPath, duraHome } from "./paths.ts";
+import type { ThinkingLevel } from "./agents.ts";
 
 /**
  * The one configuration file. It holds no secrets: provider keys live in credentials.json and bot
@@ -47,6 +48,14 @@ export type DuraConfig = {
     permissions: "standard" | "custom" | "full";
     telegramBot: string;
     tools: string[];
+    /**
+     * Reasoning effort every agent inherits, whatever model it runs.
+     *
+     * It is one setting rather than a per-model table because the level names are shared: a model that does
+     * not support a level clamps it in the provider, so "xhigh" on a model with only low/medium/high is a
+     * request the provider narrows, not an error the daemon has to pre-empt.
+     */
+    thinkingLevel: ThinkingLevel;
   };
   limits: Limits;
   telegram: TelegramConfig;
@@ -79,6 +88,7 @@ export function defaultConfig(): DuraConfig {
       permissions: "full",
       telegramBot: "main",
       tools: [...DEFAULT_TOOLS],
+      thinkingLevel: "medium",
     },
     limits: {
       maxConcurrentRuns: 5,

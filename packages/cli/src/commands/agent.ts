@@ -14,7 +14,7 @@ import {
   writeAgentDoc,
 } from "../../../core/src/agent-admin.ts";
 import { docHistory, readDocs, restoreDoc } from "../../../core/src/doc-store.ts";
-import { listAgents, readAgent } from "../../../core/src/agents.ts";
+import { listAgents, readAgent, isThinkingLevel, THINKING_LEVELS } from "../../../core/src/agents.ts";
 import { defaultCwd, readConfig } from "../../../core/src/config.ts";
 import { suggestResponsibility } from "../../../core/src/agents.ts";
 import { allSessionRecords } from "../../../core/src/sessions.ts";
@@ -176,6 +176,12 @@ export async function runAgent(parsed: Parsed): Promise<void> {
         case "permissions":
           patch[key] = value;
           break;
+        case "thinking":
+        case "thinkingLevel":
+          // One name for the level, so `thinking=high` works next to `model=` in the same command.
+          if (!isThinkingLevel(value)) fail("thinking must be one of " + THINKING_LEVELS.join(", "), 2);
+          patch.thinking = value;
+          break;
         case "bot":
           // "none" or an empty value disconnects the bot instead of leaving the old pairing in place.
           patch.bot = value === "" || value === "none" ? null : value;
@@ -199,6 +205,7 @@ export async function runAgent(parsed: Parsed): Promise<void> {
       cwd: (patch.cwd as string) ?? undefined,
       telegramBot: patch.bot === null ? null : ((patch.bot as string | undefined) ?? undefined),
       mesh: (patch.mesh as never) ?? undefined,
+      thinkingLevel: (patch.thinking as never) ?? undefined,
       permissions: (patch.permissions as never) ?? undefined,
       tools: (patch.tools as string[]) ?? undefined,
       enabled: (patch.enabled as boolean) ?? undefined,

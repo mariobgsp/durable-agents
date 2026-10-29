@@ -101,10 +101,11 @@ buttons for the current thread), `/usage`, `/reload` (owner: tools and thread re
 service restart, with confirmation), `/agents`, `/memory`, `/schedules`, `/group`, `/bind`, `/status`,
 `/whoami`, `/compact`, `/stop`, `/abort`, `/grant`, `/connect`, `/orchestrator`, `/bots`, `/settings`, `/mcp`,
 `/prune`, `/help`.
-Each message gets a brief `thinking…` placeholder (queued messages say `queued · thinking…`); there are no periodic
-status edits. The final answer replaces the placeholder with the answer, a run summary (duration, tokens, cost) and
-any generated files. `/stop` aborts the active run and withdraws every queued message. The `question` tool renders
-inline buttons.
+Each message gets a brief `Think · planning the next step` placeholder plus short DSH-style progress lines
+(`Bash · running a command · step 1`). A message sent while the run is live is **steered** into it
+(`Steer · added to the current run`). Final answers use Telegram **Rich Messages** (GFM headings, tables, task lists,
+long code, up to 30k characters) when the API supports them, with HTML as fallback; generated files follow.
+`/stop` aborts the active run and withdraws queued messages. The `question` tool renders inline buttons.
 
 The allowlist is global across bots. Unknown users are refused, queued as pending, and the owner gets
 Approve/Block buttons. A bot cannot add members to a group itself; `dura user invite --chat <id>` prints a

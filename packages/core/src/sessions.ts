@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
 import type { AgentChange, Conversation, ConversationId, EntryId, ToolRegistration } from "@earendil-works/pi-durable";
-import { appendMemory, readAgent, renderInstructions, writeAgent } from "./agents.ts";
+import { appendMemory, readAgent, renderInstructions, writeAgent, type ThinkingLevel } from "./agents.ts";
 import {
   USER_ENTRY_KIND,
   prepareUserMessage,
@@ -34,6 +34,8 @@ export type SessionRecord = {
   updatedAt: number;
   /** Model used by this session; absent on older records. */
   model?: ModelRef;
+  /** Reasoning effort of a plain thread; an agent thread reads its agent's instead. */
+  thinkingLevel?: ThinkingLevel;
   /** Agent id used by this session; empty means a plain session. */
   agent?: string;
   kind?: "plain" | "agent" | "group";
@@ -662,6 +664,35 @@ export async function setSessionModel(
   if (!conversation) return null;
   await conversation.configure({ model: ref }, context);
   await updateSessionRecord(Number(id), { model: ref, updatedAt: Date.now() });
+  return { changed: "session" };
+}
+
+/**
+ * Change the reasoning effort of this thread or, for an agent thread, of the agent itself.
+ *
+ * Same rule as the model: an agent thread configures the agent, because the owner is choosing how that
+ * persona works, not a fact about one conversation. A plain thread has no agent to configure, so the
+ * choice is stored on the session and on its conversation.
+ */
+export async function setSessionThinking(
+  id: string,
+  level: ThinkingLevel,
+): Promise<{ changed: "session" | "agent" } | null> {
+  const record = await findSession(id);
+  if (!record) return null;
+
+  if (record.agent) {
+    const files = await readAgent(record.agent);
+    if (!files) return null;
+    await writeAgent({ ...files.record, id: files.record.id, thinkingLevel: level });
+    await rebindAgent(files.record.id);
+    return { changed: "agent" };
+  }
+
+  const conversation = await conversationOf(id);
+  if (!conversation) return null;
+  await conversation.configure({ thinkingLevel: level }, context);
+  await updateSessionRecord(Number(id), { thinkingLevel: level, updatedAt: Date.now() });
   return { changed: "session" };
 }
 

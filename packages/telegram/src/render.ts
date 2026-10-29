@@ -122,6 +122,17 @@ export function summaryLine(parts: string[]): string {
 }
 
 /** The one final rendering of an answer: text, then the footer. */
+/**
+ * Rich Markdown for sendRichMessage. Telegram renders GFM headings, tables, task lists, details and
+ * long code blocks here, which the HTML path cannot represent. The model's answer is already Markdown;
+ * do not pre-escape it for MarkdownV2.
+ */
+export function renderRichAnswer(message: WireMsg): string {
+  const body = message.text || "(empty answer)";
+  const footer = runFooter(message);
+  return body + (footer ? "\n\n---\n" + footer : "");
+}
+
 export function renderAnswer(message: WireMsg): string {
   const body = markdownToHtml(message.text || "(empty answer)");
   const footer = runFooter(message);

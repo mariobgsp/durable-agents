@@ -1,7 +1,7 @@
 import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { readConfig, updateConfig, type DuraConfig } from "./config.ts";
 import { boot, closeHarness } from "./boot.ts";
-import { subscribeAgents, listAgents, readAgent } from "./agents.ts";
+import { subscribeAgents, listAgents, readAgent, isThinkingLevel, THINKING_LEVELS } from "./agents.ts";
 import { subscribe as subscribeActivity } from "./activity.ts";
 import { fleetSnapshot } from "./fleet.ts";
 import { subscribeMesh } from "./mesh.ts";
@@ -378,6 +378,22 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     },
     "agents.memory": async (params) => readMemory(str(params, "id")),
     "agents.remember": async (params) => appendMemory(str(params, "id"), str(params, "note")),
+    "thinking.get": async () => {
+      const fresh = await readConfig({ fresh: true });
+      const agents = await listAgents();
+      return { level: fresh.defaults.thinkingLevel, agents: agents.map((agent) => agent.thinkingLevel) };
+    },
+    "thinking.set": async (params) => {
+      const level = str(params, "level");
+      if (!isThinkingLevel(level)) throw new Error("level must be one of " + THINKING_LEVELS.join(", "));
+      const { applyThinkingLevel } = await import("./agents.ts");
+      const agentId = str(params, "agentId");
+      const result = await applyThinkingLevel(level, agentId ? { agentId } : {});
+      // Every affected agent is rebound so its open threads run at the new effort at once, not after a restart.
+      const { rebindAgent } = await import("./sessions.ts");
+      for (const id of result.agents) await rebindAgent(id);
+      return result;
+    },
 
     "orchestrator.get": async () => ({ agentId: config.orchestrator.agentId }),
     "orchestrator.set": async (params) => {

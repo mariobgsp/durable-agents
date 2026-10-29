@@ -1,6 +1,6 @@
 import { context, harnessInstance } from "../../core/src/harness.ts";
 import { activeIds } from "../../core/src/activity.ts";
-import { listAgents, readAgent, readMemory, type AgentRecord } from "../../core/src/agents.ts";
+import { listAgents, readAgent, readMemory, isThinkingLevel, THINKING_LEVELS, applyThinkingLevel, type AgentRecord, type ThinkingLevel } from "../../core/src/agents.ts";
 import { readConfig, updateConfig } from "../../core/src/config.ts";
 import { models } from "../../core/src/models.ts";
 import { reloadEverything } from "../../core/src/reload.ts";
@@ -16,9 +16,11 @@ import {
   compactSession,
   createSession,
   findSession,
+  rebindAgent,
   restartSession,
   sendMessage,
   sessionBusy,
+  setSessionThinking,
   transcript,
   updateSessionRecord,
 } from "../../core/src/sessions.ts";
@@ -64,7 +66,7 @@ import {
   setOwner,
   type Users,
 } from "./users.ts";
-import { escapeHtml, markdownToHtml, questionKeyboard, renderAnswer, splitMessage, buttons } from "./render.ts";
+import { escapeHtml, markdownToHtml, questionKeyboard, renderAnswer, renderRichAnswer, splitMessage, buttons } from "./render.ts";
 import type { TgCallbackQuery, TgChat, TgMessage, TgUpdate } from "./types.ts";
 
 /**
@@ -94,21 +96,54 @@ function modelKeyboard(provider: string, ids: string[], page: number): ReturnTyp
   return buttons(rows);
 }
 
-function progressLine(tool: string, step: number): string {
+/** How often the status bubble may be edited. Telegram rate-limits edits per message, so this is a floor. */
+const STATUS_EDIT_MS = 1200;
+
+/**
+ * One line per call, in the words of the call itself.
+ *
+ * The summary comes from the tool's own arguments (`bash: git status`, `edit: core/src/live.ts`), so the line
+ * says what ran rather than that something ran. Eight words is the budget: a trace the owner reads in a
+ * notification, not a log.
+ */
+function progressLine(tool: string, summary?: string): string {
   const name = tool.toLowerCase();
-  let label: string;
-  if (name === "read" || name === "list") label = "Read · opening files";
-  else if (name === "write" || name === "edit" || name === "create_file") label = "Code · editing files";
-  else if (name === "bash" || name === "terminal") label = "Bash · running a command";
-  else if (name === "grep" || name === "glob" || name === "find") label = "Search · scanning the repo";
-  else if (name === "web_search" || name === "web_fetch") label = "Search · checking the web";
-  else if (name === "browser") label = "Browser · opening a page";
-  else if (name === "coding") label = "Code · running a coding agent";
-  else if (name.startsWith("agents_")) label = "Team · messaging an agent";
-  else if (name.startsWith("mcp__")) label = "MCP · " + tool.split("__").slice(2).join("__");
-  else if (name === "question") label = "Question · asking you";
-  else label = "Tool · " + tool;
-  return label + " · step " + step;
+  const label =
+    name === "bash" || name === "terminal" ? "bash"
+    : name === "read" ? "read"
+    : name === "write" || name === "edit" || name === "create_file" ? name
+    : name === "grep" || name === "glob" || name === "find" ? "search"
+    : name === "codemode" ? "codemode"
+    : name === "coding" ? "coding"
+    : name === "browser" ? "browser"
+    : name === "question" ? "asking you"
+    : name.startsWith("mcp__") ? "mcp: " + tool.split("__").slice(2).join("__")
+    : name.startsWith("agents_") ? "team: " + name.replace("agents_", "")
+    : tool;
+  const detail = (summary ?? "").trim();
+  return detail ? label + ": " + detail : label;
+}
+
+/**
+ * The status message while a run is in flight: the thought, then the calls.
+ *
+ * It is one message that is edited, not a new message per call, because a burst of twenty notifications for
+ * twenty `read`s is noise the owner has to scroll past. Three calls is the window: the latest is the answer
+ * to "what is it doing now", and older ones have already left the interesting part of the run.
+ */
+function liveStatus(input: { thinking?: string; phase: string | null; lines: string[] }): string {
+  const head = input.thinking ? "\u{1F9E0} " + escapeHtml(input.thinking) : phaseLabel(input.phase);
+  const tail = input.lines.slice(-3).map((line) => "\u2699\uFE0F " + escapeHtml(line));
+  return [head, ...tail].filter(Boolean).join("\n");
+}
+
+function phaseLabel(phase: string | null): string {
+  if (phase === "thinking") return "\u{1F9E0} thinking…";
+  if (phase === "writing") return "\u270D\uFE0F writing the answer…";
+  if (phase === "compacting") return "\u{1F5DC}\uFE0F compacting the context…";
+  if (phase === "retrying") return "\u{1F501} retrying…";
+  if (phase === "tool") return "\u2699\uFE0F working…";
+  return "starting…";
 }
 
 type BotHandle = { label: string; api: BotApi; loop: Promise<void> | undefined; stopping: boolean; abort: AbortController };
@@ -233,10 +268,18 @@ export class TelegramRuntime {
   }
 
   private async poll(handle: BotHandle): Promise<void> {
+    let failures = 0;
     while (!this.stopping && !handle.stopping) {
       const botState = stateFor(this.state, handle.label);
       try {
-        const updates = await handle.api.getUpdates(botState.offset, 50, handle.abort.signal);
+        const updates = await handle.api.getUpdates(botState.offset, 20, handle.abort.signal);
+        failures = 0;
+        // A successful poll with zero updates still proves the connection is up.
+        if (!botState.health.ok) {
+          botState.health = { ok: true, checkedAt: Date.now(), username: botState.health.username };
+          await this.persist();
+          log.info("telegram.reconnected", { label: handle.label });
+        }
         if (updates.length === 0) continue;
         for (const update of updates) {
           botState.offset = Math.max(botState.offset, update.update_id + 1);
@@ -246,13 +289,9 @@ export class TelegramRuntime {
           });
         }
         await this.persist();
-        if (!botState.health.ok) {
-          botState.health = { ok: true, checkedAt: Date.now(), username: botState.health.username };
-          await this.persist();
-          log.info("telegram.reconnected", { label: handle.label });
-        }
       } catch (error) {
         if (this.stopping || handle.stopping || handle.abort.signal.aborted) return;
+        failures += 1;
         const fatal = error instanceof TelegramError && (error.status === 401 || error.status === 409);
         botState.health = {
           ok: false,
@@ -261,9 +300,10 @@ export class TelegramRuntime {
           ...(botState.health.username ? { username: botState.health.username } : {}),
         };
         await this.persist();
-        log.error("telegram.poll_failed", { bot: handle.label, fatal, ...errorFields(error) });
+        log.error("telegram.poll_failed", { bot: handle.label, fatal, failures, ...errorFields(error) });
         if (fatal) return;
-        await new Promise((done) => setTimeout(done, 3000));
+        const delay = Math.min(15_000, 1_000 * 2 ** Math.min(failures - 1, 4));
+        await new Promise((done) => setTimeout(done, delay));
       }
     }
   }
@@ -514,6 +554,7 @@ export class TelegramRuntime {
             "/threads — list and switch threads",
             "/plan [goal] — ask for a plan before executing",
             "/model [provider/model] — show or change the model",
+            "/thinking [level|all level] — reasoning effort for one agent or every agent",
             "/usage — usage report",
             "/agents — switch agent",
             "/memory [agent] — memory notes",
@@ -582,6 +623,9 @@ export class TelegramRuntime {
         return;
       case "model":
         await this.showModel(handle, message, argument, owner);
+        return;
+      case "thinking":
+        await this.showThinking(handle, message, argument, owner);
         return;
       case "grant":
         await this.grant(handle, message, argument, owner);
@@ -807,6 +851,53 @@ export class TelegramRuntime {
     const { setSessionModel } = await import("../../core/src/sessions.ts");
     const result = await setSessionModel(binding.sessionId, { provider, modelId });
     await handle.api.sendMessage(message.chat.id, result ? "Model changed (" + result.changed + ")." : "Could not change the model.");
+  }
+
+  private async showThinking(handle: BotHandle, message: TgMessage, argument: string, owner: boolean): Promise<void> {
+    const config = await readConfig({ fresh: true });
+    const binding = getChat(this.state, handle.label, chatKey(message.chat.id, message.message_thread_id));
+    const session = binding?.sessionId ? await findSession(binding.sessionId) : undefined;
+    const agent = session?.agent ?? (await this.pairedAgent(handle.label))?.id;
+    const current = (agent ? (await readAgent(agent))?.record.thinkingLevel : undefined) ?? config.defaults.thinkingLevel;
+
+    if (!argument) {
+      await handle.api.sendMessage(
+        message.chat.id,
+        "thinking " + current + (agent ? " \u00b7 " + agent : "") + "\ndefault " + config.defaults.thinkingLevel +
+          "\nlevels " + THINKING_LEVELS.join(" ") +
+          "\n\u2014 /thinking all &lt;level&gt; sets every agent",
+        { threadId: message.message_thread_id },
+      );
+      return;
+    }
+    if (!owner) return void (await handle.api.sendMessage(message.chat.id, "Owner only."));
+
+    const [first, second] = argument.split(/\s+/);
+    const all = (first ?? "").toLowerCase() === "all";
+    const level = all ? second : first;
+    if (!isThinkingLevel(level)) {
+      return void (await handle.api.sendMessage(
+        message.chat.id,
+        "Use one of: " + THINKING_LEVELS.join(", ") + " \u2014 /thinking all <level> for every agent.",
+      ));
+    }
+
+    // The thread keeps its own record: an agent thread writes the agent (and rebinds its threads), a plain
+    // thread configures itself. `all` is the global switch the owner asked for: one level, every model.
+    const result = all || !binding?.sessionId
+      ? await this.applyThinkingEverywhere(level)
+      : await setSessionThinking(binding.sessionId, level);
+    const where = all || !binding?.sessionId ? "all agents" : (result?.changed === "agent" ? "this agent" : "this thread");
+    await handle.api.sendMessage(message.chat.id, "thinking \u2192 " + level + " \u00b7 " + where);
+    log.info("telegram.thinking", { level, all });
+  }
+
+  /** One call to the core: it writes the config default and every agent record, then rebinds them. */
+  private async applyThinkingEverywhere(level: ThinkingLevel): Promise<{ changed: "agent" } | null> {
+    const result = await applyThinkingLevel(level);
+    // Rebound so every open thread runs at the new effort at once, not after a restart.
+    for (const id of result.agents) await rebindAgent(id);
+    return { changed: "agent" };
   }
 
   private async grant(handle: BotHandle, message: TgMessage, argument: string, owner: boolean): Promise<void> {
@@ -1435,27 +1526,50 @@ export class TelegramRuntime {
     let stopStream: (() => Promise<void>) | undefined;
     let unanswered = false;
     const seenCalls = new Set<string>();
-    let progressSent = 0;
-    let writing = false;
+    // The status message is edited, never sent: one placeholder carrying the thought and the last calls.
+    const lines: string[] = [];
+    let thinking = "";
+    let phase: string | null = null;
+    let lastStatusAt = 0;
+    let statusTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const paintStatus = (force: boolean): void => {
+      const now = Date.now();
+      const html = liveStatus({ thinking, phase, lines });
+      const wait = STATUS_EDIT_MS - (now - lastStatusAt);
+      if (!force && wait > 0) {
+        // Telegram rate-limits edits per message; coalescing keeps the newest state instead of a burst.
+        statusTimer ??= setTimeout(() => {
+          statusTimer = undefined;
+          paintStatus(false);
+        }, wait);
+        return;
+      }
+      lastStatusAt = now;
+      void edit(html);
+    };
+
     const before = (await transcript(sessionId)).length;
+    // Artifact bytes live under artifacts/<conversation id>/; keep that id in scope for
+    // sendArtifacts below. An entry carries only the artifact metadata, never the owner.
+    let conversationId: number | undefined;
     try {
       const conversation = await harnessInstance().conversation(Number(sessionId) as never, context);
       if (conversation) {
+        conversationId = conversation.id;
         const stream = await openEventStream(harnessInstance(), conversation.id, context, (frame) => {
           if (frame.type !== "activity") return;
-          for (const call of frame.activity.calls) {
+          const activity = frame.activity;
+          thinking = activity.thinking ?? "";
+          phase = activity.phase;
+          for (const call of activity.calls) {
             if (seenCalls.has(call.callId)) continue;
             seenCalls.add(call.callId);
-            if (call.status === "done" || progressSent >= 20) continue;
-            progressSent += 1;
-            void handle.api
-              .sendMessage(chatId, progressLine(call.name, progressSent), { threadId })
-              .catch(() => undefined);
+            if (call.status === "done") continue;
+            lines.push(progressLine(call.name, call.summary));
+            if (lines.length > 3) lines.shift();
           }
-          if (frame.activity.phase === "writing" && !writing) {
-            writing = true;
-            void edit("Writing the answer…");
-          }
+          paintStatus(false);
         });
         stopStream = stream.stop;
       }
@@ -1482,6 +1596,11 @@ export class TelegramRuntime {
       return;
     }
     await stopStream?.().catch(() => undefined);
+    // A coalesced status edit still pending would land after the answer and wipe it.
+    if (statusTimer) {
+      clearTimeout(statusTimer);
+      statusTimer = undefined;
+    }
     this.untrackThinking(sessionId, placeholderId);
 
     const entries = await transcript(sessionId);
@@ -1494,23 +1613,34 @@ export class TelegramRuntime {
       const options = Array.isArray(data.options) ? data.options.filter((value): value is string => typeof value === "string") : [];
       const keyboard = questionKeyboard(sessionId, options);
       const html = "<b>Question</b>\n\n" + markdownToHtml(question.text) + (keyboard ? "" : "\n\nType the answer.");
-      // One edit with the keyboard: a plain edit followed by a keyboard edit shows a flicker and gives
-      // the fake/Live client two intermediate states to reason about.
-      if (keyboard) {
-        try {
-          await handle.api.editMessage(chatId, placeholderId, html, keyboard);
-        } catch {
-          await edit(html);
-        }
-      } else {
-        await edit(html);
+      // A question is sent, not edited in place. Telegram shows no notification for an edit, so a question
+      // written over the status bubble was invisible to a phone that was not already looking at it — the
+      // exact failure of "I cannot see the question". The placeholder then says what is being waited for.
+      await edit("\u2753 waiting for your answer…");
+      try {
+        await handle.api.sendMessage(chatId, html, { threadId, ...(keyboard ? { keyboard } : {}) });
+      } catch {
+        await handle.api.sendMessage(chatId, html, { threadId });
       }
     } else if (answer) {
-      const html = renderAnswer(answer);
-      const chunks = splitMessage(html);
-      await edit(chunks[0] ?? html);
-      for (const chunk of chunks.slice(1)) await handle.api.sendMessage(chatId, chunk, { threadId });
-      await this.sendArtifacts(handle, chatId, threadId, fresh);
+      let delivered = false;
+      const rich = renderRichAnswer(answer);
+      if (rich.length <= 30_000) {
+        try {
+          await handle.api.sendRichMessage(chatId, { markdown: rich }, { threadId });
+          await handle.api.deleteMessage(chatId, placeholderId).catch(() => edit("Answered above."));
+          delivered = true;
+        } catch (error) {
+          log.debug("telegram.rich_unavailable", { sessionId, ...errorFields(error) });
+        }
+      }
+      if (!delivered) {
+        const html = renderAnswer(answer);
+        const chunks = splitMessage(html);
+        await edit(chunks[0] ?? html);
+        for (const chunk of chunks.slice(1)) await handle.api.sendMessage(chatId, chunk, { threadId });
+      }
+      await this.sendArtifacts(handle, chatId, threadId, fresh, conversationId);
     } else {
       await edit(unanswered ? "stopped." : "(no answer)");
       if (unanswered) log.info("telegram.run_stopped", { sessionId });
@@ -1525,11 +1655,24 @@ export class TelegramRuntime {
     });
   }
 
-  private async sendArtifacts(handle: BotHandle, chatId: number, threadId: number | undefined, entries: WireMsg[]): Promise<void> {
+  private async sendArtifacts(
+    handle: BotHandle,
+    chatId: number,
+    threadId: number | undefined,
+    entries: WireMsg[],
+    conversationId: number | undefined,
+  ): Promise<void> {
+    if (conversationId === undefined) return;
     for (const entry of entries) {
       for (const artifact of entry.artifacts ?? []) {
-        const bytes = await readArtifact(entry.id ?? "", artifact.id);
-        if (!bytes) continue;
+        // readArtifact(conversationId, artifactId): the entry id is NOT the conversation id,
+        // and passing it looked in a directory that never exists, so every file was dropped
+        // without a word. Fail loudly instead.
+        const bytes = await readArtifact(String(conversationId), artifact.id);
+        if (!bytes) {
+          log.warn("telegram.artifact_missing", { artifact: artifact.name, conversationId });
+          continue;
+        }
         try {
           await handle.api.sendDocument(chatId, artifact.name, artifact.mimeType, new Uint8Array(bytes), undefined, threadId);
         } catch (error) {

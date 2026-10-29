@@ -2,11 +2,26 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { agentTmpRoot, dataDir } from "./paths.ts";
+import { readConfig, updateConfig } from "./config.ts";
 import { models, resolveDefaultModel } from "./models.ts";
 import type { PermissionTier } from "./permissions.ts";
 import { recordStatelessUsage } from "./usage-ledger.ts";
 
-export type ThinkingLevel = "off" | "low" | "medium" | "high";
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+/** Every level the harness understands, in ascending effort. One list, so a typo cannot become a level. */
+export const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+export function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value);
+}
+
+/** The level a record without an explicit choice inherits, from the one global setting. */
+async function defaultThinkingLevel(): Promise<ThinkingLevel> {
+  const config = await readConfig();
+  const level = config.defaults.thinkingLevel;
+  return isThinkingLevel(level) ? level : "medium";
+}
 
 /**
  * One agent is one directory at data/agents/<id>/ holding agent.json + AGENT.md + SOUL.md + MEMORY.md.
@@ -166,7 +181,7 @@ async function readRecord(id: string): Promise<AgentRecord | null> {
     name: typeof parsed.name === "string" && parsed.name ? parsed.name : id,
     provider: typeof parsed.provider === "string" && parsed.provider ? parsed.provider : fallback.provider,
     modelId: typeof parsed.modelId === "string" && parsed.modelId ? parsed.modelId : fallback.modelId,
-    thinkingLevel: parsed.thinkingLevel ?? "medium",
+    thinkingLevel: isThinkingLevel(parsed.thinkingLevel) ? parsed.thinkingLevel : await defaultThinkingLevel(),
     tools: Array.isArray(parsed.tools) ? parsed.tools.filter((tool) => typeof tool === "string") : [],
     vision: parsed.vision === "off" ? "off" : "auto",
     responsibility: typeof parsed.responsibility === "string" ? parsed.responsibility : undefined,
@@ -242,7 +257,7 @@ export async function writeAgent(input: AgentInput): Promise<AgentFiles> {
     name: input.name.trim() || id,
     provider: input.provider ?? existing?.provider ?? fallback.provider,
     modelId: input.modelId ?? existing?.modelId ?? fallback.modelId,
-    thinkingLevel: input.thinkingLevel ?? existing?.thinkingLevel ?? "medium",
+    thinkingLevel: input.thinkingLevel ?? existing?.thinkingLevel ?? (await defaultThinkingLevel()),
     tools: input.tools ?? existing?.tools ?? [...DEFAULT_AGENT_TOOLS],
     vision: input.vision ?? existing?.vision ?? "auto",
     responsibility: input.responsibility ?? existing?.responsibility,
@@ -275,6 +290,37 @@ export async function setAgentEnabled(id: string, enabled: boolean): Promise<Age
   const existing = await readRecord(id);
   if (!existing) return null;
   return writeAgent({ ...existing, id, enabled });
+}
+
+/**
+ * Set reasoning effort, globally or for one agent.
+ *
+ * The owner asked for one thinking level across every model, so the level is written in two places that
+ * must not disagree: the config default, which every agent without its own choice inherits and every new
+ * agent is created with, and the `thinkingLevel` of each existing agent record, which the harness reads
+ * per conversation. Writing only the default would leave every existing agent on its old level, which is
+ * exactly the case where the setting would look broken.
+ */
+export async function applyThinkingLevel(
+  level: ThinkingLevel,
+  options: { agentId?: string } = {},
+): Promise<{ level: ThinkingLevel; agents: string[] }> {
+  await updateConfig({ defaults: { thinkingLevel: level } });
+  const targets = options.agentId
+    ? (await readRecord(options.agentId)) ? [options.agentId] : []
+    : (await listAgents()).map((agent) => agent.id);
+  const changed: string[] = [];
+  for (const id of targets) {
+    const record = await readRecord(id);
+    if (!record) continue;
+    if (record.thinkingLevel === level) {
+      changed.push(id);
+      continue;
+    }
+    await writeAgent({ ...record, id, thinkingLevel: level });
+    changed.push(id);
+  }
+  return { level, agents: changed };
 }
 
 export async function deleteAgent(id: string): Promise<boolean> {
@@ -374,6 +420,25 @@ function workingSection(): string {
   ].join("\n");
 }
 
+/**
+ * The repair rule, on every request: a defect found while working is fixed after the task, then handed back
+ * to the owner as a restart question.
+ *
+ * Two things must stay true or the rule becomes harmful. The task comes first, because an owner waiting on an
+ * answer does not want it delayed by a refactor of something unrelated. And the restart is the owner's call:
+ * the running daemon keeps serving the old code, so only they know whether now is a good moment to interrupt.
+ */
+function repairSection(): string {
+  return [
+    "## Issues you find",
+    "",
+    "If doing your task shows you a real defect in the durable-agents system itself (its source checkout, tools, workflow or config), finish the task you were given first and answer it.",
+    "Then repair the defect in the same thread: make the smallest correct change, run `npm run check`, and report the files you changed.",
+    "Do not restart on your own. Ask the owner with the `question` tool whether to restart now (`Restart now` / `Not now`), and only on yes call `system_apply` to load the repair.",
+    "If the defect is unrelated to the task or the fix is risky, say what you found and let the owner decide instead of editing.",
+  ].join("\n");
+}
+
 /** Where this agent may write scripts, named explicitly so it never invents a shared directory. */
 function scratchSection(id: string): string {
   return [
@@ -392,6 +457,7 @@ export function renderInstructions(files: AgentFiles): string {
   const memory = memorySection(files.memoryMd);
   if (memory) parts.push(memory);
   parts.push(workingSection());
+  parts.push(repairSection());
   parts.push(scratchSection(files.record.id));
   return parts.join("\n\n");
 }

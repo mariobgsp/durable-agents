@@ -207,6 +207,8 @@ export type CreateAgentInput = {
   permissions?: AgentRecord["permissions"];
   cwd?: string;
   mesh?: AgentRecord["mesh"];
+  /** Reasoning effort; one name for it across the CLI, Telegram and the record. */
+  thinkingLevel?: AgentRecord["thinkingLevel"];
   telegramBot?: string | null;
   agentMd?: string;
   soulMd?: string;
@@ -257,6 +259,8 @@ export type UpdateAgentInput = {
   permissions?: AgentRecord["permissions"];
   cwd?: string;
   mesh?: AgentRecord["mesh"];
+  /** Reasoning effort; one name for it across the CLI, Telegram and the record. */
+  thinkingLevel?: AgentRecord["thinkingLevel"];
   telegramBot?: string | null;
   enabled?: boolean;
   caller?: string;
@@ -289,6 +293,7 @@ export async function updateAgent(input: UpdateAgentInput): Promise<AgentFiles> 
     permissions: input.permissions ?? files.record.permissions,
     cwd: input.cwd ?? files.record.cwd,
     mesh: input.mesh ?? files.record.mesh,
+    thinkingLevel: input.thinkingLevel ?? files.record.thinkingLevel,
     telegramBot: bot ?? null,
     enabled,
   });

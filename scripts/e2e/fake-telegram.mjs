@@ -65,6 +65,10 @@ export async function startFakeTelegram() {
           entry.deleted.push({ chatId: Number(body.chat_id), messageId: Number(body.message_id) });
           reply(response, 200, { ok: true, result: true });
           return;
+        case "sendRichMessage":
+          // Exercise the HTML fallback: rich messages are a live-API path, not a fake one.
+          reply(response, 400, { ok: false, error_code: 400, description: "Bad Request: unsupported rich message" });
+          return;
         case "sendChatAction":
         case "answerCallbackQuery":
           reply(response, 200, { ok: true, result: true });

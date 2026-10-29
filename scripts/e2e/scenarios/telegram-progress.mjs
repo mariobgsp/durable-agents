@@ -6,7 +6,7 @@ export default {
   async run() {
     const h = await startHarness({
       script: [
-        { toolCall: { name: "bash", arguments: { command: "printf hi" } } },
+        { toolCall: { name: "bash", arguments: { command: "sleep 1; printf hi" } } },
         { text: "finished" },
       ],
       agents: [{ id: "helper", name: "Helper" }],
@@ -14,11 +14,11 @@ export default {
     try {
       h.text("main", 100, "run one command");
       const progress = await h.waitFor(
-        () => h.fake.sent("main").find((message) => message.text.startsWith("Bash ·")),
+        () => h.fake.edits("main").find((entry) => entry.text.includes("bash:")),
         20_000,
-        "the brief tool progress line",
+        "the brief tool summary in the status bubble",
       );
-      assert.match(progress.text, /Bash · .+ · step 1/);
+      assert.match(progress.text, /bash: sleep 1/);
       await h.waitFor(
         () => h.fake.edits("main").find((entry) => entry.text.includes("finished")),
         20_000,
