@@ -122,8 +122,7 @@ export async function providerStatus(): Promise<
       const available = await models.getAvailable(id);
       ids = available
         .map((model) => (model as { id?: unknown }).id)
-        .filter((value): value is string => typeof value === "string")
-        .slice(0, 12);
+        .filter((value): value is string => typeof value === "string");
     } catch {
       ids = [];
     }

@@ -16,7 +16,11 @@ import { DocError, docHistory, readDoc, readDocs, writeDoc, type DocMode, type D
 import { errorFields, log } from "./logger.ts";
 import { reconcileMesh } from "./mesh.ts";
 import { agentResolver } from "./remember.ts";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { addMcpServer, mcpStatus, mcpToolInfos, removeMcpServer } from "./mcp.ts";
+import { repoRoot } from "./paths.ts";
+import { scheduleRestart } from "./system.ts";
 import { claimOrchestrator, isOrchestrator } from "./orchestrator.ts";
 import { deleteSchedulesForAgent, reconcileSchedules } from "./schedules.ts";
 import {
@@ -34,13 +38,20 @@ import {
 
 export type BotValidator = (label: string) => Promise<boolean>;
 export type BotLister = () => Promise<string[]>;
+/** Adds a bot from an owner-provided token, starts its poller and returns its identity. */
+export type BotConnector = (input: { token: string; label?: string }) => Promise<{ label: string; username: string }>;
 
 let validateBot: BotValidator = async () => true;
 let listBots: BotLister = async () => [];
+let connectBot: BotConnector | undefined;
 
 export function setBotResolver(resolver: { validate: BotValidator; list: BotLister }): void {
   validateBot = resolver.validate;
   listBots = resolver.list;
+}
+
+export function setBotConnector(connector: BotConnector | undefined): void {
+  connectBot = connector;
 }
 
 export type AdminEvent =
@@ -196,6 +207,8 @@ export type CreateAgentInput = {
   permissions?: AgentRecord["permissions"];
   cwd?: string;
   mesh?: AgentRecord["mesh"];
+  /** Reasoning effort; one name for it across the CLI, Telegram and the record. */
+  thinkingLevel?: AgentRecord["thinkingLevel"];
   telegramBot?: string | null;
   agentMd?: string;
   soulMd?: string;
@@ -246,6 +259,8 @@ export type UpdateAgentInput = {
   permissions?: AgentRecord["permissions"];
   cwd?: string;
   mesh?: AgentRecord["mesh"];
+  /** Reasoning effort; one name for it across the CLI, Telegram and the record. */
+  thinkingLevel?: AgentRecord["thinkingLevel"];
   telegramBot?: string | null;
   enabled?: boolean;
   caller?: string;
@@ -278,6 +293,7 @@ export async function updateAgent(input: UpdateAgentInput): Promise<AgentFiles> 
     permissions: input.permissions ?? files.record.permissions,
     cwd: input.cwd ?? files.record.cwd,
     mesh: input.mesh ?? files.record.mesh,
+    thinkingLevel: input.thinkingLevel ?? files.record.thinkingLevel,
     telegramBot: bot ?? null,
     enabled,
   });
@@ -854,6 +870,124 @@ export const mcpRemoveTool = defineTool({
   },
 });
 
+const execFileAsync = promisify(execFile);
+
+export const repoInfoTool = defineTool({
+  name: "repo_info",
+  description:
+    "Read the durable-agents source checkout: branch, working-tree status and recent commits. " +
+    "Use it before editing system code, then edit with the normal file tools.",
+  parameters: Type.Object({}),
+  async execute(_args, api) {
+    const guard = await requireOrchestrator(String(api.conversationId));
+    if (typeof guard !== "string") return guard;
+    try {
+      const [status, log] = await Promise.all([
+        execFileAsync("git", ["-C", repoRoot, "status", "--short", "--branch"], { maxBuffer: 1024 * 1024 }),
+        execFileAsync("git", ["-C", repoRoot, "log", "-3", "--oneline"], { maxBuffer: 1024 * 1024 }),
+      ]);
+      return {
+        output: [
+          {
+            type: "text" as const,
+            text:
+              "Repo: " + repoRoot + "\n" +
+              "Branch/status:\n" + (status.stdout.trim() || "(clean)") + "\n" +
+              "Recent commits:\n" + log.stdout.trim(),
+          },
+        ],
+        details: { repoRoot, status: status.stdout.trim(), log: log.stdout.trim() } as never,
+      };
+    } catch (error) {
+      return refusal(error instanceof Error ? error.message : String(error));
+    }
+  },
+});
+
+export const systemApplyTool = defineTool({
+  name: "system_apply",
+  description:
+    "Validate the durable-agents working tree with npm run check, then restart the service so the edited " +
+    "source and config take effect. Use after changing workflow, tools or system files. The restart is delayed " +
+    "so the answer can be delivered first.",
+  parameters: Type.Object({
+    check: Type.Optional(Type.Boolean({ description: "Run npm run check first; default true" })),
+    restart: Type.Optional(Type.Boolean({ description: "Restart after checks; default true" })),
+    delaySeconds: Type.Optional(Type.Number({ description: "Restart delay, default 15" })),
+  }),
+  async execute(args, api) {
+    const guard = await requireOrchestrator(String(api.conversationId));
+    if (typeof guard !== "string") return guard;
+    if (args.check !== false) {
+      try {
+        const result = await execFileAsync("npm", ["run", "check"], {
+          cwd: repoRoot,
+          timeout: 180_000,
+          maxBuffer: 4 * 1024 * 1024,
+        });
+        if (result.stdout.includes("check-language: clean") === false && result.stdout.trim() === "") {
+          throw new Error("check produced no output");
+        }
+      } catch (error) {
+        const detail = error as { stdout?: string; stderr?: string; message?: string };
+        const tail = (detail.stdout ?? "") + "\n" + (detail.stderr ?? "") + "\n" + (detail.message ?? "");
+        return refusal("npm run check failed; nothing was applied.\n" + tail.slice(-2000));
+      }
+    }
+    if (args.restart === false) {
+      return { output: [{ type: "text" as const, text: "Checks passed. Restart skipped; the working tree is not loaded yet." }] };
+    }
+    try {
+      const result = await scheduleRestart(args.delaySeconds ?? 15);
+      return {
+        output: [
+          {
+            type: "text" as const,
+            text: "Checks passed. Service restart: " + result.detail + ". The next process loads the working tree.",
+          },
+        ],
+      };
+    } catch (error) {
+      return refusal(error instanceof Error ? error.message : String(error));
+    }
+  },
+});
+
+export const botConnectTool = defineTool({
+  name: "bot_connect",
+  description:
+    "Connect a Telegram bot to an agent using a token the owner supplied. Never open a browser or the Telegram web app " +
+    "to obtain tokens: ask the owner for the token instead. The bot is started immediately and the agent is rebound.",
+  parameters: Type.Object({
+    agent: Type.String({ description: "Agent id" }),
+    token: Type.String({ description: "Bot token from @BotFather, provided by the owner" }),
+    label: Type.Optional(Type.String({ description: "Registry label; derived from the username when omitted" })),
+  }),
+  async execute(args, api) {
+    const guard = await requireOrchestrator(String(api.conversationId));
+    if (typeof guard !== "string") return guard;
+    if (!connectBot) return refusal("Bot connection is not available in this process.");
+    try {
+      const bot = await connectBot({ token: args.token, ...(args.label ? { label: args.label } : {}) });
+      const result = await assignBotToAgent(bot.label, args.agent, "orchestrator");
+      return {
+        output: [
+          {
+            type: "text" as const,
+            text:
+              "Bot @" + bot.username + " (" + bot.label + ") now belongs to " + args.agent +
+              (result.freed.length ? "; unpaired " + result.freed.join(", ") : "") +
+              ". Do not use a browser for this.",
+          },
+        ],
+        details: { label: bot.label, username: bot.username, agent: args.agent } as never,
+      };
+    } catch (error) {
+      return refusal(error instanceof Error ? error.message : String(error));
+    }
+  },
+});
+
 export const agentAdminTools: ToolRegistration[] = [
   agentAdminListTool,
   agentReadTool,
@@ -869,6 +1003,9 @@ export const agentAdminTools: ToolRegistration[] = [
   mcpListTool,
   mcpAddTool,
   mcpRemoveTool,
+  botConnectTool,
+  repoInfoTool,
+  systemApplyTool,
 ];
 
 export const agentAdminExtension = defineExtension({

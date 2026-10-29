@@ -62,6 +62,13 @@ export async function startFakeTelegram() {
           reply(response, 200, { ok: true, result: true });
           return;
         case "deleteMessage":
+          entry.deleted.push({ chatId: Number(body.chat_id), messageId: Number(body.message_id) });
+          reply(response, 200, { ok: true, result: true });
+          return;
+        case "sendRichMessage":
+          // Exercise the HTML fallback: rich messages are a live-API path, not a fake one.
+          reply(response, 400, { ok: false, error_code: 400, description: "Bad Request: unsupported rich message" });
+          return;
         case "sendChatAction":
         case "answerCallbackQuery":
           reply(response, 200, { ok: true, result: true });
@@ -130,7 +137,7 @@ export async function startFakeTelegram() {
   return {
     base,
     addBot({ label, username, id, token }) {
-      const record = { id: String(id), username, label, updates: [], sent: [], edits: [], documents: [], commandSets: [], commandDeletes: [], menuButton: null, nextId: 1000 };
+      const record = { id: String(id), username, label, updates: [], sent: [], edits: [], deleted: [], documents: [], commandSets: [], commandDeletes: [], menuButton: null, nextId: 1000 };
       bots.set(token, record);
       tokenByLabel.set(label, token);
       return token;
@@ -148,6 +155,9 @@ export async function startFakeTelegram() {
     },
     documents(label) {
       return botFor(tokenByLabel.get(label)).documents;
+    },
+    deletedMessages(label) {
+      return botFor(tokenByLabel.get(label)).deleted;
     },
     commandSets(label) {
       return botFor(tokenByLabel.get(label)).commandSets;

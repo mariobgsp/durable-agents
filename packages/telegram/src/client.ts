@@ -8,6 +8,22 @@ import type { BotCommand, CommandScope, TgResponse, TgUpdate, TgMe, TgMessage, T
  * No dependency: the surface is deliberately the dozen methods this app uses.
  */
 
+/**
+ * The words of an HTML message, for the retry that has to deliver it without markup.
+ *
+ * Deliberately dumb: strip tags, decode the entities this codebase emits. Anything fancier would need a
+ * parser to be correct, and this is a last-resort path where readable text beats accurate formatting.
+ */
+export function plainText(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
 export class TelegramError extends Error {
   readonly status: number;
   readonly code: string;
@@ -62,8 +78,14 @@ export class BotApi {
     if (slot > now) await new Promise((done) => setTimeout(done, slot - now));
   }
 
-  async call<T>(method: string, params: Record<string, unknown> = {}, timeoutMs = 30_000, signal?: AbortSignal): Promise<T> {
-    for (let attempt = 0; attempt < 4; attempt += 1) {
+  async call<T>(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs = 30_000,
+    signal?: AbortSignal,
+    attempts = 4,
+  ): Promise<T> {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       await this.pace();
       let response: Response;
       try {
@@ -79,7 +101,7 @@ export class BotApi {
           signal?.aborted === true ||
           (typeof error === "object" && error !== null && (error as { name?: unknown }).name === "AbortError");
         if (aborted) throw new TelegramError(0, "aborted", method + " aborted");
-        if (attempt === 3) throw new TelegramError(0, "network", method + " failed: " + String(error));
+        if (attempt === attempts - 1) throw new TelegramError(0, "network", method + " failed: " + String(error));
         this.report?.("warn", "telegram network error", { bot: this.label, method, attempt: attempt + 1 });
         await new Promise((done) => setTimeout(done, 500 * (attempt + 1)));
         continue;
@@ -87,12 +109,12 @@ export class BotApi {
       const payload = (await response.json().catch(() => ({}))) as TgResponse<T>;
       if (payload.ok) return payload.result as T;
       const retryAfter = payload.parameters?.retry_after;
-      if (response.status === 429 && retryAfter !== undefined && attempt < 3) {
+      if (response.status === 429 && retryAfter !== undefined && attempt < attempts - 1) {
         this.report?.("warn", "telegram rate limited", { bot: this.label, method, retryAfter });
         await new Promise((done) => setTimeout(done, (retryAfter + 1) * 1000));
         continue;
       }
-      if (response.status >= 500 && attempt < 3) {
+      if (response.status >= 500 && attempt < attempts - 1) {
         this.report?.("warn", "telegram server error", { bot: this.label, method, status: response.status });
         await new Promise((done) => setTimeout(done, 700 * (attempt + 1)));
         continue;
@@ -111,7 +133,9 @@ export class BotApi {
     return this.call<TgMe>("getMe");
   }
 
-  async getUpdates(offset: number, timeoutSeconds = 50, signal?: AbortSignal): Promise<TgUpdate[]> {
+  async getUpdates(offset: number, timeoutSeconds = 20, signal?: AbortSignal): Promise<TgUpdate[]> {
+    // One attempt: a stalled long-poll belongs to the poll loop, which backs off and reconnects.
+    // Retrying it four times inside the client makes a dead connection look alive for minutes.
     const result = await this.call<TgUpdate[]>(
       "getUpdates",
       {
@@ -119,15 +143,16 @@ export class BotApi {
         timeout: timeoutSeconds,
         allowed_updates: ["message", "callback_query", "my_chat_member"],
       },
-      (timeoutSeconds + 15) * 1000,
+      (timeoutSeconds + 10) * 1000,
       signal,
+      1,
     );
     if (signal?.aborted) return [];
     return result;
   }
 
   async sendMessage(chatId: number | string, html: string, options: SendOptions = {}): Promise<TgMessage> {
-    return this.call<TgMessage>("sendMessage", {
+    return this.deliver<TgMessage>("sendMessage", {
       chat_id: chatId,
       text: html,
       parse_mode: "HTML",
@@ -138,8 +163,46 @@ export class BotApi {
     });
   }
 
+  /**
+   * Send, and if Telegram rejects the HTML, send the same text as plain text instead.
+   *
+   * One malformed tag anywhere in a message — `<agent-id>`, `<level>`, a model quoting markup — used to lose
+   * the whole message with nothing but a log line. The message is worth more than its formatting, so the
+   * retry strips the markup and delivers the words.
+   */
+  private async deliver<T>(method: string, params: Record<string, unknown>): Promise<T> {
+    try {
+      return await this.call<T>(method, params);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/can't parse entities|unsupported start tag/i.test(message)) throw error;
+      const { parse_mode: _drop, ...rest } = params;
+      this.report?.("warn", "telegram entity fallback", { bot: this.label, method });
+      return this.call<T>(method, { ...rest, text: plainText(String(rest.text ?? "")) });
+    }
+  }
+
+  /**
+   * Telegram Rich Messages: one InputRichMessage object (markdown, html or blocks) sent as rich_message.
+   * Callers must fall back to sendMessage(parse_mode HTML) when the method is not available.
+   */
+  async sendRichMessage(
+    chatId: number | string,
+    rich: { markdown?: string; html?: string },
+    options: { threadId?: number; replyTo?: number } = {},
+  ): Promise<TgMessage> {
+    return this.call<TgMessage>("sendRichMessage", {
+      chat_id: chatId,
+      rich_message: rich,
+      ...(options.threadId ? { message_thread_id: options.threadId } : {}),
+      ...(options.replyTo
+        ? { reply_parameters: { message_id: options.replyTo, allow_sending_without_reply: true } }
+        : {}),
+    });
+  }
+
   async editMessage(chatId: number | string, messageId: number, html: string, keyboard?: InlineKeyboard): Promise<TgMessage | true> {
-    return this.call<TgMessage | true>("editMessageText", {
+    return this.deliver<TgMessage | true>("editMessageText", {
       chat_id: chatId,
       message_id: messageId,
       text: html,

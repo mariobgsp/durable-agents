@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import type { ChildProcess } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -99,6 +100,7 @@ export class OperationBusyError extends Error {
 const LOG_LINES = 60;
 const LOG_LINE_CHARS = 500;
 const UPDATE_TIMEOUT_MS = 15 * 60_000;
+const execFileAsync = promisify(execFile);
 const PI_PACKAGES = [
   "@earendil-works/chord",
   "@earendil-works/pi-ai",
@@ -460,6 +462,7 @@ export function startOperation(kind: "update" | "restart"): Operation {
   if (kind === "restart") {
     const supervisor = facts.supervisor;
     settle(operation, supervisor === "none" ? { name: "stopped" } : { name: "restarting", supervisor });
+    void scheduleRestart(1.5).catch((error) => console.error("could not schedule the restart:", String(error)));
     return operation;
   }
 
@@ -475,6 +478,46 @@ export function startOperation(kind: "update" | "restart"): Operation {
  * Called from the route after the response has been flushed (`reply.raw.once("finish")`), so the client
  * receives the operation instead of a dropped connection.
  */
+/**
+ * Restart the service without the daemon having to survive its own replacement.
+ *
+ * Under systemd a transient timer fires outside this unit's cgroup; if systemd-run is unavailable the
+ * daemon stops cleanly and Restart=always brings it back. This is what makes edited source files take
+ * effect: the next process loads the same working tree.
+ */
+export async function scheduleRestart(delaySeconds = 2): Promise<{ scheduled: boolean; detail: string }> {
+  if (process.env.DURA_E2E === "1") return { scheduled: false, detail: "e2e dry-run; restart not performed" };
+  if (!facts) throw new Error("system not open: call openSystem() first");
+  if (facts.supervisor === "systemd") {
+    try {
+      await execFileAsync(
+        "systemd-run",
+        [
+          "--user",
+          "--collect",
+          "--on-active=" + Math.max(1, Math.ceil(delaySeconds)),
+          "--unit=dura-restart-" + Date.now(),
+          "systemctl",
+          "--user",
+          "restart",
+          "dura.service",
+        ],
+        { timeout: 5_000 },
+      );
+      return { scheduled: true, detail: "systemd timer armed in " + Math.max(1, Math.ceil(delaySeconds)) + "s" };
+    } catch {
+      // Fall through to a clean stop: Restart=always starts the new process.
+    }
+  }
+  setTimeout(() => {
+    void hooks?.stop();
+  }, Math.max(1, delaySeconds) * 1_000).unref?.();
+  return {
+    scheduled: false,
+    detail: facts.supervisor === "none" ? "stopping; no supervisor, start it manually" : "stopping; systemd will restart it",
+  };
+}
+
 export async function performRestart(): Promise<void> {
   await persist();
   if (facts?.supervisor === "dev") {

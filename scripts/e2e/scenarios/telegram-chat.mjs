@@ -17,7 +17,7 @@ export default {
       );
       assert.ok(edit, "final edit");
       assert.ok(
-        h.fake.sent("main").some((message) => message.text.includes("working")),
+        h.fake.sent("main").some((message) => message.text.includes("Think")),
         "a placeholder was sent before the answer",
       );
       const sessions = await h.client.request("sessions.list");

@@ -87,8 +87,10 @@ Global flags: `--json`, `--home <path>`, `--help`, `--version`. Exit codes: 0 ok
 **One bot is one agent.** Each Telegram bot belongs to exactly one agent; a message to that bot goes to that agent,
 never to a shared roster. `/new` starts a thread, `/threads` lists the agent's threads, and replies route to the
 thread that produced the message. An agent without a bot is not unreachable: the orchestrator can message or
-delegate to it. Adding a bot creates a pairing job: `dura bot connect <label> <agent>`, `/bots` for buttons, or ask
-the orchestrator to connect it. An unpaired bot answers the owner with a pairing prompt and refuses everyone else.
+delegate to it. Adding a bot creates a pairing job: `/connect <agent> <token>` (the token message is deleted),
+`dura bot add --token … --agent <id>`, `dura bot connect <label> <agent>`, `/bots` for buttons, or ask the
+orchestrator to `bot_connect` it with a token. An unpaired bot answers the owner with a pairing prompt and refuses
+everyone else. No browser or Telegram web automation is needed for connection; the token is the input.
 
 Groups can be bound to a durable group thread (`/bind <id>`); the group keeps its nyahut/moderator/silent modes
 and one speaker bot. A group is the deliberate multi-agent surface; direct chats are strictly one-to-one.
@@ -97,10 +99,13 @@ The command menu is scoped and rewritten on every start, so an older integration
 `/new` (thread), `/threads`, `/plan [goal]` (plan without executing), `/model` (show, or choose a model from
 buttons for the current thread), `/usage`, `/reload` (owner: tools and thread rebind), `/restart` (owner:
 service restart, with confirmation), `/agents`, `/memory`, `/schedules`, `/group`, `/bind`, `/status`,
-`/whoami`, `/compact`, `/abort`, `/grant`, `/orchestrator`, `/bots`, `/settings`, `/mcp`, `/prune`, `/help`.
-Answers stream by editing one status message; the final edit carries the answer, a run summary (duration, tokens,
-cost) and any
-generated files. The `question` tool renders inline buttons.
+`/whoami`, `/compact`, `/stop`, `/abort`, `/grant`, `/connect`, `/orchestrator`, `/bots`, `/settings`, `/mcp`,
+`/prune`, `/help`.
+Each message gets a brief `Think · planning the next step` placeholder plus short DSH-style progress lines
+(`Bash · running a command · step 1`). A message sent while the run is live is **steered** into it
+(`Steer · added to the current run`). Final answers use Telegram **Rich Messages** (GFM headings, tables, task lists,
+long code, up to 30k characters) when the API supports them, with HTML as fallback; generated files follow.
+`/stop` aborts the active run and withdraws queued messages. The `question` tool renders inline buttons.
 
 The allowlist is global across bots. Unknown users are refused, queued as pending, and the owner gets
 Approve/Block buttons. A bot cannot add members to a group itself; `dura user invite --chat <id>` prints a
@@ -124,9 +129,22 @@ Any agent can ask to take the role with `orchestrator_claim`. If no orchestrator
 once and the owner is notified; if one exists the owner gets Approve/Deny buttons in Telegram. An approved claim
 rebinds the conversations so the administrative tools move immediately.
 
-The orchestrator also owns the bot-to-agent map: `bot_list`, `bot_assign` and `bot_release` let it connect a newly
-added bot to an unpaired agent (release the previous holder, rebind both), which is the "sync and connect" path when
-the owner adds another bot.
+The orchestrator also owns the bot-to-agent map: `bot_list`, `bot_assign`, `bot_release` and `bot_connect`. The last
+one takes an owner-provided bot token, starts the poller, pairs the agent and rebinds both sides; it never opens a
+browser or Telegram web. That is the "sync and connect" path when the owner adds another bot.
+
+## Models
+
+The provider catalog is the full pi-ai catalog, not a shortlist: `opencode-go` alone exposes 29 models in this
+version. Telegram's `/model` shows every model in pages of ten (Prev/Next), and `/model provider/model` accepts any
+id directly. `dura provider models opencode-go` prints the full table for scripts.
+
+## Orchestrator edits the system
+
+The orchestrator can read and edit the durable-agents checkout like any other file tree. `repo_info` shows the
+branch and working-tree changes, and `system_apply` runs `npm run check` and then restarts the service. Because the
+systemd unit runs from the same checkout, the restart loads the edited source and config. A failed check applies
+nothing. This is meant for workflow and system changes, not for replacing the owner's uncommitted work.
 
 ## MCP (global)
 
@@ -228,7 +246,7 @@ sudo operation, and never overwrites a custom value. This host already had zram0
 
 ```bash
 npm run check     # tsc + language lint
-npm run e2e       # eighteen daemon-driven scenarios, offline
+npm run e2e       # twenty-three daemon-driven scenarios, offline
 npm run bench     # the five-agent memory gate
 ```
 
@@ -236,8 +254,9 @@ The E2E harness starts a real daemon in a temporary home with the faux provider 
 Telegram updates and inspects the resulting messages, edits, callbacks, files and SQLite state. Scenarios:
 `init-wizard`, `provider-catalog`, `command-scopes`, `telegram-chat`, `telegram-question`, `telegram-plan`,
 `telegram-admin-commands`, `bot-pairing`, `telegram-orchestrator`, `orchestrator-docs`, `orchestrator-claim`,
-`orchestrator-claim-approval`, `mcp-global`, `memory-tool`, `thread-prune`, `retention`, `verify`, `tui-json`.
-`verify` is also tested against the real API on this machine: bot @samriobot, opencode-go, a live
+`orchestrator-claim-approval`, `orchestrator-repo`, `mcp-global`, `memory-tool`, `thread-prune`, `retention`,
+`telegram-stop`, `telegram-steer`, `telegram-progress`, `bot-token-connect`, `verify`, `tui-json`. `verify` is also tested against the real API on this machine:
+bot @samriobot, opencode-go, a live
 agent answer in ~2.8 s.
 
 ## Migrating from the web version

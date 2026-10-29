@@ -10,12 +10,12 @@ export default {
     });
     try {
       h.text("main", 100, "ask me");
-      const edit = await h.waitFor(
-        () => h.fake.edits("main").find((entry) => entry.text.includes("Pick a fruit")),
+      const question = await h.waitFor(
+        () => h.fake.sent("main").find((entry) => entry.text.includes("Pick a fruit")),
         25_000,
-        "the question edit",
+        "the question message",
       );
-      assert.ok(edit.replyMarkup?.inline_keyboard?.length > 0, "the question carries option buttons");
+      assert.ok(question.replyMarkup?.inline_keyboard?.length > 0, "the question carries option buttons");
       const sessions = await h.client.request("sessions.list");
       const sessionId = sessions[0].id;
 
@@ -25,7 +25,7 @@ export default {
           id: "callback-1",
           from: { id: 100, is_bot: false, username: "owner" },
           message: {
-            message_id: edit.messageId,
+            message_id: question.messageId,
             date: Math.floor(Date.now() / 1000),
             chat: { id: 100, type: "private" },
             text: "Pick a fruit",

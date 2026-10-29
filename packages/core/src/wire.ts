@@ -98,6 +98,8 @@ export type WireTool = {
   callId: string;
   name: string;
   status: "pending" | "running" | "done";
+  /** What the call is doing, in a few words read from its own arguments (`bash: git status`). */
+  summary?: string;
   /** Retained running output; absent for a call that has produced none yet. */
   output?: string;
   /** An error-severity diagnostic on this call. */
@@ -126,6 +128,8 @@ export type WireActivity = {
   counts: { pending: number; running: number; done: number; nested: number };
   /** Inputs admitted and waiting for the next boundary. Ids and modes only, never their content. */
   queued: { requestId: string; mode: "steer" | "followUp" }[];
+  /** The reasoning in flight, trimmed to a phrase of at most ten words; absent when there is none. */
+  thinking?: string;
   attempt?: number;
   /** Set while a durable retry backoff is running, so the UI can say why it is waiting. */
   retryAt?: number;
