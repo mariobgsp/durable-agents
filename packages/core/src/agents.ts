@@ -116,7 +116,7 @@ function emitAgents(): void {
 }
 
 /** What a new agent gets: the same tool set pi ships with, including code mode. */
-export const DEFAULT_AGENT_TOOLS = ["read", "write", "edit", "bash", "terminal", "coding", "codemode"] as const;
+export const DEFAULT_AGENT_TOOLS = ["read", "write", "edit", "bash", "terminal", "coding", "codemode", "discord"] as const;
 
 export const AGENT_TEMPLATE = `# Role
 

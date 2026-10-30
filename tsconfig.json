@@ -11,6 +11,7 @@
   "include": [
     "packages/core/src/**/*.ts",
     "packages/telegram/src/**/*.ts",
+    "packages/discord/src/**/*.ts",
     "packages/cli/src/**/*.ts",
     "packages/cli/bin/**/*.ts",
     "scripts/**/*.mjs"

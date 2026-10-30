@@ -1,5 +1,8 @@
 # Telegram transport
 
+Active only when `chat.active = "telegram"`. Discord is the other surface; it must never be started in the same
+daemon process.
+
 ## Pollers
 
 One `getUpdates` loop per enabled bot, with its own offset, backoff and health record in `telegram/state.json`.

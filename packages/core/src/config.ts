@@ -6,7 +6,7 @@ import type { ThinkingLevel } from "./agents.ts";
 
 /**
  * The one configuration file. It holds no secrets: provider keys live in credentials.json and bot
- * tokens in secrets/telegram.json, both mode 0600. Everything here is safe to print.
+ * tokens in secrets/telegram.json or secrets/discord.json, both mode 0600. Everything here is safe to print.
  *
  * Writes are temp-file + rename so a crash cannot leave a half-written config, and unknown keys are
  * preserved so a newer build's field is not deleted by an older one.
@@ -34,6 +34,36 @@ export type TelegramConfig = {
   askBotOnAgentCreate: boolean;
 };
 
+/** The one chat surface a daemon starts. Telegram and Discord are deliberately exclusive. */
+export type ChatPlatform = "telegram" | "discord";
+
+export const CHAT_PLATFORMS: readonly ChatPlatform[] = ["telegram", "discord"];
+
+export function isChatPlatform(value: unknown): value is ChatPlatform {
+  return value === "telegram" || value === "discord";
+}
+
+export type DiscordConfig = {
+  apiBase: string;
+  gatewayUrl: string;
+  defaultBot: string;
+  /** Refuse guild channels entirely; DMs still work. */
+  allowGuilds: boolean;
+  /** In an unbound guild channel, answer only to commands and @mentions. */
+  requireMention: boolean;
+  editIntervalMs: number;
+  /** Fallback notification target when the owner cannot be DM'd. */
+  ownerChannelId: string | null;
+  /** Install the agent-facing discord tool while Discord is active. */
+  agentTools: boolean;
+  moderation: {
+    auditChannelId: string | null;
+    dmTargets: boolean;
+    /** Allow agents to call the destructive moderate action. */
+    agentTools: boolean;
+  };
+};
+
 export type SetupState = {
   completed: string[];
   verifiedAt: number | null;
@@ -58,7 +88,10 @@ export type DuraConfig = {
     thinkingLevel: ThinkingLevel;
   };
   limits: Limits;
+  /** Exactly one chat surface is active; the other platform's config stays on disk but is not started. */
+  chat: { active: ChatPlatform };
   telegram: TelegramConfig;
+  discord: DiscordConfig;
   storage: { auto: boolean; pruneAfterDays: number; purgeAfterDays: number; intervalHours: number };
   logging: { level: "debug" | "info" | "warn" | "error"; maxBytes: number; keep: number };
   service: { systemd: boolean };
@@ -68,7 +101,7 @@ export type DuraConfig = {
 
 export const DEFAULT_TOOLS = [
   "read", "write", "edit", "bash", "terminal", "coding", "codemode",
-  "browser", "vault", "question",
+  "browser", "vault", "question", "discord",
   "create_file", "create_pdf", "publish_file",
 ];
 
@@ -98,6 +131,7 @@ export function defaultConfig(): DuraConfig {
       codemodeMemoryMb: 128,
       browserIdleMinutes: 5,
     },
+    chat: { active: "telegram" },
     telegram: {
       apiBase: process.env.DURA_TELEGRAM_API_BASE ?? "https://api.telegram.org",
       defaultBot: "main",
@@ -107,6 +141,17 @@ export function defaultConfig(): DuraConfig {
       broadcastBoot: true,
       notifyOnAgentDocChange: true,
       askBotOnAgentCreate: true,
+    },
+    discord: {
+      apiBase: process.env.DURA_DISCORD_API_BASE ?? "https://discord.com/api/v10",
+      gatewayUrl: process.env.DURA_DISCORD_GATEWAY_URL ?? "wss://gateway.discord.gg",
+      defaultBot: "main",
+      allowGuilds: true,
+      requireMention: true,
+      editIntervalMs: 2500,
+      ownerChannelId: null,
+      agentTools: true,
+      moderation: { auditChannelId: null, dmTargets: true, agentTools: false },
     },
     logging: { level: "info", maxBytes: 5 * 1024 * 1024, keep: 3 },
     storage: { auto: true, pruneAfterDays: 3, purgeAfterDays: 3, intervalHours: 6 },
@@ -172,6 +217,11 @@ export async function readConfig(options: { fresh?: boolean } = {}): Promise<Dur
   merged.version = 1;
   merged.setup ??= { completed: [], verifiedAt: null };
   merged.setup.completed ??= [];
+  // A hand-edited file may have lost a section; restore the shape without overriding a bad active value
+  // (validateConfig reports that, so the operator can still read the file to fix it).
+  merged.chat ??= { active: "telegram" };
+  merged.discord ??= defaultConfig().discord;
+  merged.discord.moderation ??= defaultConfig().discord.moderation;
   cached = merged;
   cachedAt = Date.now();
   return merged;
@@ -193,7 +243,11 @@ export type ConfigPatch = {
   models?: Partial<DuraConfig["models"]>;
   defaults?: Partial<DuraConfig["defaults"]>;
   limits?: Partial<DuraConfig["limits"]>;
+  chat?: Partial<DuraConfig["chat"]>;
   telegram?: Partial<DuraConfig["telegram"]>;
+  discord?: Partial<DuraConfig["discord"]> & {
+    moderation?: Partial<DuraConfig["discord"]["moderation"]>;
+  };
   logging?: Partial<DuraConfig["logging"]>;
   storage?: Partial<DuraConfig["storage"]>;
   service?: Partial<DuraConfig["service"]>;
@@ -210,7 +264,13 @@ export async function updateConfig(patch: ConfigPatch): Promise<DuraConfig> {
     models: { ...current.models, ...(patch.models ?? {}) },
     defaults: { ...current.defaults, ...(patch.defaults ?? {}) },
     limits: { ...current.limits, ...(patch.limits ?? {}) },
+    chat: { ...current.chat, ...(patch.chat ?? {}) },
     telegram: { ...current.telegram, ...(patch.telegram ?? {}) },
+    discord: {
+      ...current.discord,
+      ...(patch.discord ?? {}),
+      moderation: { ...current.discord.moderation, ...(patch.discord?.moderation ?? {}) },
+    },
     logging: { ...current.logging, ...(patch.logging ?? {}) },
     storage: { ...current.storage, ...(patch.storage ?? {}) },
     service: { ...current.service, ...(patch.service ?? {}) },
@@ -253,4 +313,67 @@ export function home(): string {
 /** Resolve the default working directory (a leading ~ is expanded). */
 export function defaultCwd(config: DuraConfig): string {
   return expandHome(config.defaults.cwd);
+}
+
+/** The completion key for one chat surface. Telegram's legacy key is still accepted when it is active. */
+export function surfaceStep(platform: ChatPlatform): string {
+  return "chat:" + platform;
+}
+
+export function isSurfaceComplete(config: DuraConfig, platform: ChatPlatform): boolean {
+  if (config.setup.completed.includes(surfaceStep(platform))) return true;
+  return platform === "telegram" && config.setup.completed.includes("telegram");
+}
+
+/** The platform the daemon should start. Always exactly one. */
+export function activeChatPlatform(config: DuraConfig): ChatPlatform {
+  return config.chat.active;
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "::1" || hostname === "localhost";
+}
+
+function urlProblem(value: string, protocols: readonly string[], label: string, allowLoopbackWs = false): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return label + " is not a valid URL: " + value;
+  }
+  if (!protocols.includes(parsed.protocol)) {
+    return label + " must use " + protocols.join(" or ") + ": " + value;
+  }
+  if (allowLoopbackWs && parsed.protocol === "ws:" && !isLoopbackHost(parsed.hostname)) {
+    return label + " must use wss:// outside loopback tests: " + value;
+  }
+  return undefined;
+}
+
+/**
+ * Structural validation for the settings that select a transport. Kept separate from readConfig so a
+ * broken edit can still be inspected with `dura config get`, while start/verify refuse to run on it.
+ */
+export function validateConfig(config: DuraConfig): string[] {
+  const problems: string[] = [];
+  if (!isChatPlatform(config.chat?.active)) {
+    problems.push("chat.active must be telegram or discord (got " + JSON.stringify(config.chat?.active) + ")");
+  }
+  const discord = config.discord;
+  if (!discord || typeof discord !== "object") {
+    problems.push("discord must be an object");
+    return problems;
+  }
+  const api = urlProblem(discord.apiBase, ["http:", "https:"], "discord.apiBase");
+  if (api) problems.push(api);
+  const gateway = urlProblem(discord.gatewayUrl, ["ws:", "wss:"], "discord.gatewayUrl", true);
+  if (gateway) problems.push(gateway);
+  if (!Number.isFinite(discord.editIntervalMs) || discord.editIntervalMs <= 0) {
+    problems.push("discord.editIntervalMs must be a positive number");
+  }
+  for (const [key, value] of Object.entries(config.limits ?? {})) {
+    if (!Number.isFinite(value) || value <= 0) problems.push("limits." + key + " must be a positive number");
+  }
+  if (!Array.isArray(config.setup?.completed)) problems.push("setup.completed must be an array");
+  return problems;
 }

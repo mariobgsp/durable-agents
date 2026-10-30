@@ -7,11 +7,12 @@
 #   systemctl --user enable --now dura
 #   loginctl enable-linger "$USER"
 #
-# The daemon has no TCP listener: it talks to Telegram outbound and to the CLI over ~/.dura-file/run/daemon.sock.
+# The daemon has no TCP listener: it talks to Telegram or the Discord Gateway outbound and to the CLI over
+# ~/.dura-file/run/daemon.sock. Exactly one chat surface is active (config chat.active).
 # Provider keys and bot tokens live in 0600 files, never in this unit.
 
 [Unit]
-Description=dura-agents daemon (CLI + Telegram bots)
+Description=dura-agents daemon (CLI + one chat surface)
 After=network-online.target
 Wants=network-online.target
 

@@ -42,7 +42,7 @@ import {
   runScheduleNow,
   updateSchedule,
 } from "./schedules.ts";
-import { disposeSystem, openSystem, startOperation, systemSnapshot } from "./system.ts";
+import { announceLeaving, disposeSystem, openSystem, startOperation, systemSnapshot } from "./system.ts";
 import { verifyConnection, type Check } from "./verify.ts";
 import { chmod } from "node:fs/promises";
 import {
@@ -56,9 +56,9 @@ import {
 
 /**
  * The daemon: one process that owns the harness, SQLite, the scheduler, the run limiter, the local
- * control socket and — supplied by the caller — the Telegram pollers. It has no TCP listener.
+ * control socket and — supplied by the caller — the one active chat transport. It has no TCP listener.
  *
- * The CLI and the TUI speak to it over the Unix socket. The Telegram transport runs in-process and
+ * The CLI and the TUI speak to it over the Unix socket. The active transport runs in-process and
  * imports the core services directly, so a chat message never goes through the control socket.
  */
 
@@ -162,7 +162,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
   await openSystem({
     reloadTools: () => reloadTools(),
     stop: async () => {
-      await stop(0);
+      await stop(0, "restart");
     },
   });
 
@@ -235,7 +235,7 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       storage: await storageReport(),
     }),
     shutdown: async () => {
-      setTimeout(() => void stop(0), 50).unref();
+      setTimeout(() => void stop(0, "dura stop"), 50).unref();
       return { ok: true };
     },
     reload: async () => {
@@ -425,7 +425,13 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       return { level };
     },
     "system.update": async () => startOperation("update"),
-    "system.restart": async () => startOperation("restart"),
+    "system.restart": async (params) =>
+      startOperation("restart", {
+        cause: str(params, "cause", "/restart"),
+        ...(str(params, "sessionId") ? { sessionId: str(params, "sessionId") } : {}),
+        ...(str(params, "agentId") ? { agentId: str(params, "agentId") } : {}),
+        ...(typeof params.delaySeconds === "number" ? { delaySeconds: params.delaySeconds } : {}),
+      }),
     "system.snapshot": async () => systemSnapshot(),
 
     "providers.list": async () => providerStatus(),
@@ -463,11 +469,15 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
   });
 
   let stopping: Promise<void> | undefined;
-  async function stop(code = 0): Promise<void> {
+  async function stop(code = 0, cause = "shutdown"): Promise<void> {
     if (stopping) return stopping;
     stopping = (async () => {
       stopped = true;
-      log.info("daemon.stop", { code });
+      log.info("daemon.stop", { code, cause });
+      // The transports are still holding their sockets: this is the last moment the owner can be told why
+      // the bot goes quiet. Bounded and failure-tolerant, so a mute chat cannot keep the process alive.
+      // `cause` is what the chat reads when nothing planned this exit — "stop" told the owner nothing.
+      await announceLeaving({ cause }).catch((error) => log.warn("daemon.announce_failed", errorFields(error)));
       for (const unsubscribe of stopUnsubscribers) unsubscribe();
       if (fleetTimer) clearTimeout(fleetTimer);
       subscriptions.clear();
@@ -496,13 +506,13 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     await options.onReady?.();
   } catch (error) {
     log.error("daemon.start_failed", errorFields(error));
-    await stop(1);
+    await stop(1, "startup failed");
     throw error;
   }
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
-      void stop(0);
+      void stop(0, signal);
     });
   }
 

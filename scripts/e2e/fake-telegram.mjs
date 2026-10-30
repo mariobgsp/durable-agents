@@ -70,10 +70,16 @@ export async function startFakeTelegram() {
           reply(response, 400, { ok: false, error_code: 400, description: "Bad Request: unsupported rich message" });
           return;
         case "sendChatAction":
+          // Kept: the typing indicator is behaviour, not noise — a run that shows "typing…" once and then
+          // looks idle for a minute is the bug this records.
+          entry.actions.push({ chatId: Number(body.chat_id), action: String(body.action ?? ""), at: Date.now() });
+          reply(response, 200, { ok: true, result: true });
+          return;
         case "answerCallbackQuery":
           reply(response, 200, { ok: true, result: true });
           return;
         case "getUpdates": {
+          entry.pollCount += 1;
           const offset = Number(body.offset ?? 0);
           const due = entry.updates.filter((update) => update.update_id >= offset);
           const finish = () => {
@@ -137,7 +143,7 @@ export async function startFakeTelegram() {
   return {
     base,
     addBot({ label, username, id, token }) {
-      const record = { id: String(id), username, label, updates: [], sent: [], edits: [], deleted: [], documents: [], commandSets: [], commandDeletes: [], menuButton: null, nextId: 1000 };
+      const record = { id: String(id), username, label, updates: [], sent: [], edits: [], deleted: [], documents: [], actions: [], commandSets: [], commandDeletes: [], menuButton: null, nextId: 1000, pollCount: 0 };
       bots.set(token, record);
       tokenByLabel.set(label, token);
       return token;
@@ -156,8 +162,14 @@ export async function startFakeTelegram() {
     documents(label) {
       return botFor(tokenByLabel.get(label)).documents;
     },
+    actions(label) {
+      return botFor(tokenByLabel.get(label)).actions;
+    },
     deletedMessages(label) {
       return botFor(tokenByLabel.get(label)).deleted;
+    },
+    pollCount(label) {
+      return botFor(tokenByLabel.get(label)).pollCount;
     },
     commandSets(label) {
       return botFor(tokenByLabel.get(label)).commandSets;
@@ -173,6 +185,7 @@ export async function startFakeTelegram() {
       entry.sent.length = 0;
       entry.edits.length = 0;
       entry.documents.length = 0;
+      entry.actions.length = 0;
     },
     async close() {
       for (const socket of sockets) socket.destroy();

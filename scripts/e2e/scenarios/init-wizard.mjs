@@ -42,7 +42,7 @@ export default {
       assert.equal(result.code, 0, result.output);
       const config = JSON.parse(await readFile(resolve(home, "config.json"), "utf8"));
       assert.equal(config.orchestrator.agentId, "orchestrator");
-      for (const step of ["agents", "provider", "telegram", "service"]) {
+      for (const step of ["agents", "provider", "chat:telegram", "service"]) {
         assert.ok(config.setup.completed.includes(step), step + " completed");
       }
       assert.ok(!config.setup.completed.includes("test"), "test was skipped");

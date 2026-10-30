@@ -44,6 +44,11 @@ async function apiFor(label: string): Promise<{ api: BotApi; token: string }> {
 }
 
 export async function runBot(parsed: Parsed): Promise<void> {
+  const active = await readConfig();
+  if (active.chat.active === "discord") {
+    const { runDiscordBot } = await import("./bot-discord.ts");
+    return runDiscordBot(parsed);
+  }
   const [action = "list", target] = parsed.positional;
 
   if (action === "list") {

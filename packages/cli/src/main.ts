@@ -7,7 +7,8 @@ const HELP = [
   "Usage: dura <command> [options]",
   "",
   "Setup",
-  "  init                 Guided setup: agents, provider, telegram, service, connection test",
+  "  init                 Guided setup: agents, provider, chat surface, service, connection test",
+  "  chat                 Show or switch the active surface: show, use, status",
   "  verify               Run the connection test against a running daemon",
   "  start                Start the daemon (foreground on a terminal, background otherwise)",
   "  stop                 Stop the daemon",
@@ -17,7 +18,8 @@ const HELP = [
   "",
   "Configuration",
   "  config               get, set, edit or validate config.json",
-  "  bot                  Telegram bot registry: add, list, remove, test, default",
+  "  bot                  Active chat bot registry: add, list, remove, test, default",
+  "  discord              Discord-specific: whoami, test, invite, threads, mod, commands",
   "  provider             Providers: list, add, models, test, remove, default",
   "  agent                Agents: list, show, create, set, enable, disable, delete, docs",
   "  orchestrator         Show, set, create or replace the orchestrator",
@@ -99,9 +101,19 @@ export async function main(argv: readonly string[]): Promise<void> {
       await runConfig(parsed);
       return;
     }
+    case "chat": {
+      const { runChat } = await import("./commands/chat.ts");
+      await runChat(parsed);
+      return;
+    }
     case "bot": {
       const { runBot } = await import("./commands/bot.ts");
       await runBot(parsed);
+      return;
+    }
+    case "discord": {
+      const { runDiscord } = await import("./commands/discord.ts");
+      await runDiscord(parsed);
       return;
     }
     case "provider": {

@@ -4,7 +4,7 @@ import { listAgents, readAgent, readMemory, isThinkingLevel, THINKING_LEVELS, ap
 import { readConfig, updateConfig } from "../../core/src/config.ts";
 import { models } from "../../core/src/models.ts";
 import { reloadEverything } from "../../core/src/reload.ts";
-import { startOperation } from "../../core/src/system.ts";
+import { bootRestartNotice, onRestart, startOperation, type RestartBrief } from "../../core/src/system.ts";
 import { syncBotCommands } from "./command-catalog.ts";
 import { errorFields, log } from "../../core/src/logger.ts";
 import { orchestratorId, setOrchestrator, subscribeOrchestrator } from "../../core/src/orchestrator.ts";
@@ -53,7 +53,14 @@ import {
   saveState,
   rememberMessage,
   sessionForMessage,
+  setPending,
+  clearPending,
+  pendingDeliveries,
+  restartNotices,
+  setRestartNotice,
+  clearRestartNotice,
   type TgState,
+  type PendingDelivery,
 } from "./state.ts";
 import {
   approvePending,
@@ -98,6 +105,24 @@ function modelKeyboard(provider: string, ids: string[], page: number): ReturnTyp
 
 /** How often the status bubble may be edited. Telegram rate-limits edits per message, so this is a floor. */
 const STATUS_EDIT_MS = 1200;
+
+/**
+ * How often the typing action is re-sent.
+ *
+ * Telegram's "typing…" clears itself after about five seconds, so one call at the start of a run is visible
+ * for five seconds and then the chat looks idle for the rest of it. Four seconds keeps the indicator alive
+ * without a burst of calls.
+ */
+const TYPING_REFRESH_MS = 4000;
+
+/** How long a wait for a run to end lasts before the status says so and keeps waiting. */
+const RUN_CHECKPOINT_MS = 10 * 60_000;
+
+/** How long a placed prompt may take to turn into a busy thread before delivery stops waiting for it. */
+const RUN_START_GRACE_MS = 15_000;
+
+/** How long the transcript is re-read after a run ends, in case the commit trails the idle signal. */
+const OUTCOME_GRACE_MS = 10_000;
 
 /**
  * One line per call, in the words of the call itself.
@@ -225,6 +250,15 @@ export class TelegramRuntime {
     for (const bot of this.registry.bots.filter((entry) => entry.enabled)) {
       await this.startBot(bot.label).catch((error) => log.error("telegram.bot_start_failed", { label: bot.label, ...errorFields(error) }));
     }
+    // While the bots are up and before recovery steals the pending records: this is the one moment where the
+    // number of interrupted runs is still the truth about what the last process left behind.
+    await this.reportRestart().catch((error) => log.warn("telegram.restart_report_failed", errorFields(error)));
+    this.unsubscribers.push(onRestart((notice) => {
+      if (notice.phase !== "leaving") return;
+      return this.announceLeaving(notice.brief);
+    }));
+    // After the bots are up: the runs that outlived the last process owe an answer to a chat that must exist.
+    this.recoverDeliveries();
     log.info("telegram.started", { bots: [...this.handles.keys()] });
   }
 
@@ -317,6 +351,7 @@ export class TelegramRuntime {
   async status(): Promise<Record<string, unknown>> {
     const agents = await listAgents();
     return {
+      platform: "telegram",
       bots: this.registry.bots.map((bot) => ({
         label: bot.label,
         username: bot.username,
@@ -1123,6 +1158,463 @@ export class TelegramRuntime {
     }
   }
 
+  /* --------------------------- run bookkeeping --------------------------- */
+
+  /**
+   * Keep "typing…" alive for as long as a run lasts.
+   *
+   * The indicator is a client-side countdown of about five seconds, so this re-sends the action until the
+   * returned stop function is called. A failed action is logged at debug and ignored: a chat that cannot
+   * show the indicator must not fail the run behind it.
+   */
+  private startTyping(handle: BotHandle, chatId: number): () => void {
+    let stopped = false;
+    const beat = (): void => {
+      if (stopped) return;
+      void handle.api.sendChatAction(chatId, "typing").catch(() => undefined);
+    };
+    beat();
+    const timer = setInterval(beat, TYPING_REFRESH_MS);
+    timer.unref();
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }
+
+  /** Persist the promise to answer before waiting on it, so a crash cannot silently break it. */
+  private async markPending(input: {
+    label: string;
+    sessionId: string;
+    chatId: number;
+    threadId?: number;
+    placeholderId: number;
+    before: number;
+    agentId: string;
+    submissionId: string;
+  }): Promise<void> {
+    const record: PendingDelivery = {
+      sessionId: input.sessionId,
+      chatId: input.chatId,
+      ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+      placeholderId: input.placeholderId,
+      before: input.before,
+      agentId: input.agentId,
+      submissionId: input.submissionId,
+      startedAt: Date.now(),
+    };
+    setPending(this.state, input.label, record);
+    await this.persist();
+  }
+
+  private async clearPendingRecord(label: string, sessionId: string): Promise<void> {
+    if (clearPending(this.state, label, sessionId)) await this.persist();
+  }
+
+  /**
+   * Wait for a run to start, then for it to end.
+   *
+   * The conversation's own busy/idle signal is the only one used, because the submission is not trustworthy
+   * here: a follow-up placed into a turn that ended through the question tool settles immediately with the
+   * previous verdict, and trusting that reported "finished" for a run that had not begun — the answer was
+   * then delivered as "(no answer)" while the turn was still working. So: wait until the thread is busy
+   * (bounded, with an early exit when an answer has already landed), then wait for idle, in checkpoints so a
+   * long run keeps its card honest instead of being abandoned.
+   */
+  private async awaitRunEnd(input: {
+    sessionId: string;
+    before: number;
+    assumeStarted?: boolean;
+    onCheckpoint?: (elapsedMs: number) => void;
+  }): Promise<void> {
+    if (!input.assumeStarted && !(await this.waitForStart(input.sessionId, input.before))) return;
+    const started = Date.now();
+    for (;;) {
+      const conversation = await harnessInstance().conversation(Number(input.sessionId) as never, context);
+      if (!conversation) return;
+      const idle = conversation.waitForIdle(context).then(() => "idle" as const, () => "idle" as const);
+      const slice = new Promise<"slice">((resolve) => {
+        const timer = setTimeout(() => resolve("slice"), RUN_CHECKPOINT_MS);
+        timer.unref();
+      });
+      const winner = await Promise.race([idle, slice]);
+      if (winner === "idle") return;
+      input.onCheckpoint?.(Date.now() - started);
+    }
+  }
+
+  /**
+   * Has the turn begun?
+   *
+   * A prompt is placed a moment before the run picks it up, so a single probe answers "idle" for work that
+   * is about to start. Polls until the thread is busy, exits early once an answer is in the transcript, and
+   * gives up after the grace window rather than blocking the delivery of whatever exists.
+   */
+  private async waitForStart(sessionId: string, before: number): Promise<boolean> {
+    const deadline = Date.now() + RUN_START_GRACE_MS;
+    for (;;) {
+      if (await sessionBusy(sessionId)) return true;
+      const entries = await transcript(sessionId);
+      const fresh = entries.length >= before ? entries.slice(before) : entries;
+      if (fresh.some((entry) => entry.role === "assistant" && entry.kind !== "chat.question" && entry.text.trim().length > 0)) return false;
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  }
+
+  /** The fresh entries of a run: its question, its answer, and everything a delivery may attach. */
+  private async readOutcome(sessionId: string, before: number): Promise<{ question?: WireMsg; answer?: WireMsg; fresh: WireMsg[] }> {
+    const entries = await transcript(sessionId);
+    // A compacted conversation can be shorter than the index written before the run started; then the whole
+    // transcript is the candidate set rather than nothing at all.
+    const fresh = entries.length >= before ? entries.slice(before) : entries;
+    const question = [...fresh].reverse().find((entry) => entry.kind === "chat.question");
+    const answer = [...fresh]
+      .reverse()
+      .find((entry) => entry.role === "assistant" && entry.kind !== "chat.question" && entry.text.trim().length > 0);
+    return {
+      ...(question ? { question } : {}),
+      ...(answer ? { answer } : {}),
+      fresh,
+    };
+  }
+
+  /**
+   * Send what the run produced, or say plainly that it produced nothing.
+   *
+   * Every path that starts work in a thread ends here, which is what makes "the result is always returned"
+   * true rather than likely: the placeholder is edited, the answer is rendered, artifacts are attached, and
+   * the bubble is never left on a status line that a later edit cannot reach.
+   */
+  private async deliverResult(input: {
+    handle: BotHandle;
+    chatId: number;
+    threadId?: number;
+    sessionId: string;
+    placeholderId: number;
+    before: number;
+    agentId: string;
+    startedAt?: number;
+  }): Promise<void> {
+    const { handle, chatId, threadId, sessionId, placeholderId } = input;
+    const edit = async (html: string): Promise<void> => {
+      await handle.api.editMessage(chatId, placeholderId, html).catch(() => undefined);
+    };
+
+    let outcome = await this.readOutcome(sessionId, input.before);
+    // The commit of the last entry can trail the idle signal by a moment; asking the transcript twice beats
+    // telling the owner "(no answer)" for an answer that is about to exist.
+    const deadline = Date.now() + OUTCOME_GRACE_MS;
+    while (!outcome.question && !outcome.answer && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      outcome = await this.readOutcome(sessionId, input.before);
+    }
+    const { question, answer, fresh } = outcome;
+
+    const conversation = await harnessInstance().conversation(Number(sessionId) as never, context).catch(() => null);
+    const conversationId = conversation?.id;
+
+    if (question) {
+      const data = (question.data ?? {}) as { options?: unknown };
+      const options = Array.isArray(data.options) ? data.options.filter((value): value is string => typeof value === "string") : [];
+      const keyboard = questionKeyboard(sessionId, options);
+      const html = "<b>Question</b>\n\n" + markdownToHtml(question.text) + (keyboard ? "" : "\n\nType the answer.");
+      // A question is sent, not edited in place. Telegram shows no notification for an edit, so a question
+      // written over the status bubble was invisible to a phone that was not already looking at it — the
+      // exact failure of "I cannot see the question". The placeholder then says what is being waited for.
+      await edit("\u2753 waiting for your answer…");
+      try {
+        await handle.api.sendMessage(chatId, html, { threadId, ...(keyboard ? { keyboard } : {}) });
+      } catch {
+        await handle.api.sendMessage(chatId, html, { threadId });
+      }
+    } else if (answer) {
+      let delivered = false;
+      const rich = renderRichAnswer(answer);
+      if (rich.length <= 30_000) {
+        try {
+          await handle.api.sendRichMessage(chatId, { markdown: rich }, { threadId });
+          await handle.api.deleteMessage(chatId, placeholderId).catch(() => edit("Answered above."));
+          delivered = true;
+        } catch (error) {
+          log.debug("telegram.rich_unavailable", { sessionId, ...errorFields(error) });
+        }
+      }
+      if (!delivered) {
+        const html = renderAnswer(answer);
+        const chunks = splitMessage(html);
+        await edit(chunks[0] ?? html);
+        for (const chunk of chunks.slice(1)) await handle.api.sendMessage(chatId, chunk, { threadId });
+      }
+      await this.sendArtifacts(handle, chatId, threadId, fresh, conversationId);
+    } else {
+      // Nothing came back: the run was aborted, or it ended without saying anything. Either way the bubble
+      // must reach a terminal state, because a card still claiming to work is the bug being fixed.
+      await edit("stopped.");
+      log.info("telegram.run_stopped", { sessionId });
+    }
+
+    log.info("telegram.conversation", {
+      sessionId,
+      agent: input.agentId,
+      ms: Date.now() - (input.startedAt ?? Date.now()),
+      entries: fresh.length,
+      question: Boolean(question),
+      answered: Boolean(answer),
+    });
+  }
+
+  /**
+   * Say what happened to the last process, in the chats that felt it.
+   *
+   * A restart used to be invisible from the chat: the status bubble simply stopped moving, which reads as a
+   * hang, and the only trace was a journal line. The goodbye message sent on the way down is edited into the
+   * outcome; when no goodbye survived (a crash, a kill, a stop from a shell) the chats with work in flight
+   * still get told why their answer is late.
+   */
+  private async reportRestart(): Promise<void> {
+    const boot = bootRestartNotice();
+    // No brief but work in flight: the last process was killed before it could say goodbye. That is still a
+    // restart the chats have to hear about, and the pending records are the proof it happened.
+    const inFlight = [...this.handles.values()].some((handle) => pendingDeliveries(this.state, handle.label).length > 0);
+    if (!boot && !inFlight) return;
+    const seconds = boot ? Math.max(0, boot.downtimeMs) / 1000 : null;
+    const span = seconds === null ? null : seconds < 1 ? "under a second" : Math.round(seconds) + "s";
+    const cause = boot?.brief?.cause ?? "the service stopped unexpectedly";
+    const head = span === null
+      ? "\u26A0\uFE0F <b>Service came back</b> \u00b7 " + escapeHtml(cause)
+      : "\u2705 <b>Back</b> after " + span + " \u00b7 " + escapeHtml(cause);
+    let edited = 0;
+    let fresh = 0;
+    for (const handle of this.handles.values()) {
+      const interrupted = pendingDeliveries(this.state, handle.label);
+      const covered = new Set<string>();
+      for (const [key, record] of boot ? restartNotices(this.state, handle.label) : []) {
+        covered.add(key);
+        const pendingHere = interrupted.filter((entry) => chatKey(entry.chatId, entry.threadId) === key).length;
+        const html =
+          head +
+          (pendingHere
+            ? "\n" + pendingHere + " interrupted run" + (pendingHere === 1 ? "" : "s") + " resuming."
+            : "\nEverything is up again.");
+        const ok = await handle.api
+          .editMessage(record.chatId, record.messageId, html)
+          .then(() => true)
+          .catch((error) => {
+            log.warn("telegram.restart_edit_failed", { label: handle.label, chatId: record.chatId, ...errorFields(error) });
+            return false;
+          });
+        if (ok) edited += 1;
+        clearRestartNotice(this.state, handle.label, key);
+      }
+      for (const pending of interrupted) {
+        const key = chatKey(pending.chatId, pending.threadId);
+        if (covered.has(key)) continue;
+        covered.add(key);
+        await handle.api
+          .sendMessage(
+            pending.chatId,
+            head + "\nIts run resumes now.",
+            { ...(pending.threadId === undefined ? {} : { threadId: pending.threadId }) },
+          )
+          .then(() => {
+            fresh += 1;
+          })
+          .catch((error) => log.warn("telegram.restart_notice_failed", { label: handle.label, ...errorFields(error) }));
+      }
+    }
+    await this.persist();
+    log.info("telegram.restart_reported", { cause, downtimeMs: boot ? Math.round(boot.downtimeMs) : null, edited, fresh });
+  }
+
+  /**
+   * Tell the chats that had work in flight that the process is going away.
+   *
+   * Sent from the stop hook, so the transport is still polling and the message arrives before the socket dies.
+   * The message ids are persisted: the process that comes back edits these exact bubbles.
+   */
+  private async announceLeaving(brief: RestartBrief): Promise<void> {
+    const head = brief.planned
+      ? "\u{1F504} <b>Restarting</b> \u00b7 " + escapeHtml(brief.cause)
+      : "\u{1F6D1} <b>Stopping</b> \u00b7 " + escapeHtml(brief.cause);
+    const tail = brief.planned
+      ? "Runs are durable; they resume when the service is back."
+      : "Runs resume when the service is started again.";
+    let sent = 0;
+    for (const handle of this.handles.values()) {
+      for (const target of this.restartTargets(handle.label, brief)) {
+        const message = await handle.api
+          .sendMessage(target.chatId, head + "\n" + tail, {
+            ...(target.threadId === undefined ? {} : { threadId: target.threadId }),
+          })
+          .catch((error) => {
+            log.warn("telegram.restart_notice_failed", { label: handle.label, chatId: target.chatId, ...errorFields(error) });
+            return null;
+          });
+        if (!message) continue;
+        sent += 1;
+        setRestartNotice(this.state, handle.label, target.key, {
+          chatId: target.chatId,
+          ...(target.threadId === undefined ? {} : { threadId: target.threadId }),
+          messageId: message.message_id,
+          at: Date.now(),
+          cause: brief.cause,
+        });
+      }
+    }
+    await this.persist();
+    log.info("telegram.restart_announced", { cause: brief.cause, planned: brief.planned, sent });
+  }
+
+  /** Every chat of this bot that should hear it: a run in flight, or the thread that asked for the restart. */
+  private restartTargets(label: string, brief: RestartBrief): { key: string; chatId: number; threadId?: number }[] {
+    const targets = new Map<string, { key: string; chatId: number; threadId?: number }>();
+    for (const pending of pendingDeliveries(this.state, label)) {
+      const key = chatKey(pending.chatId, pending.threadId);
+      targets.set(key, {
+        key,
+        chatId: pending.chatId,
+        ...(pending.threadId === undefined ? {} : { threadId: pending.threadId }),
+      });
+    }
+    if (!brief.sessionId) return [...targets.values()];
+    for (const [key, binding] of Object.entries(stateFor(this.state, label).chats)) {
+      if (binding.sessionId !== brief.sessionId) continue;
+      const [chat, topic] = key.split(":");
+      const chatId = Number(chat);
+      if (!Number.isSafeInteger(chatId) || chatId === 0) continue;
+      const topicId = topic === undefined ? undefined : Number(topic);
+      targets.set(key, { key, chatId, ...(topicId === undefined ? {} : { threadId: topicId }) });
+    }
+    return [...targets.values()];
+  }
+
+  /**
+   * Pick up the runs that the previous process did not finish delivering.
+   *
+   * boot() calls resume(), which reschedules the durable work; what it cannot do is speak for the transport.
+   * Every pending delivery recorded before the restart is re-attached here, so an interrupted turn ends the
+   * same way a normal one does — with its answer in the chat.
+   */
+  private recoverDeliveries(): void {
+    for (const [label, handle] of this.handles) {
+      for (const pending of pendingDeliveries(this.state, label)) {
+        void this.resumeDelivery(handle, pending).catch((error) => {
+          log.warn("telegram.recovery_failed", { label, sessionId: pending.sessionId, ...errorFields(error) });
+        });
+      }
+    }
+  }
+
+  private async resumeDelivery(handle: BotHandle, pending: PendingDelivery): Promise<void> {
+    const conversation = await harnessInstance()
+      .conversation(Number(pending.sessionId) as never, context)
+      .catch(() => null);
+    if (!conversation) {
+      await this.clearPendingRecord(handle.label, pending.sessionId);
+      return;
+    }
+    log.info("telegram.recovery", { sessionId: pending.sessionId, bot: handle.label, before: pending.before });
+    const stopTyping = this.startTyping(handle, pending.chatId);
+    try {
+      // The run was busy when this process found it, so the start gate is already satisfied.
+      if (await sessionBusy(pending.sessionId)) {
+        await this.awaitRunEnd({ sessionId: pending.sessionId, before: pending.before, assumeStarted: true });
+      }
+    } finally {
+      stopTyping();
+    }
+    await this.deliverResult({
+      handle,
+      chatId: pending.chatId,
+      ...(pending.threadId === undefined ? {} : { threadId: pending.threadId }),
+      sessionId: pending.sessionId,
+      placeholderId: pending.placeholderId,
+      before: pending.before,
+      agentId: pending.agentId,
+      startedAt: pending.startedAt,
+    });
+    await this.clearPendingRecord(handle.label, pending.sessionId);
+    log.info("telegram.recovered", { sessionId: pending.sessionId, bot: handle.label });
+  }
+
+  /**
+   * Put a message into a thread and follow it all the way to an answer.
+   *
+   * Every entry point shares this: a typed prompt, a question answered from a button, a scheduled prompt.
+   * Sending without it is how a turn runs with no status bubble, no typing and nobody to deliver the answer —
+   * the bug where answering a question looked stuck and then said nothing.
+   */
+  private async routeText(input: {
+    handle: BotHandle;
+    chatId: number;
+    threadId?: number;
+    sessionId: string;
+    agentId: string;
+    text: string;
+    requestId: string;
+    attachments?: AttachmentDraft[];
+    replyTo?: number;
+  }): Promise<void> {
+    const { handle, chatId, threadId, sessionId } = input;
+    const attachments = input.attachments ?? [];
+    const session = await findSession(sessionId);
+    if (!session) {
+      await handle.api.sendMessage(chatId, "That thread is gone.", { threadId });
+      return;
+    }
+
+    const busyProbe = activeIds().includes(sessionId) || (await sessionBusy(sessionId));
+    log.debug("telegram.route", { sessionId, busy: busyProbe, requestId: input.requestId });
+    if (busyProbe) {
+      try {
+        const submission = await sendMessage(
+          sessionId,
+          { text: input.text, ...(attachments.length > 0 ? { attachments } : {}), requestId: input.requestId },
+          "steer",
+        );
+        if (!submission) throw new Error("the thread disappeared");
+        await handle.api.sendMessage(chatId, "Steer · added to the current run", {
+          ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
+          threadId,
+        });
+        log.info("telegram.steer", { sessionId, submission: submission.submissionId });
+      } catch (error) {
+        await handle.api.sendMessage(chatId, "Steer failed: " + escapeText(error instanceof Error ? error.message : String(error)), { threadId });
+      }
+      return;
+    }
+
+    const placeholder = await handle.api.sendMessage(chatId, "Think · planning the next step", {
+      ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
+      threadId,
+    });
+    rememberMessage(this.state, handle.label, chatId, placeholder.message_id, sessionId);
+    this.trackThinking(sessionId, placeholder.message_id, chatId, threadId, handle.label);
+    try {
+      const submission = await sendMessage(
+        sessionId,
+        { text: input.text, ...(attachments.length > 0 ? { attachments } : {}), requestId: input.requestId },
+        "followUp",
+      );
+      if (!submission) throw new Error("the thread disappeared");
+      void this.runSession({
+        handle,
+        chatId,
+        threadId,
+        sessionId,
+        placeholderId: placeholder.message_id,
+        agentId: session.agent ?? input.agentId ?? "agent",
+        submissionId: submission.submissionId,
+      });
+    } catch (error) {
+      this.untrackThinking(sessionId, placeholder.message_id);
+      await handle.api
+        .editMessage(chatId, placeholder.message_id, "⚠️ " + escapeText(error instanceof Error ? error.message : String(error)))
+        .catch(() => undefined);
+    }
+  }
+
   private async unpairedAgents(): Promise<AgentRecord[]> {
     return (await listAgents()).filter((agent) => agent.enabled !== false && !agent.telegramBot);
   }
@@ -1215,65 +1707,17 @@ export class TelegramRuntime {
       await setChat(this.state, handle.label, key, binding);
     }
 
-    const busy = activeIds().includes(sessionId) || (await sessionBusy(sessionId));
-    if (busy) {
-      try {
-        const submission = await sendMessage(
-          sessionId,
-          {
-            text,
-            ...(attachments.length > 0 ? { attachments } : {}),
-            requestId: "tg:" + handle.label + ":" + message.chat.id + ":" + message.message_id,
-          },
-          "steer",
-        );
-        if (!submission) throw new Error("the thread disappeared");
-        await handle.api.sendMessage(message.chat.id, "Steer · added to the current run", {
-          replyTo: message.message_id,
-          threadId: message.message_thread_id,
-        });
-        log.info("telegram.steer", { sessionId, submission: submission.submissionId });
-      } catch (error) {
-        await handle.api.sendMessage(
-          message.chat.id,
-          "Steer failed: " + escapeText(error instanceof Error ? error.message : String(error)),
-          { threadId: message.message_thread_id },
-        );
-      }
-      return;
-    }
-
-    const placeholder = await handle.api.sendMessage(message.chat.id, "Think · planning the next step", {
+    await this.routeText({
+      handle,
+      chatId: message.chat.id,
+      ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }),
+      sessionId,
+      agentId: paired.id,
+      text,
+      attachments,
+      requestId: "tg:" + handle.label + ":" + message.chat.id + ":" + message.message_id,
       replyTo: message.message_id,
-      threadId: message.message_thread_id,
     });
-    rememberMessage(this.state, handle.label, message.chat.id, placeholder.message_id, sessionId);
-    this.trackThinking(sessionId, placeholder.message_id, message.chat.id, message.message_thread_id, handle.label);
-
-    const session = await findSession(sessionId);
-    const requestId = "tg:" + handle.label + ":" + message.chat.id + ":" + message.message_id;
-    try {
-      const submission = await sendMessage(
-        sessionId,
-        { text, ...(attachments.length > 0 ? { attachments } : {}), requestId },
-        "followUp",
-      );
-      if (!submission) throw new Error("the thread disappeared");
-      void this.runSession({
-        handle,
-        chatId: message.chat.id,
-        threadId: message.message_thread_id,
-        sessionId,
-        placeholderId: placeholder.message_id,
-        agentId: session?.agent ?? "agent",
-        submissionId: submission.submissionId,
-      });
-    } catch (error) {
-      this.untrackThinking(sessionId, placeholder.message_id);
-      await handle.api
-        .editMessage(message.chat.id, placeholder.message_id, "⚠️ " + escapeText(error instanceof Error ? error.message : String(error)))
-        .catch(() => undefined);
-    }
   }
 
   private async plan(handle: BotHandle, message: TgMessage, argument: string, _owner: boolean): Promise<void> {
@@ -1524,7 +1968,6 @@ export class TelegramRuntime {
     };
 
     let stopStream: (() => Promise<void>) | undefined;
-    let unanswered = false;
     const seenCalls = new Set<string>();
     // The status message is edited, never sent: one placeholder carrying the thought and the last calls.
     const lines: string[] = [];
@@ -1550,13 +1993,25 @@ export class TelegramRuntime {
     };
 
     const before = (await transcript(sessionId)).length;
-    // Artifact bytes live under artifacts/<conversation id>/; keep that id in scope for
-    // sendArtifacts below. An entry carries only the artifact metadata, never the owner.
-    let conversationId: number | undefined;
+    // Written before the wait begins: if this process dies now, boot recovery still knows which bubble owes
+    // an answer, and the answer arrives after the restart instead of never.
+    await this.markPending({
+      label: handle.label,
+      sessionId,
+      chatId,
+      ...(threadId === undefined ? {} : { threadId }),
+      placeholderId,
+      before,
+      agentId: input.agentId,
+      submissionId: input.submissionId,
+    });
+    // Typing for the whole run, not a five-second flicker: the indicator is what tells the owner the bot is
+    // still working while the status bubble is being rate-limited.
+    const stopTyping = this.startTyping(handle, chatId);
+
     try {
       const conversation = await harnessInstance().conversation(Number(sessionId) as never, context);
       if (conversation) {
-        conversationId = conversation.id;
         const stream = await openEventStream(harnessInstance(), conversation.id, context, (frame) => {
           if (frame.type !== "activity") return;
           const activity = frame.activity;
@@ -1578,81 +2033,47 @@ export class TelegramRuntime {
     }
 
     try {
-      const record = await harnessInstance().submission(Number(input.submissionId) as never, context);
-      if (!record) throw new Error("the submission disappeared");
-      const settled = await Promise.race([
-        record.wait(context),
-        new Promise<never>((_done, reject) => setTimeout(() => reject(new Error("the run did not settle within 30 minutes")), 30 * 60_000)),
-      ]);
-      // A question tool ends the turn without an answer; only an unanswered submission with no
-      // question entry is a stopped run.
-      unanswered = (settled as { status?: unknown }).status === "unanswered";
-    } catch (error) {
+      await this.awaitRunEnd({
+        sessionId,
+        before,
+        // A long run keeps its card honest instead of leaving an edit ten minutes old on screen.
+        onCheckpoint: (elapsedMs) => {
+          lines.push("still running · " + age(elapsedMs));
+          if (lines.length > 3) lines.shift();
+          paintStatus(true);
+        },
+      });
+    } finally {
+      stopTyping();
       await stopStream?.().catch(() => undefined);
-      const message = error instanceof Error ? error.message : String(error);
-      await edit(/abort|cancel/i.test(message) ? "stopped." : "⚠️ " + escapeText(message));
-      this.untrackThinking(sessionId, placeholderId);
-      if (!/abort|cancel/i.test(message)) log.error("telegram.run_failed", { sessionId, ...errorFields(error) });
-      return;
-    }
-    await stopStream?.().catch(() => undefined);
-    // A coalesced status edit still pending would land after the answer and wipe it.
-    if (statusTimer) {
-      clearTimeout(statusTimer);
-      statusTimer = undefined;
+      // A coalesced status edit still pending would land after the answer and wipe it.
+      if (statusTimer) {
+        clearTimeout(statusTimer);
+        statusTimer = undefined;
+      }
     }
     this.untrackThinking(sessionId, placeholderId);
 
-    const entries = await transcript(sessionId);
-    const fresh = entries.slice(before);
-    const question = [...fresh].reverse().find((entry) => entry.kind === "chat.question");
-    const answer = [...fresh].reverse().find((entry) => entry.role === "assistant" && entry.text.trim().length > 0);
-
-    if (question) {
-      const data = (question.data ?? {}) as { options?: unknown };
-      const options = Array.isArray(data.options) ? data.options.filter((value): value is string => typeof value === "string") : [];
-      const keyboard = questionKeyboard(sessionId, options);
-      const html = "<b>Question</b>\n\n" + markdownToHtml(question.text) + (keyboard ? "" : "\n\nType the answer.");
-      // A question is sent, not edited in place. Telegram shows no notification for an edit, so a question
-      // written over the status bubble was invisible to a phone that was not already looking at it — the
-      // exact failure of "I cannot see the question". The placeholder then says what is being waited for.
-      await edit("\u2753 waiting for your answer…");
-      try {
-        await handle.api.sendMessage(chatId, html, { threadId, ...(keyboard ? { keyboard } : {}) });
-      } catch {
-        await handle.api.sendMessage(chatId, html, { threadId });
-      }
-    } else if (answer) {
-      let delivered = false;
-      const rich = renderRichAnswer(answer);
-      if (rich.length <= 30_000) {
-        try {
-          await handle.api.sendRichMessage(chatId, { markdown: rich }, { threadId });
-          await handle.api.deleteMessage(chatId, placeholderId).catch(() => edit("Answered above."));
-          delivered = true;
-        } catch (error) {
-          log.debug("telegram.rich_unavailable", { sessionId, ...errorFields(error) });
-        }
-      }
-      if (!delivered) {
-        const html = renderAnswer(answer);
-        const chunks = splitMessage(html);
-        await edit(chunks[0] ?? html);
-        for (const chunk of chunks.slice(1)) await handle.api.sendMessage(chatId, chunk, { threadId });
-      }
-      await this.sendArtifacts(handle, chatId, threadId, fresh, conversationId);
-    } else {
-      await edit(unanswered ? "stopped." : "(no answer)");
-      if (unanswered) log.info("telegram.run_stopped", { sessionId });
+    // Delivery owns the bubble now. A failure here leaves the pending record in place, so the next boot
+    // finishes the job rather than the chat waiting forever for an answer that already exists — and it must
+    // not escape: a stop that closes the harness mid-delivery threw "Session is closed" out of this await
+    // as an unhandled rejection and took the whole daemon down with exit 1, losing every other bot with it.
+    try {
+      await this.deliverResult({
+        handle,
+        chatId,
+        ...(threadId === undefined ? {} : { threadId }),
+        sessionId,
+        placeholderId,
+        before,
+        agentId: input.agentId,
+        startedAt: started,
+      });
+    } catch (error) {
+      log.warn("telegram.deliver_failed", { sessionId, label: handle.label, ...errorFields(error) });
+      return;
     }
-
-    log.info("telegram.conversation", {
-      sessionId,
-      agent: input.agentId,
-      ms: Date.now() - started,
-      entries: fresh.length,
-      question: Boolean(question),
-    });
+    await this.clearPendingRecord(handle.label, sessionId);
   }
 
   private async sendArtifacts(
@@ -1700,6 +2121,8 @@ export class TelegramRuntime {
     }
 
     const placeholder = await handle.api.sendMessage(message.chat.id, "⏳ group is thinking…", { threadId: message.message_thread_id });
+    // A room run can take minutes: the indicator has to be refreshed, not sent once.
+    const stopTyping = this.startTyping(handle, message.chat.id);
     const agentNames = new Map((await listAgents()).map((agent) => [agent.id, agent.name]));
     let stopStream: (() => Promise<void>) | undefined;
     try {
@@ -1735,6 +2158,7 @@ export class TelegramRuntime {
     } catch (error) {
       await handle.api.editMessage(message.chat.id, placeholder.message_id, "⚠️ " + escapeText(error instanceof Error ? error.message : String(error))).catch(() => undefined);
     } finally {
+      stopTyping();
       await stopStream?.().catch(() => undefined);
     }
   }
@@ -1844,8 +2268,19 @@ export class TelegramRuntime {
       const list = Array.isArray(options) ? options.filter((value): value is string => typeof value === "string") : [];
       const answer = list[Number(index)];
       if (!answer) return void (await handle.api.sendMessage(chatId, "That option is gone."));
-      await sendMessage(sessionId ?? "", { text: answer, requestId: "tg:answer:" + query.id });
       await handle.api.editMessage(chatId, message.message_id, "<i>answer: " + escapeText(answer) + "</i>").catch(() => undefined);
+      // The answer is a prompt like any other: it must open a status bubble, show typing and deliver the
+      // next answer. Sending it bare left the turn running with nobody watching it, which looked stuck.
+      await this.routeText({
+        handle,
+        chatId,
+        ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }),
+        sessionId: sessionId ?? "",
+        agentId: session.agent ?? "agent",
+        text: answer,
+        requestId: "tg:answer:" + query.id,
+      });
+      log.info("telegram.question_answered", { sessionId, option: Number(index) });
       return;
     }
 
@@ -1921,9 +2356,14 @@ export class TelegramRuntime {
     if (data === "svc:restart") {
       if (!owner) return void (await handle.api.sendMessage(chatId, "Owner only."));
       await handle.api.editMessage(chatId, message.message_id, "<b>Restarting…</b> The bot reconnects in a few seconds.").catch(() => undefined);
+      const binding = getChat(this.state, handle.label, key);
       setTimeout(() => {
         try {
-          startOperation("restart");
+          startOperation("restart", {
+            cause: "/restart",
+            ...(binding?.sessionId ? { sessionId: binding.sessionId } : {}),
+            ...(binding?.agentId ? { agentId: binding.agentId } : {}),
+          });
         } catch (error) {
           log.error("telegram.restart_failed", errorFields(error));
         }

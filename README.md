@@ -1,26 +1,29 @@
 # dura-agents
 
-Durable agents with a CLI and Telegram bots. The daemon owns the durable state; Telegram is the only chat
-surface; the terminal provides setup, administration, log inspection and a read-only fleet monitor.
+Durable agents with a CLI and one chat surface: Telegram bots **or** a Discord bot. The daemon owns the
+durable state; the user chooses the surface at setup and exactly one transport is active at a time. The
+terminal provides setup, administration, log inspection and a read-only fleet monitor.
 
 Built on [@earendil-works/pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) 1.3.0: every message,
 tool call and generation is a durable task in SQLite, so killing the daemon or losing the network does not lose work
 in flight.
 
 ~~~text
-dura CLI  ── unix socket ──►  daemon  ──►  Telegram Bot API (one poller per bot)
-   │                            │
+dura CLI  ── unix socket ──►  daemon  ──►  Telegram Bot API  (one poller per bot)
+   │                            │       or Discord Gateway (one connection per bot)
    └─ fleet TUI                 └─ SQLite · agents · schedules · mesh · vault · artifacts
 ~~~
 
 ## Why this shape
 
 - **One process owns durability.** The harness, SQLite, the scheduler, the agent network and the provider registry
-  live in the daemon. Telegram is a transport: it can fail, rate-limit or be replaced without losing a run.
+  live in the daemon. Telegram and Discord are transports: either can fail, rate-limit or be swapped without
+  losing a run.
 - **No listening port.** The CLI and TUI connect over a 0600 Unix socket. Nothing is exposed to the network except
-  the outbound Bot API calls.
-- **Telegram is the product surface.** Threads, groups, questions, files, usage, memory and admin actions are
-  commands and menus in chat. No browser, no build step, no PWA.
+  outbound Bot API calls or the outbound Discord Gateway WebSocket.
+- **One chat surface, chosen by the user.** Telegram and Discord are mutually exclusive; the inactive platform's
+  credentials stay on disk but are never started. Chat is the product surface: threads, groups, questions, files,
+  usage, memory and admin actions. No browser, no build step, no PWA.
 - **The fleet is monitoring, not a second UI.** `dura monitor` renders the live roster; its only write is an
   explicit add-agent form.
 
@@ -39,7 +42,7 @@ dura status
 | --- | --- |
 | 1 Agents | Creates the orchestrator (always asked when missing; asks to replace when present) and any extra agents. Model and bot are deferred to steps 2 and 3. |
 | 2 Provider | Detects existing credentials, defaults to opencode-go / deepseek-v4.1-flash, or adds any built-in pi-ai provider by API key (validated before saving). |
-| 3 Telegram | Adds one or more bots (getMe validated), binds the owner with a short /start code or --owner-id, assigns a home bot to every agent, then writes the staged agents. |
+| 3 Chat surface | The user chooses **Telegram bot** or **Discord bot**. Telegram adds one or more bots (getMe validated), binds the owner, and assigns a home bot to every agent. Discord validates the bot token, prints the invite URL, binds the owner id, and sets a default agent. Only the chosen surface is recorded and activated. |
 | 4 Service | Offers the systemd user unit and reports zram/sysctl tuning. |
 | 5 Connection test | Starts the daemon and proves provider completion, bot identity, owner delivery, socket/no-TCP, SQLite and one live agent round-trip. Writes setup.verifiedAt only on success. |
 
@@ -56,7 +59,8 @@ dura logs -f                  # JSON lines: lifecycle, connection, conversations
 
 | Command | Purpose |
 | --- | --- |
-| `dura init` | Five-step setup wizard |
+| `dura init` | Five-step setup wizard, including the chat-surface choice |
+| `dura chat show \| use <telegram\|discord> \| status` | Show or switch the one active surface |
 | `dura start` / `stop` / `restart` | Daemon lifecycle (foreground on a TTY, background otherwise) |
 | `dura status` | Daemon, bots, agents, runs, memory, verification time |
 | `dura verify` | Connection test against a running daemon (or `--start` one) |
@@ -64,8 +68,9 @@ dura logs -f                  # JSON lines: lifecycle, connection, conversations
 | `dura agent list \| show \| create \| set \| enable \| disable \| delete \| docs \| edit-doc \| restore-doc \| suggest` | Agent records and personas |
 | `dura orchestrator show \| set \| create \| replace` | The orchestrator pointer |
 | `dura provider list \| add \| models \| test \| remove \| default` | Providers and API keys |
-| `dura bot list \| add \| remove \| default \| enable \| disable \| test` | Telegram bot registry |
-| `dura user list \| add \| remove \| owner \| pending \| approve \| deny \| invite` | Allowlist and group invite links |
+| `dura bot list \| add \| remove \| default \| enable \| disable \| test` | Active-platform bot registry |
+| `dura discord whoami \| test \| invite \| threads \| mod \| commands` | Discord-specific diagnostics and moderation |
+| `dura user list \| add \| remove \| owner \| pending \| approve \| deny \| invite` | Allowlist for the active platform |
 | `dura group list \| create \| show \| mode` | Durable groups (bind one in Telegram with /bind) |
 | `dura thread list \| prune \| delete \| restore \| purge` | Thread hygiene: prune by age, purge with export, vacuum |
 | `dura mcp list \| add \| remove \| reload \| tools` | Global MCP servers (stdio) available to every agent |
@@ -101,9 +106,8 @@ buttons for the current thread), `/usage`, `/reload` (owner: tools and thread re
 service restart, with confirmation), `/agents`, `/memory`, `/schedules`, `/group`, `/bind`, `/status`,
 `/whoami`, `/compact`, `/stop`, `/abort`, `/grant`, `/connect`, `/orchestrator`, `/bots`, `/settings`, `/mcp`,
 `/prune`, `/help`.
-Each message gets a brief `Think · planning the next step` placeholder, then one status message — edited at
-most once every 1.2 s — that shows the phase (or the thinking text as it streams) and the last three calls in
-the call's own words (`⚙️ bash: git status`, `⚙️ read: core/src/live.ts`). A message sent while the run is live is **steered** into it
+Each message gets a brief `Think · planning the next step` placeholder plus short DSH-style progress lines
+(`Bash · running a command · step 1`). A message sent while the run is live is **steered** into it
 (`Steer · added to the current run`). Final answers use Telegram **Rich Messages** (GFM headings, tables, task lists,
 long code, up to 30k characters) when the API supports them, with HTML as fallback; generated files follow.
 `/stop` aborts the active run and withdraws queued messages. The `question` tool renders inline buttons.
@@ -111,6 +115,33 @@ long code, up to 30k characters) when the API supports them, with HTML as fallba
 The allowlist is global across bots. Unknown users are refused, queued as pending, and the owner gets
 Approve/Block buttons. A bot cannot add members to a group itself; `dura user invite --chat <id>` prints a
 single-use invite link, and `dura user add <id>` authorises them.
+
+## Discord
+
+Discord is the other choice at step 3 (`dura chat use discord` switches later). A Discord **bot** is a
+fleet connection, not a private bot per agent: DMs go to the bot's default agent, and a **thread is one durable
+session**. Use `/new` in a server channel to create a thread and bind it, `/threads` to list and link sessions,
+`/agent <id>` to move one, `/rename` and `/archive` to manage the Discord side, and `/bind agent:<id>` to make a
+whole channel route to one agent. A mention in an unbound channel starts a thread so the channel stays clean.
+
+Enable **Message Content Intent** in the Discord Developer Portal before inviting. The setup step prints an
+invite URL with the `bot applications.commands` scopes and the permissions needed for threads, files and
+moderation. Native slash commands are registered on every start, with `!help`, `!new`, `!stop` and the other
+core commands as a text fallback while Discord propagates them.
+
+Answers stream through one edited placeholder (coalesced to respect Discord's edit limits), split at 2,000
+characters with code fences preserved; longer answers become a Markdown file. Generated artifacts are uploaded
+as attachments. The `question` tool becomes buttons or a select menu.
+
+Moderation is owner-only from Discord: `/mod timeout|kick|ban|unban|warn|warnings|audit`. Kick and ban ask for a
+confirmation button; every action writes an audit line, checks the bot's role against the target, and refuses
+the guild owner or the bot itself. Agent-callable moderation is off by default; enable
+`discord.moderation.agentTools` to let the agent-facing `discord` tool use it. `dura discord whoami`, `test`,
+`invite`, `threads`, `mod` and `commands sync` are the host-side equivalents.
+
+Only one surface is started: switching to Discord stops the Telegram pollers, and the Telegram credentials stay
+in `secrets/telegram.json` for an easy switch back. `dura status` prints the running platform; `dura doctor`
+reports configured-but-inactive credentials.
 
 ### Orchestrator
 
@@ -192,12 +223,14 @@ was pruned.
 ~/.dura-file/                  (DURA_HOME overrides; PI_DATA_DIR is a one-release alias)
   config.json                  0600
   credentials.json             provider keys, 0600
-  secrets/telegram.json        bot tokens, 0600
+  secrets/telegram.json        Telegram bot tokens, 0600 (inactive when Discord is active)
+  secrets/discord.json         Discord bot tokens, 0600 (inactive when Telegram is active)
   app.sqlite                   durable conversations, tasks, entries
   agents/<id>/                 agent.json, AGENT.md, SOUL.md, MEMORY.md, .history/
   artifacts/<conversation>/    generated files
   vault/                       AES-256-GCM secrets and key
   telegram/                    users.json, state.json (offsets, bindings)
+  discord/                     users.json, state.json (gateway session, bindings), warnings.json
   logs/daemon.log[.1..3]       JSON lines, rotated
   run/daemon.sock              0600 control socket
   work is wherever an agent's cwd points (default $HOME)
@@ -212,7 +245,7 @@ The wizard and `dura provider` accept any of pi-ai's 42 built-in providers. Key-
 openai, anthropic, google, deepseek, openrouter, groq, mistral, xai, nvidia, together, fireworks and others) are
 configured with an API key. Providers that need an endpoint, region or OAuth (azure, bedrock, vertex, cloudflare,
 github-copilot) are listed with that requirement instead of a half-working form. Keys can come from a hidden
-prompt, stdin (`--key-stdin`) or the environment; they are never taken from argv or sent through Telegram.
+prompt, stdin (`--key-stdin`) or the environment; they are never taken from argv or sent through a chat surface.
 
 ```bash
 dura provider list --all              # the whole catalog and what is configured
@@ -233,7 +266,7 @@ pollers. It samples PSS for the daemon and every descendant every 100 ms.
 | --- | --- | --- | --- | --- | --- | --- |
 | `npm run bench` | **5/5** | 4.6 s | **246 MB** | 190 MB | 105 MB | < 2048 MB |
 
-*This run used the offline faux provider; see the caveat at the end of this README.*
+	extit{This run used the offline faux provider; see the caveat at the end of this README.}
 
 Levers: a five-slot run semaphore with a bounded queue; harness retention (partial commits 250 ms, context 30 s,
 documents 60 s); code mode capped at 128 MB; one Chromium with idle shutdown; bounded render caches; watchers only
@@ -247,18 +280,20 @@ sudo operation, and never overwrites a custom value. This host already had zram0
 
 ```bash
 npm run check     # tsc + language lint
-npm run e2e       # twenty-three daemon-driven scenarios, offline
+npm run e2e       # thirty-one daemon-driven scenarios, offline
 npm run bench     # the five-agent memory gate
 ```
 
-The E2E harness starts a real daemon in a temporary home with the faux provider and a fake Bot API; it injects
-Telegram updates and inspects the resulting messages, edits, callbacks, files and SQLite state. Scenarios:
-`init-wizard`, `provider-catalog`, `command-scopes`, `telegram-chat`, `telegram-question`, `telegram-plan`,
-`telegram-admin-commands`, `bot-pairing`, `telegram-orchestrator`, `orchestrator-docs`, `orchestrator-claim`,
-`orchestrator-claim-approval`, `orchestrator-repo`, `mcp-global`, `memory-tool`, `thread-prune`, `retention`,
-`telegram-stop`, `telegram-steer`, `telegram-progress`, `bot-token-connect`, `verify`, `tui-json`. `verify` is also tested against the real API on this machine:
-bot @samriobot, opencode-go, a live
-agent answer in ~2.8 s.
+The E2E harness starts a real daemon in a temporary home with the faux provider and a fake Bot API **or** a fake
+Discord REST + Gateway server; it injects platform events and inspects the resulting messages, edits, callbacks,
+files and SQLite state. Scenarios: `init-wizard`, `discord-init`, `provider-catalog`, `command-scopes`,
+`telegram-chat`, `telegram-question`, `telegram-plan`, `telegram-admin-commands`, `bot-pairing`,
+`telegram-orchestrator`, `orchestrator-docs`, `orchestrator-claim`, `orchestrator-claim-approval`,
+`orchestrator-repo`, `mcp-global`, `memory-tool`, `thread-prune`, `retention`, `telegram-stop`,
+`telegram-steer`, `telegram-progress`, `bot-token-connect`, `verify`, `tui-json`, `discord-chat`,
+`discord-thread`, `discord-question`, `discord-moderation`, `discord-tool`, `discord-verify`, `chat-exclusive`.
+`verify` is also tested against the real Telegram API on this machine: bot @samriobot,
+opencode-go, a live agent answer in ~2.8 s.
 
 ## Migrating from the web version
 
@@ -273,8 +308,13 @@ code blocks now), the memory graph (use `dura memory`) and the screenshot gate.
 
 ## Known limits
 
-- Direct chats are strictly one bot per agent; a group remains a multi-agent surface with one speaker bot, and the
-  nyahut flow is exercised by the unit-level room code, not yet by an E2E scenario.
+- Exactly one chat surface is active. Telegram and Discord cannot run together; switching is `dura chat use`.
+- Telegram direct chats are strictly one bot per agent. A Discord bot is a fleet connection instead: DMs go to its
+  default agent, and threads choose their agent. Discord group/room bindings and forum-channel parity are not in the
+  first cut.
+- Discord manual moderation is implemented; auto-moderation, welcome flows, role menus and tickets are phase 2 and
+  off by default.
+- The nyahut flow is exercised by the unit-level room code, not yet by an E2E scenario.
 - MCP supports the stdio transport only (no HTTP/streamable transport yet).
 - The benchmark uses the faux provider, so it measures the daemon's memory under tool load, not a real model's
   network buffers.

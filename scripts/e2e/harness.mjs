@@ -9,9 +9,10 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { connect } from "node:net";
 import { startFakeTelegram } from "./fake-telegram.mjs";
+import { startFakeDiscord } from "./fake-discord.mjs";
 
 const ROOT = resolve(import.meta.dirname, "../..");
-const TOOLS = ["read", "write", "edit", "bash", "terminal", "coding", "codemode", "browser", "vault", "question", "create_file", "create_pdf", "publish_file"];
+const TOOLS = ["read", "write", "edit", "bash", "terminal", "coding", "codemode", "browser", "vault", "question", "discord", "create_file", "create_pdf", "publish_file"];
 
 function sleep(ms) {
   return new Promise((done) => setTimeout(done, ms));
@@ -101,15 +102,7 @@ async function writeAgent(home, agent, defaultBot) {
   await writeFile(resolve(dir, "SOUL.md"), agent.soulMd ?? "# Who you are\n\n" + agent.name + ".\n");
 }
 
-export async function startHarness(options = {}) {
-  const home = await mkdtemp(resolve(tmpdir(), "dura-e2e-"));
-  await mkdir(resolve(home, "work"), { recursive: true });
-
-  const fake = options.fake ?? (await startFakeTelegram());
-  const bots = options.bots ?? [{ label: "main", username: "mainbot", id: 1001, token: "1001:test-token" }];
-  for (const bot of bots) fake.addBot(bot);
-
-  await mkdir(resolve(home, "secrets"), { recursive: true, mode: 0o700 });
+async function writeTelegramRegistry(home, bots, owner) {
   await writeFile(
     resolve(home, "secrets", "telegram.json"),
     JSON.stringify(
@@ -124,18 +117,73 @@ export async function startHarness(options = {}) {
     { mode: 0o600 },
   );
   await mkdir(resolve(home, "telegram"), { recursive: true, mode: 0o700 });
-  const owner = options.owner ?? "100";
   await writeFile(
     resolve(home, "telegram", "users.json"),
     JSON.stringify({ owner, users: [{ id: owner, role: "owner", addedAt: Date.now() }], pending: [] }, null, 2) + "\n",
     { mode: 0o600 },
   );
+}
+
+async function writeDiscordRegistry(home, bots, owner) {
+  await writeFile(
+    resolve(home, "secrets", "discord.json"),
+    JSON.stringify(
+      {
+        version: 1,
+        default: bots[0].label,
+        bots: bots.map((bot) => ({ label: bot.label, token: bot.token, applicationId: bot.applicationId ?? ("app-" + bot.label), botId: String(bot.id), username: bot.username, enabled: true })),
+      },
+      null,
+      2,
+    ) + "\n",
+    { mode: 0o600 },
+  );
+  await mkdir(resolve(home, "discord"), { recursive: true, mode: 0o700 });
+  await writeFile(
+    resolve(home, "discord", "users.json"),
+    JSON.stringify({ owner, users: [{ id: owner, role: "owner", addedAt: Date.now() }], pending: [] }, null, 2) + "\n",
+    { mode: 0o600 },
+  );
+}
+
+function defaultBots(platform) {
+  return platform === "discord"
+    ? [{ label: "main", username: "durabot", id: "9001", token: "discord-test-token", applicationId: "app-main" }]
+    : [{ label: "main", username: "mainbot", id: 1001, token: "1001:test-token" }];
+}
+
+export async function startHarness(options = {}) {
+  const home = await mkdtemp(resolve(tmpdir(), "dura-e2e-"));
+  await mkdir(resolve(home, "work"), { recursive: true });
+  const platform = options.platform ?? "telegram";
+  const otherPlatform = options.alsoConfigure;
+  const fake = options.fake ?? (platform === "discord" ? await startFakeDiscord() : await startFakeTelegram());
+  const otherFake = otherPlatform
+    ? (options.otherFake ?? (otherPlatform === "discord" ? await startFakeDiscord() : await startFakeTelegram()))
+    : undefined;
+  const bots = options.bots ?? defaultBots(platform);
+  const otherBots = otherFake ? (options.otherBots ?? defaultBots(otherPlatform)) : [];
+  for (const bot of bots) fake.addBot(bot);
+  for (const bot of otherBots) otherFake.addBot(bot);
+  const owner = options.owner ?? "100";
+
+  await mkdir(resolve(home, "secrets"), { recursive: true, mode: 0o700 });
+  if (platform === "telegram" || otherPlatform === "telegram") {
+    await writeTelegramRegistry(home, platform === "telegram" ? bots : otherBots, owner);
+  }
+  if (platform === "discord" || otherPlatform === "discord") {
+    await writeDiscordRegistry(home, platform === "discord" ? bots : otherBots, owner);
+  }
 
   const agents = options.agents ?? [{ id: "helper", name: "Helper" }];
-  // One bot is one agent: the first agent gets the default bot; the rest are unpaired unless explicit.
   for (const [index, agent] of agents.entries()) {
-    await writeAgent(home, agent, index === 0 ? bots[0]?.label : undefined);
+    await writeAgent(home, agent, platform === "telegram" && index === 0 ? bots[0]?.label : undefined);
   }
+
+  const telegramFake = platform === "telegram" ? fake : otherPlatform === "telegram" ? otherFake : undefined;
+  const discordFake = platform === "discord" ? fake : otherPlatform === "discord" ? otherFake : undefined;
+  const telegramBots = platform === "telegram" ? bots : otherBots;
+  const discordBots = platform === "discord" ? bots : otherBots;
 
   await writeFile(
     resolve(home, "config.json"),
@@ -144,17 +192,29 @@ export async function startHarness(options = {}) {
         version: 1,
         orchestrator: { agentId: options.orchestrator ?? null },
         models: { registered: ["e2e"], default: { provider: "e2e", modelId: "faux-vision" } },
-        defaults: { cwd: resolve(home, "work"), permissions: "full", telegramBot: bots[0].label, tools: TOOLS },
+        defaults: { cwd: resolve(home, "work"), permissions: "full", telegramBot: telegramBots[0]?.label ?? "main", tools: TOOLS },
         limits: { maxConcurrentRuns: 5, queuedRuns: 20, maxAgents: 25, maxBots: 10, codemodeMemoryMb: 128, browserIdleMinutes: 5 },
+        chat: { active: platform },
         telegram: {
-          apiBase: fake.base,
-          defaultBot: bots[0].label,
+          apiBase: telegramFake?.base ?? "https://api.telegram.org",
+          defaultBot: telegramBots[0]?.label ?? "main",
           allowGroups: true,
           topics: false,
           editIntervalMs: 300,
           broadcastBoot: false,
           notifyOnAgentDocChange: false,
           askBotOnAgentCreate: false,
+        },
+        discord: {
+          apiBase: discordFake?.base ?? "https://discord.com/api/v10",
+          gatewayUrl: discordFake?.gatewayUrl ?? "wss://gateway.discord.gg",
+          defaultBot: discordBots[0]?.label ?? "main",
+          allowGuilds: true,
+          requireMention: true,
+          editIntervalMs: 200,
+          ownerChannelId: null,
+          agentTools: true,
+          moderation: { auditChannelId: options.auditChannelId ?? null, dmTargets: false, agentTools: options.agentModeration ?? false },
         },
         logging: { level: "info", maxBytes: 5 * 1024 * 1024, keep: 1 },
         service: { systemd: false },
@@ -170,34 +230,57 @@ export async function startHarness(options = {}) {
   const scriptPath = resolve(home, "script.json");
   await writeFile(scriptPath, JSON.stringify(options.script ?? [{ text: "Hello from the faux model." }], null, 2) + "\n");
 
-  const child = spawn(process.execPath, ["packages/cli/bin/dura.ts", "start", "--foreground"], {
-    cwd: ROOT,
-    env: { ...process.env, DURA_HOME: home, DURA_E2E: "1", DURA_E2E_SCRIPT_FILE: scriptPath, DURA_LOG_LEVEL: "info" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  let child; // eslint-disable-line prefer-const
   let log = "";
-  child.stdout.on("data", (chunk) => (log += String(chunk)));
-  child.stderr.on("data", (chunk) => (log += String(chunk)));
-
   const readyPath = resolve(home, "run", "ready.json");
-  const deadline = Date.now() + 30_000;
-  let ready;
-  while (Date.now() < deadline) {
-    try {
-      ready = JSON.parse(await readFile(readyPath, "utf8"));
-      if (ready.pid) break;
-    } catch {
-      /* not yet */
-    }
-    if (child.exitCode !== null) throw new Error("daemon exited during startup:\n" + log);
-    await sleep(120);
-  }
-  if (!ready) {
-    child.kill("SIGKILL");
-    throw new Error("daemon did not become ready:\n" + log);
-  }
 
-  const client = await Ipc.connect(resolve(home, "run", "daemon.sock"));
+  /**
+   * Start the daemon against `home` and wait for its ready file.
+   *
+   * Factored out because a restart is a real behaviour to test: the durable store, the transport state
+   * file and the fake API all survive, and only the process is replaced.
+   */
+  const launch = async (options = {}) => {
+    if (child && child.exitCode === null) {
+      // A hard restart is the crash: no goodbye can be written, and the chats have to be told afterwards
+      // instead of before. The soft path gives the daemon room to announce and persist first.
+      child.kill(options.hard ? "SIGKILL" : "SIGTERM");
+      await sleep(options.hard ? 200 : 2000);
+      if (child.exitCode === null) child.kill("SIGKILL");
+      await sleep(200);
+    }
+    // A ready file from the previous process would let this launch look ready before it is.
+    await rm(readyPath, { force: true });
+    log = "";
+    child = spawn(process.execPath, ["packages/cli/bin/dura.ts", "start", "--foreground"], {
+      cwd: ROOT,
+      env: { ...process.env, DURA_HOME: home, DURA_E2E: "1", DURA_E2E_SCRIPT_FILE: scriptPath, DURA_LOG_LEVEL: "info" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.on("data", (chunk) => (log += String(chunk)));
+    child.stderr.on("data", (chunk) => (log += String(chunk)));
+
+    const deadline = Date.now() + 30_000;
+    let ready;
+    while (Date.now() < deadline) {
+      try {
+        ready = JSON.parse(await readFile(readyPath, "utf8"));
+        if (ready.pid) break;
+      } catch {
+        /* not yet */
+      }
+      if (child.exitCode !== null) throw new Error("daemon exited during startup:\n" + log);
+      await sleep(120);
+    }
+    if (!ready) {
+      child.kill("SIGKILL");
+      throw new Error("daemon did not become ready:\n" + log);
+    }
+  };
+
+  await launch();
+
+  let client = await Ipc.connect(resolve(home, "run", "daemon.sock"));
 
   const send = (label, update) => fake.inject(label, update);
   const messageId = { value: 1 };
@@ -217,6 +300,56 @@ export async function startHarness(options = {}) {
     return id;
   };
 
+  const discordNext = { value: 1 };
+  const discordAuthor = (id = owner, bot = false) => ({ id, username: id === owner ? "owner" : "user-" + id, bot });
+  const discordMessage = (label, channelId, content, extra = {}) => {
+    const id = "m" + discordNext.value++;
+    fake.inject(label, "MESSAGE_CREATE", {
+      id,
+      channel_id: channelId,
+      ...(extra.guildId === false ? {} : { guild_id: extra.guildId ?? "g1" }),
+      author: extra.author ?? discordAuthor(),
+      content,
+      timestamp: new Date().toISOString(),
+      edited_timestamp: null,
+      type: 0,
+      attachments: extra.attachments ?? [],
+      mentions: extra.mentions ?? [],
+    });
+    return id;
+  };
+  const discordDM = (label, content, extra = {}) => discordMessage(label, "dm-" + owner, content, { ...extra, guildId: false });
+  const discordThreadMessage = (label, threadId, content, extra = {}) => discordMessage(label, threadId, content, extra);
+  const discordSlash = (label, name, options = [], extra = {}) => {
+    const id = "i" + discordNext.value++;
+    fake.inject(label, "INTERACTION_CREATE", {
+      id,
+      application_id: extra.applicationId ?? "app-main",
+      type: 2,
+      data: { name, options },
+      channel_id: extra.channelId ?? "c1",
+      guild_id: extra.guildId ?? "g1",
+      member: { user: discordAuthor(extra.userId ?? owner), roles: [] },
+      token: "itok-" + id,
+    });
+    return id;
+  };
+  const discordClick = (label, customId, extra = {}) => {
+    const id = "i" + discordNext.value++;
+    fake.inject(label, "INTERACTION_CREATE", {
+      id,
+      application_id: extra.applicationId ?? "app-main",
+      type: 3,
+      data: { custom_id: customId, component_type: 2 },
+      channel_id: extra.channelId ?? "dm-" + owner,
+      guild_id: extra.guildId ?? "g1",
+      member: { user: discordAuthor(extra.userId ?? owner), roles: [] },
+      token: "itok-" + id,
+      message: { id: extra.messageId ?? "m1", channel_id: extra.channelId ?? "dm-" + owner, author: { id: "9001", username: "durabot", bot: true }, content: "", type: 0, attachments: [], timestamp: new Date().toISOString() },
+    });
+    return id;
+  };
+
   const waitFor = async (predicate, timeoutMs = 25_000, describe = "condition") => {
     const until = Date.now() + timeoutMs;
     while (Date.now() < until) {
@@ -230,13 +363,30 @@ export async function startHarness(options = {}) {
   return {
     home,
     owner,
+    platform,
     fake,
+    otherFake,
+    otherBots,
+    telegramFake,
+    discordFake,
     agents,
     client,
     log: () => log,
     send,
     text,
+    discordMessage,
+    discordDM,
+    discordThreadMessage,
+    discordSlash,
+    discordClick,
     waitFor,
+    /** Replace the process, keep the home: the durable run and the transport state must survive it. */
+    restart: async (options = {}) => {
+      client.close();
+      await launch(options);
+      client = await Ipc.connect(resolve(home, "run", "daemon.sock"));
+      return client;
+    },
     stop: async () => {
       try {
         await client.request("shutdown");
@@ -249,7 +399,10 @@ export async function startHarness(options = {}) {
       await sleep(300);
       if (child.exitCode === null) child.kill("SIGKILL");
       if (options.keepHome !== true) await rm(home, { recursive: true, force: true });
-      if (options.keepFake !== true) await fake.close();
+      if (options.keepFake !== true) {
+        await fake.close();
+        if (otherFake) await otherFake.close();
+      }
     },
   };
 }

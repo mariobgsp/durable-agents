@@ -51,6 +51,45 @@ export type UpdateOutcome = {
 /** `downtimeMs` is written by the *next* process, so "asked to restart" and "came back" stay two facts. */
 export type RestartOutcome = { kind: "restart"; supervisor: Supervisor; downtimeMs: number | null };
 
+/**
+ * Why the process is leaving, written down so the *next* process can say what happened.
+ *
+ * A restart nobody announces is indistinguishable from a hang: the bubble stops moving mid-answer and the
+ * only trace is a journal line. This record is what the transports read to speak for the process, before it
+ * goes and after it is back.
+ */
+export type RestartBrief = {
+  id: string;
+  /** When the restart was asked for. */
+  at: number;
+  /** `system_apply`, `/restart`, `update`, `stop` — shown to the chat as the reason. */
+  cause: string;
+  /** True when something brings the process back; false for a plain stop. */
+  planned: boolean;
+  supervisor: Supervisor;
+  /** Written by the process that actually leaves, so downtime runs from the stop, not from the request. */
+  leavingAt?: number;
+  uptimeMs?: number;
+  sessionId?: string;
+  agentId?: string;
+};
+
+/** What a transport is told: on the way down, and again when the service is back. */
+export type RestartNotice =
+  | { phase: "leaving"; brief: RestartBrief }
+  | { phase: "back"; brief: RestartBrief | null; downtimeMs: number };
+
+export type RestartListener = (notice: RestartNotice) => Promise<void> | void;
+
+export type RestartInput = {
+  cause?: string;
+  /** The thread that asked, so its own chat gets the notice instead of a stranger's. */
+  sessionId?: string;
+  agentId?: string;
+  /** How long to wait before the process stops; the answer that asked for it is still being delivered. */
+  delaySeconds?: number;
+};
+
 /** One name per panel state, so a screen cannot invent a seventh rendering. */
 export type OperationState =
   | { name: "running"; step: Step }
@@ -74,6 +113,8 @@ export type Operation = {
 
 export type SystemSnapshot = {
   process: ProcessFacts;
+  /** The restart this process was born from, so a panel can show why it is here. */
+  restart: { brief: RestartBrief | null; downtimeMs: number } | null;
   /** The one operation still allowed to transition, or null. At most one. */
   current: Operation | null;
   /** The most recent terminal operation, including one left by the process before this one. */
@@ -117,6 +158,27 @@ let last: Operation | null = null;
 let runningChild: ChildProcess | undefined;
 let operationCount = 0;
 let logSeq = 0;
+/** The restart this process is expected to perform; persisted before the process leaves. */
+let brief: RestartBrief | null = null;
+/** The restart of the *previous* process, kept for every listener that registers after boot. */
+let restartBoot: { brief: RestartBrief | null; downtimeMs: number } | null = null;
+let leavingAnnounced = false;
+const restartListeners = new Set<RestartListener>();
+/** A transport that cannot answer must not hold the process open, so the goodbye is bounded. */
+const ANNOUNCE_TIMEOUT_MS = 2_500;
+
+function restartBrief(cause: string, input: RestartInput | undefined, planned: boolean): RestartBrief {
+  const next: RestartBrief = {
+    id: process.pid + "-" + Date.now(),
+    at: Date.now(),
+    cause,
+    planned,
+    supervisor: facts?.supervisor ?? "none",
+  };
+  if (input?.sessionId) next.sessionId = input.sessionId;
+  if (input?.agentId) next.agentId = input.agentId;
+  return next;
+}
 
 /** `PI_SUPERVISOR` is the explicit override (tests, `dev.mjs`); systemd sets the other two. */
 function supervisorOf(): Supervisor {
@@ -200,15 +262,36 @@ function fail(operation: Operation, reason: string, exitCode: number | null): vo
 }
 
 async function persist(): Promise<void> {
-  if (!last) return;
+  if (!last && !brief) return;
   try {
     await mkdir(dirname(systemPath), { recursive: true });
     const temporary = systemPath + ".tmp";
-    await writeFile(temporary, JSON.stringify({ last }, null, 2), { mode: 0o600 });
+    await writeFile(temporary, JSON.stringify({ last, brief }, null, 2), { mode: 0o600 });
     await rename(temporary, systemPath);
   } catch (error) {
     console.error("could not persist the system record:", String(error));
   }
+}
+
+/** A brief is a note to the next process: a half-written one is no note, not a guessed restart. */
+function parseBrief(value: unknown): RestartBrief | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.id !== "string" || typeof candidate.at !== "number") return null;
+  if (typeof candidate.cause !== "string") return null;
+  const supervisor = candidate.supervisor;
+  if (supervisor !== "systemd" && supervisor !== "dev" && supervisor !== "none") return null;
+  return {
+    id: candidate.id,
+    at: candidate.at,
+    cause: candidate.cause,
+    planned: candidate.planned === true,
+    supervisor,
+    ...(typeof candidate.leavingAt === "number" ? { leavingAt: candidate.leavingAt } : {}),
+    ...(typeof candidate.uptimeMs === "number" ? { uptimeMs: candidate.uptimeMs } : {}),
+    ...(typeof candidate.sessionId === "string" ? { sessionId: candidate.sessionId } : {}),
+    ...(typeof candidate.agentId === "string" ? { agentId: candidate.agentId } : {}),
+  };
 }
 
 /** A narrow reader: a corrupt or older record is no record, not an interrupted operation. */
@@ -244,13 +327,13 @@ function parseOperation(value: unknown): Operation | null {
   };
 }
 
-async function readPersisted(): Promise<Operation | null> {
+async function readPersisted(): Promise<{ last: Operation | null; brief: RestartBrief | null }> {
   try {
     const raw = await readFile(systemPath, "utf8");
-    const parsed = JSON.parse(raw) as { last?: unknown };
-    return parseOperation(parsed.last);
+    const parsed = JSON.parse(raw) as { last?: unknown; brief?: unknown };
+    return { last: parseOperation(parsed.last), brief: parseBrief(parsed.brief) };
   } catch {
-    return null;
+    return { last: null, brief: null };
   }
 }
 
@@ -277,9 +360,11 @@ export async function openSystem(systemHooks: SystemHooks): Promise<void> {
   };
 
   const previous = await readPersisted();
-  if (previous?.state.name === "running") {
+  const lastOperation = previous.last;
+  brief = previous.brief;
+  if (lastOperation?.state.name === "running") {
     last = {
-      ...previous,
+      ...lastOperation,
       state: {
         name: "interrupted",
         reason: "the process restarted before this operation finished",
@@ -288,17 +373,15 @@ export async function openSystem(systemHooks: SystemHooks): Promise<void> {
     };
     addLine(last, "state", describe(last.state));
     await persist();
-    return;
-  }
-  if (previous?.kind === "restart" && previous.state.name === "restarting") {
-    const endedAt = previous.endedAt ?? previous.startedAt;
+  } else if (lastOperation?.kind === "restart" && lastOperation.state.name === "restarting") {
+    const endedAt = lastOperation.endedAt ?? lastOperation.startedAt;
     last = {
-      ...previous,
+      ...lastOperation,
       state: {
         name: "done",
         outcome: {
           kind: "restart",
-          supervisor: previous.state.supervisor,
+          supervisor: lastOperation.state.supervisor,
           downtimeMs: Math.max(0, Date.now() - endedAt),
         },
       },
@@ -306,14 +389,75 @@ export async function openSystem(systemHooks: SystemHooks): Promise<void> {
     };
     addLine(last, "state", describe(last.state));
     await persist();
-    return;
+  } else {
+    last = lastOperation;
   }
-  last = previous;
+
+  // The previous process left a note. This process is the proof it came back, and every transport that
+  // registers from now on is handed that fact instead of having to guess why the bot went quiet.
+  if (previous.brief) {
+    const leftAt = previous.brief.leavingAt ?? previous.brief.at;
+    restartBoot = { brief: previous.brief, downtimeMs: Math.max(0, Date.now() - leftAt) };
+  }
 }
 
 export function systemSnapshot(): SystemSnapshot {
   if (!facts) throw new Error("system not open: call openSystem() first");
-  return { process: facts, current, last };
+  return { process: facts, current, last, restart: restartBoot };
+}
+
+/**
+ * What the previous process left for the chats to hear, or null when it left no note at all.
+ *
+ * A transport reads this once, at start, at the moment it can actually speak: replaying it from inside
+ * `onRestart` would race with delivery recovery and report the wrong number of interrupted runs.
+ */
+export function bootRestartNotice(): { brief: RestartBrief | null; downtimeMs: number } | null {
+  return restartBoot;
+}
+
+/** Listen for this process leaving. The goodbye is fire-and-forget: a mute chat must not block the exit. */
+export function onRestart(listener: RestartListener): () => void {
+  restartListeners.add(listener);
+  return () => restartListeners.delete(listener);
+}
+
+async function notifyRestart(notice: RestartNotice): Promise<void> {
+  await Promise.all(
+    [...restartListeners].map(async (listener) => {
+      try {
+        await Promise.race([
+          Promise.resolve(listener(notice)),
+          new Promise<void>((done) => {
+            const timer = setTimeout(done, ANNOUNCE_TIMEOUT_MS);
+            timer.unref?.();
+          }),
+        ]);
+      } catch (error) {
+        console.error("restart notice failed:", String(error));
+      }
+    }),
+  );
+}
+
+/**
+ * Say goodbye before the process goes.
+ *
+ * Called from the stop hook, so it covers every exit there is: a scheduled restart, `dura stop`, a SIGTERM
+ * from systemd. The brief is persisted first, because the next process reads it to report the downtime it
+ * measured — "asked to restart" and "came back" have to stay two facts, and both have to reach the chat.
+ */
+export async function announceLeaving(input?: RestartInput): Promise<void> {
+  if (leavingAnnounced) return;
+  leavingAnnounced = true;
+  const base = brief ?? restartBrief(input?.cause ?? "stop", input, false);
+  brief = {
+    ...base,
+    leavingAt: Date.now(),
+    ...(facts ? { uptimeMs: Date.now() - facts.startedAt } : {}),
+  };
+  await persist();
+  await notifyRestart({ phase: "leaving", brief });
 }
 
 function npmCommand(): { command: string; args: string[] } | null {
@@ -440,7 +584,7 @@ async function runUpdate(operation: Operation): Promise<void> {
  * A restart is terminal for this process the moment it is recorded: there is no work left to watch, and the
  * next process is what proves it came back.
  */
-export function startOperation(kind: "update" | "restart"): Operation {
+export function startOperation(kind: "update" | "restart", input?: RestartInput): Operation {
   if (!facts) throw new Error("system not open: call openSystem() first");
   if (current) {
     if (current.kind === kind && current.state.name === "running") return current;
@@ -460,15 +604,42 @@ export function startOperation(kind: "update" | "restart"): Operation {
   current = operation;
 
   if (kind === "restart") {
-    const supervisor = facts.supervisor;
-    settle(operation, supervisor === "none" ? { name: "stopped" } : { name: "restarting", supervisor });
-    void scheduleRestart(1.5).catch((error) => console.error("could not schedule the restart:", String(error)));
+    const operation = recordRestart(input);
+    void scheduleRestart(input?.delaySeconds ?? 1.5).catch((error) =>
+      console.error("could not schedule the restart:", String(error)),
+    );
     return operation;
   }
 
   void runUpdate(operation).catch((error: unknown) => {
     fail(operation, error instanceof Error ? error.message : String(error), null);
   });
+  return operation;
+}
+
+/**
+ * Record this process's exit, before it happens.
+ *
+ * The panel needs a terminal operation, the next process needs the brief, and the chats need a cause: all
+ * three are written here, so every way of asking for a restart ends in the same record. Two facts, not one:
+ * "asked to restart" is written now, "came back" is written by the process that does it.
+ */
+function recordRestart(input: RestartInput | undefined): Operation {
+  const supervisor = facts!.supervisor;
+  const operation: Operation = {
+    id: process.pid + "-" + ++operationCount,
+    kind: "restart",
+    state: { name: "running", step: "stopping" },
+    startedAt: Date.now(),
+    endedAt: null,
+    log: [],
+    truncated: false,
+  };
+  addLine(operation, "state", "Restart requested");
+  current = operation;
+  brief = restartBrief(input?.cause ?? "restart", input, supervisor !== "none");
+  settle(operation, supervisor === "none" ? { name: "stopped" } : { name: "restarting", supervisor });
+  void persist();
   return operation;
 }
 
@@ -485,9 +656,18 @@ export function startOperation(kind: "update" | "restart"): Operation {
  * daemon stops cleanly and Restart=always brings it back. This is what makes edited source files take
  * effect: the next process loads the same working tree.
  */
-export async function scheduleRestart(delaySeconds = 2): Promise<{ scheduled: boolean; detail: string }> {
+export async function scheduleRestart(
+  delaySeconds = 2,
+  input?: RestartInput,
+): Promise<{ scheduled: boolean; detail: string }> {
   if (process.env.DURA_E2E === "1") return { scheduled: false, detail: "e2e dry-run; restart not performed" };
   if (!facts) throw new Error("system not open: call openSystem() first");
+  // A tool asks for the restart directly, without a panel operation: record it the same way, so the chats
+  // and the next process see one shape whatever asked.
+  if (input) {
+    if (current) throw new OperationBusyError(current);
+    recordRestart(input);
+  }
   if (facts.supervisor === "systemd") {
     try {
       await execFileAsync(

@@ -1,0 +1,6 @@
+{
+  "name": "@durable-agents/discord",
+  "private": true,
+  "type": "module",
+  "dependencies": {}
+}

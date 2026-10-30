@@ -4,8 +4,8 @@ import { homedir } from "node:os";
 import { type Parsed, has } from "../args.ts";
 import { bytes, json, paint, print, table } from "../output.ts";
 import { DaemonClient, DaemonUnavailable } from "../client.ts";
-import { readConfig } from "../../../core/src/config.ts";
-import { duraHome, telegramBotsPath } from "../../../core/src/paths.ts";
+import { readConfig, validateConfig } from "../../../core/src/config.ts";
+import { discordBotsPath, duraHome, telegramBotsPath } from "../../../core/src/paths.ts";
 import { models } from "../../../core/src/models.ts";
 
 type Row = { check: string; ok: boolean; detail: string };
@@ -54,21 +54,34 @@ export async function runDoctor(parsed: Parsed): Promise<void> {
       });
     }
     rows.push({ check: "model", ok: true, detail: config.models.default.provider + "/" + config.models.default.modelId });
+    const problems = validateConfig(config);
+    rows.push({
+      check: "chat-surface",
+      ok: problems.length === 0,
+      detail: problems.length === 0 ? config.chat.active : problems.join("; "),
+    });
+    const active = config.chat.active;
+    const registryPath = active === "discord" ? discordBotsPath : telegramBotsPath;
+    try {
+      const raw = JSON.parse(await readFile(registryPath, "utf8")) as { bots?: { label?: string; enabled?: boolean }[] };
+      const info = await stat(registryPath);
+      rows.push({
+        check: "bots (" + active + ")",
+        ok: (info.mode & 0o077) === 0,
+        detail: (raw.bots ?? []).length + " configured · mode " + (info.mode & 0o777).toString(8),
+      });
+    } catch {
+      rows.push({ check: "bots (" + active + ")", ok: false, detail: "no registry yet (run dura init step 3)" });
+    }
+    const inactive = active === "discord" ? telegramBotsPath : discordBotsPath;
+    try {
+      const raw = JSON.parse(await readFile(inactive, "utf8")) as { bots?: unknown[] };
+      rows.push({ check: "inactive-surface", ok: true, detail: (raw.bots ?? []).length + " credentials kept but not started" });
+    } catch {
+      /* no inactive credentials */
+    }
   } catch (error) {
     rows.push({ check: "config", ok: false, detail: String(error) });
-  }
-
-  try {
-    const raw = JSON.parse(await readFile(telegramBotsPath, "utf8")) as { bots?: { label?: string; enabled?: boolean }[] };
-    const info = await stat(telegramBotsPath);
-    rows.push({
-      check: "bots",
-      ok: (info.mode & 0o077) === 0,
-      detail:
-        (raw.bots ?? []).length + " configured · mode " + (info.mode & 0o777).toString(8),
-    });
-  } catch {
-    rows.push({ check: "bots", ok: false, detail: "no bot registry yet (run dura init step 3)" });
   }
 
   try {
@@ -92,12 +105,12 @@ export async function runDoctor(parsed: Parsed): Promise<void> {
     try {
       const status = (await client.request("status")) as {
         memory?: { rss?: number };
-        channels?: { bots?: { label: string; ok?: boolean }[] };
+        channels?: { platform?: string; bots?: { label: string; ok?: boolean; gateway?: string }[] };
       };
-      rows.push({ check: "daemon", ok: true, detail: "running · " + bytes(status.memory?.rss ?? 0) + " rss" });
+      rows.push({ check: "daemon", ok: true, detail: "running · " + bytes(status.memory?.rss ?? 0) + " rss · " + (status.channels?.platform ?? "no surface") });
       const bots = status.channels?.bots ?? [];
       for (const bot of bots) {
-        rows.push({ check: "bot " + bot.label, ok: bot.ok !== false, detail: bot.ok === false ? "polling failed" : "connected" });
+        rows.push({ check: "bot " + bot.label, ok: bot.ok !== false, detail: bot.ok === false ? bot.gateway ?? "connection failed" : "connected" });
       }
     } finally {
       client.close();
