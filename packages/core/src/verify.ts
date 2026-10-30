@@ -2,7 +2,7 @@ import { readFile, readdir, readlink, stat, writeFile, rm } from "node:fs/promis
 import { DatabaseSync } from "node:sqlite";
 import { dirname } from "node:path";
 import { listAgents } from "./agents.ts";
-import { defaultCwd, readConfig, type DuraConfig } from "./config.ts";
+import { defaultCwd, isChatPlatform, readConfig, type DuraConfig } from "./config.ts";
 import { context, harnessInstance } from "./harness.ts";
 import { log } from "./logger.ts";
 import { models } from "./models.ts";
@@ -280,6 +280,12 @@ export type VerifyResult = { ok: boolean; checks: Check[]; verifiedAt: number | 
 export async function verifyConnection(options: VerifyOptions = {}): Promise<VerifyResult> {
   const config = await readConfig({ fresh: true });
   const checks: Check[] = [];
+  checks.push({
+    name: "chat-surface",
+    ok: isChatPlatform(config.chat.active),
+    detail: isChatPlatform(config.chat.active) ? config.chat.active : "invalid: " + JSON.stringify(config.chat.active),
+    required: true,
+  });
   checks.push(...(await checkHome()));
   checks.push(...(await checkProvider(config)));
   checks.push(...(await checkAgents(config, options.bots)));

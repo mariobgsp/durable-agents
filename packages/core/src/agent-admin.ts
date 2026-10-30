@@ -41,13 +41,36 @@ export type BotLister = () => Promise<string[]>;
 /** Adds a bot from an owner-provided token, starts its poller and returns its identity. */
 export type BotConnector = (input: { token: string; label?: string }) => Promise<{ label: string; username: string }>;
 
-let validateBot: BotValidator = async () => true;
-let listBots: BotLister = async () => [];
+/**
+ * The bot bridge is deliberately small and transport-neutral.
+ *
+ * Telegram binds a bot to an agent by writing `agent.telegramBot`; Discord has no per-agent bot,
+ * so it sets `perAgent: false` and implements holder/bind/release against its registry's
+ * `defaultAgent`. Leaving the optional hooks unset preserves the Telegram behavior.
+ */
+export type BotBridge = {
+  validate: BotValidator;
+  list: BotLister;
+  platform?: "telegram" | "discord";
+  perAgent?: boolean;
+  holder?: (label: string) => Promise<string | undefined>;
+  bind?: (label: string, agentId: string) => Promise<{ freed?: string[] }>;
+  release?: (label: string) => Promise<string[]>;
+};
+
+let bridge: BotBridge = { validate: async () => true, list: async () => [] };
 let connectBot: BotConnector | undefined;
 
-export function setBotResolver(resolver: { validate: BotValidator; list: BotLister }): void {
-  validateBot = resolver.validate;
-  listBots = resolver.list;
+export function setBotResolver(resolver: BotBridge): void {
+  bridge = { perAgent: true, platform: "telegram", ...resolver };
+}
+
+function botsArePerAgent(): boolean {
+  return bridge.perAgent !== false;
+}
+
+function platformLabel(): string {
+  return bridge.platform === "discord" ? "Discord" : "Telegram";
 }
 
 export function setBotConnector(connector: BotConnector | undefined): void {
@@ -79,8 +102,8 @@ export class BotChoiceRequired extends Error {
   readonly bots: string[];
   constructor(bots: string[]) {
     super(
-      "several Telegram bots are configured (" + bots.join(", ") + "). Ask the owner which bot this agent should " +
-      "use, then call again with telegramBot set.",
+      "several " + platformLabel() + " bots are configured (" + bots.join(", ") + "). Ask the owner which bot this " +
+      "agent should use, then call again with the bot label set.",
     );
     this.name = "BotChoiceRequired";
     this.bots = bots;
@@ -91,8 +114,13 @@ function slugify(value: string): string {
   return (value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "agent");
 }
 
-/** The agent that currently owns a bot label, if any. One bot belongs to at most one agent. */
+/** The agent that currently owns a bot label, if any. One Telegram bot belongs to at most one agent. */
 export async function botHolder(label: string, exceptAgentId?: string): Promise<AgentRecord | undefined> {
+  if (bridge.holder) {
+    const agentId = await bridge.holder(label);
+    if (!agentId || agentId === exceptAgentId) return undefined;
+    return (await readAgent(agentId))?.record;
+  }
   return (await listAgents()).find((agent) => agent.telegramBot === label && agent.id !== exceptAgentId);
 }
 
@@ -100,7 +128,8 @@ async function assertBotFree(label: string, exceptAgentId?: string): Promise<voi
   const holder = await botHolder(label, exceptAgentId);
   if (holder) {
     throw new Error(
-      "Telegram bot " + label + " already belongs to " + holder.id + ". One bot is one agent; release it first or add another bot.",
+      platformLabel() + " bot " + label + " already belongs to " + holder.id + ". " +
+        (botsArePerAgent() ? "One bot is one agent; release it first or add another bot." : "Release it first."),
     );
   }
 }
@@ -111,16 +140,18 @@ async function assertBotFree(label: string, exceptAgentId?: string): Promise<voi
  * through the orchestrator, or later through a new bot).
  */
 async function resolveBotForCreate(label: string | undefined, options: { ask: boolean }): Promise<string | undefined> {
+  // Discord agents reach the fleet through threads and DMs, not through a dedicated bot.
+  if (!botsArePerAgent()) return undefined;
   const config = await readConfig({ fresh: true });
   if (label) {
-    if (!(await validateBot(label))) {
-      const known = await listBots();
-      throw new Error("unknown Telegram bot: " + label + (known.length ? " (available: " + known.join(", ") + ")" : ""));
+    if (!(await bridge.validate(label))) {
+      const known = await bridge.list();
+      throw new Error("unknown " + platformLabel() + " bot: " + label + (known.length ? " (available: " + known.join(", ") + ")" : ""));
     }
     await assertBotFree(label);
     return label;
   }
-  const bots = await listBots();
+  const bots = await bridge.list();
   if (bots.length === 0) return undefined;
   const free: string[] = [];
   for (const bot of bots) if (!(await botHolder(bot))) free.push(bot);
@@ -131,9 +162,15 @@ async function resolveBotForCreate(label: string | undefined, options: { ask: bo
 
 /** Move a bot to an agent: the previous holder is unpaired and the agent's old bot is released. */
 export async function assignBotToAgent(bot: string, agentId: string, caller = "cli"): Promise<{ agentId: string; freed: string[] }> {
-  if (!(await validateBot(bot))) throw new Error("unknown Telegram bot: " + bot);
+  if (!(await bridge.validate(bot))) throw new Error("unknown " + platformLabel() + " bot: " + bot);
   const target = await readAgent(agentId);
   if (!target) throw new Error("unknown agent: " + agentId);
+  if (bridge.bind && !botsArePerAgent()) {
+    const result = await bridge.bind(bot, agentId);
+    emit({ kind: "update", agentId, caller });
+    log.info("bot.assigned", { bot, agentId, platform: bridge.platform, freed: result.freed ?? [], caller });
+    return { agentId, freed: result.freed ?? [] };
+  }
   const holders = (await listAgents()).filter((agent) => agent.telegramBot === bot && agent.id !== agentId);
   for (const holder of holders) {
     await writeAgent({ ...holder, id: holder.id, telegramBot: null });
@@ -150,6 +187,11 @@ export async function assignBotToAgent(bot: string, agentId: string, caller = "c
 
 /** Unpair every agent that names this bot. */
 export async function releaseBot(bot: string, caller = "cli"): Promise<string[]> {
+  if (bridge.release && !botsArePerAgent()) {
+    const freed = await bridge.release(bot);
+    if (freed.length > 0) log.info("bot.released", { bot, agents: freed, platform: bridge.platform, caller });
+    return freed;
+  }
   const holders = (await listAgents()).filter((agent) => agent.telegramBot === bot);
   for (const holder of holders) {
     await writeAgent({ ...holder, id: holder.id, telegramBot: null });
@@ -166,6 +208,7 @@ export async function releaseBot(bot: string, caller = "cli"): Promise<string[]>
  * cannot leave ambiguous DM routing.
  */
 export async function normalizeBotAssignments(): Promise<{ agentId: string; bot: string }[]> {
+  if (!botsArePerAgent()) return [];
   const groups = new Map<string, AgentRecord[]>();
   for (const agent of await listAgents()) {
     if (!agent.telegramBot) continue;
@@ -271,10 +314,14 @@ export async function updateAgent(input: UpdateAgentInput): Promise<AgentFiles> 
   const files = await readAgent(input.id);
   if (!files) throw new Error("unknown agent: " + input.id);
   let bot: string | undefined | null = files.record.telegramBot;
-  if (input.telegramBot === null) {
+  if (!botsArePerAgent()) {
+    // Discord reaches agents through threads/DMs; a per-agent bot field is meaningless and must not be
+    // cleared just because an unrelated update passed through this path.
+    bot = files.record.telegramBot;
+  } else if (input.telegramBot === null) {
     bot = null;
   } else if (input.telegramBot) {
-    if (!(await validateBot(input.telegramBot))) throw new Error("unknown Telegram bot: " + input.telegramBot);
+    if (!(await bridge.validate(input.telegramBot))) throw new Error("unknown " + platformLabel() + " bot: " + input.telegramBot);
     await assertBotFree(input.telegramBot, input.id);
     bot = input.telegramBot;
   }
@@ -294,7 +341,7 @@ export async function updateAgent(input: UpdateAgentInput): Promise<AgentFiles> 
     cwd: input.cwd ?? files.record.cwd,
     mesh: input.mesh ?? files.record.mesh,
     thinkingLevel: input.thinkingLevel ?? files.record.thinkingLevel,
-    telegramBot: bot ?? null,
+    telegramBot: bot,
     enabled,
   });
   await postMutation(files.record.id);
@@ -381,7 +428,7 @@ export async function adminSnapshot(): Promise<{
   orchestrator: string | null;
 }> {
   const { orchestratorId } = await import("./orchestrator.ts");
-  const [agents, records, bots] = await Promise.all([listAgents(), allSessionRecords(), listBots()]);
+  const [agents, records, bots] = await Promise.all([listAgents(), allSessionRecords(), bridge.list()]);
   return {
     agents: agents.map((agent) => ({
       ...agent,
@@ -413,7 +460,7 @@ async function requireOrchestrator(conversationId: string): Promise<string | Ret
 export const agentAdminListTool = defineTool({
   name: "agent_admin_list",
   description:
-    "List every agent with its model, bot, tools, responsibility and thread count, plus the available Telegram bots and " +
+    "List every agent with its model, bot, tools, responsibility and thread count, plus the available chat bots and " +
     "the current orchestrator. Use before creating or editing anyone.",
   parameters: Type.Object({}),
   async execute(_args, api) {
@@ -425,7 +472,7 @@ export const agentAdminListTool = defineTool({
         agent.id + " — " + agent.name,
         agent.enabled === false ? "disabled" : "enabled",
         agent.provider + "/" + agent.modelId,
-        "bot: " + (agent.telegramBot ?? "default"),
+        "bot: " + (botsArePerAgent() ? (agent.telegramBot ?? "default") : "thread/DM"),
         agent.responsibility ? "responsibility: " + agent.responsibility : "",
         agent.threadCount + " threads",
         isOrchestrator(agent.id) ? "ORCHESTRATOR" : "",
@@ -464,7 +511,7 @@ export const agentReadTool = defineTool({
           type: "text" as const,
           text:
             "Agent " + args.agent + " (" + files.record.name + ") · " + files.record.provider + "/" + files.record.modelId +
-            " · bot " + (files.record.telegramBot ?? "default") + " · " + (files.record.enabled === false ? "disabled" : "enabled") +
+            " · bot " + (botsArePerAgent() ? (files.record.telegramBot ?? "default") : "thread/DM") + " · " + (files.record.enabled === false ? "disabled" : "enabled") +
             "\nAGENT.md sha256 " + docs.agent.sha256 + " (" + docs.agent.lines + " lines)\n" + docs.agent.text +
             "\nSOUL.md sha256 " + docs.soul.sha256 + " (" + docs.soul.lines + " lines)\n" + docs.soul.text,
         },
@@ -478,7 +525,7 @@ export const agentCreateTool = defineTool({
   name: "agent_create",
   description:
     "Create one agent. Call it once per agent; several calls in one round are allowed and run in parallel. When more " +
-    "than one Telegram bot exists you must ask the owner which bot with the question tool, then pass telegramBot.",
+    "than one chat bot exists on a per-agent surface, ask the owner which bot with the question tool, then pass telegramBot.",
   parameters: Type.Object({
     name: Type.String({ description: "Display name; the id is derived from it" }),
     telegramBot: Type.Optional(Type.String({ description: "Bot registry label, when several bots exist" })),
@@ -515,7 +562,8 @@ export const agentCreateTool = defineTool({
           {
             type: "text" as const,
             text:
-              "Created agent " + files.record.id + " (" + files.record.name + ") on bot " + (files.record.telegramBot ?? "default") +
+              "Created agent " + files.record.id + " (" + files.record.name + ") on " +
+              (botsArePerAgent() ? "bot " + (files.record.telegramBot ?? "default") : "threads/DMs") +
               " with " + files.record.provider + "/" + files.record.modelId + ".",
           },
         ],
@@ -681,7 +729,7 @@ export const agentSuggestTool = defineTool({
 
 /**
  * Offered to every agent. With no orchestrator the call takes the role immediately; otherwise it
- * reports a request and the owner approves it from Telegram.
+ * reports a request and the owner approves it from the active chat surface.
  */
 export const orchestratorClaimTool = defineTool({
   name: "orchestrator_claim",
@@ -714,7 +762,7 @@ export const orchestratorClaimTool = defineTool({
             type: "text" as const,
             text:
               "Request sent. " + (result.current ?? "another agent") + " is still the orchestrator; the owner must approve " +
-              "the change from Telegram.",
+              "the change from the active chat surface.",
           },
         ],
       };
@@ -726,27 +774,24 @@ export const orchestratorClaimTool = defineTool({
 
 export const botListTool = defineTool({
   name: "bot_list",
-  description: "List Telegram bots, the one agent each bot belongs to, and the agents that have no bot. Use before pairing.",
+  description: "List chat bots, their agent or default agent, and the agents that are not paired to one. Use before pairing.",
   parameters: Type.Object({}),
   async execute(_args, api) {
     const guard = await requireOrchestrator(String(api.conversationId));
     if (typeof guard !== "string") return guard;
-    const [bots, agents] = await Promise.all([listBots(), listAgents()]);
-    const lines = bots.map((bot) => {
-      const holder = agents.find((agent) => agent.telegramBot === bot);
-      return "· " + bot + " → " + (holder ? holder.id + " (" + holder.name + ")" : "unpaired");
-    });
-    const unpaired = agents.filter((agent) => !agent.telegramBot).map((agent) => agent.id);
+    const [bots, agents] = await Promise.all([bridge.list(), listAgents()]);
+    const lines: string[] = [];
+    for (const bot of bots) {
+      const holder = await botHolder(bot);
+      lines.push("· " + bot + " → " + (holder ? holder.id + " (" + holder.name + ")" : botsArePerAgent() ? "unpaired" : "no default agent"));
+    }
+    const unpaired = botsArePerAgent() ? agents.filter((agent) => !agent.telegramBot).map((agent) => agent.id) : [];
+    const text = botsArePerAgent()
+      ? "Bots (one bot belongs to one agent):\n" + (lines.join("\n") || "none") + "\nUnpaired agents: " + (unpaired.join(", ") || "none")
+      : "Bots (one connection serves the fleet; each bot has a default agent):\n" + (lines.join("\n") || "none");
     return {
-      output: [
-        {
-          type: "text" as const,
-          text:
-            "Bots (one bot belongs to one agent):\n" + (lines.join("\n") || "none") +
-            "\nUnpaired agents: " + (unpaired.join(", ") || "none"),
-        },
-      ],
-      details: { bots, unpaired } as never,
+      output: [{ type: "text" as const, text }],
+      details: { platform: bridge.platform ?? "telegram", bots, unpaired } as never,
     };
   },
 });
@@ -754,8 +799,8 @@ export const botListTool = defineTool({
 export const botAssignTool = defineTool({
   name: "bot_assign",
   description:
-    "Connect one Telegram bot to one agent. The bot's previous agent is unpaired, and the agent's previous bot " +
-    "is released. Every agent tool, including MCP, follows the agent, not the bot.",
+    "Connect one chat bot to one agent. On a per-agent surface the bot's previous agent is unpaired and the " +
+    "agent's previous bot is released; on a fleet surface this sets the bot's default agent.",
   parameters: Type.Object({
     bot: Type.String({ description: "Bot registry label" }),
     agent: Type.String({ description: "Agent id" }),
@@ -784,7 +829,7 @@ export const botAssignTool = defineTool({
 
 export const botReleaseTool = defineTool({
   name: "bot_release",
-  description: "Unpair a Telegram bot from its agent. The bot keeps running but answers with a pairing prompt.",
+  description: "Unpair a chat bot from its agent or clear its default agent. The bot keeps running.",
   parameters: Type.Object({ bot: Type.String({ description: "Bot registry label" }) }),
   async execute(args, api) {
     const guard = await requireOrchestrator(String(api.conversationId));
@@ -938,12 +983,19 @@ export const systemApplyTool = defineTool({
       return { output: [{ type: "text" as const, text: "Checks passed. Restart skipped; the working tree is not loaded yet." }] };
     }
     try {
-      const result = await scheduleRestart(args.delaySeconds ?? 15);
+      // Recorded as a restart operation, not a bare timer: the chats have to be told why the bot goes quiet,
+      // and the next process has to know this exit was planned.
+      const result = await scheduleRestart(args.delaySeconds ?? 15, {
+        cause: "system_apply",
+        sessionId: String(api.conversationId),
+      });
       return {
         output: [
           {
             type: "text" as const,
-            text: "Checks passed. Service restart: " + result.detail + ". The next process loads the working tree.",
+            text:
+              "Checks passed. Service restart: " + result.detail + ". Every chat with work in flight is told, " +
+              "and the next process loads the working tree.",
           },
         ],
       };
@@ -956,11 +1008,12 @@ export const systemApplyTool = defineTool({
 export const botConnectTool = defineTool({
   name: "bot_connect",
   description:
-    "Connect a Telegram bot to an agent using a token the owner supplied. Never open a browser or the Telegram web app " +
-    "to obtain tokens: ask the owner for the token instead. The bot is started immediately and the agent is rebound.",
+    "Connect a chat bot using a token the owner supplied. Never open a browser or a platform web app to obtain tokens: " +
+    "ask the owner for the token instead. Telegram assigns the bot to the agent; Discord sets its default agent. " +
+    "The bot is started immediately.",
   parameters: Type.Object({
     agent: Type.String({ description: "Agent id" }),
-    token: Type.String({ description: "Bot token from @BotFather, provided by the owner" }),
+    token: Type.String({ description: "Bot token from the platform developer portal, provided by the owner" }),
     label: Type.Optional(Type.String({ description: "Registry label; derived from the username when omitted" })),
   }),
   async execute(args, api) {

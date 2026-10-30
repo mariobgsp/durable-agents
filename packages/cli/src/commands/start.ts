@@ -4,39 +4,45 @@ import { resolve } from "node:path";
 import { watch } from "node:fs";
 import { type Parsed, flag, flagAll, has } from "../args.ts";
 import { print, printError, paint, fail, json } from "../output.ts";
-import { readConfig } from "../../../core/src/config.ts";
+import { readConfig, validateConfig, type DuraConfig } from "../../../core/src/config.ts";
 import { duraHome, readyPath, runDir } from "../../../core/src/paths.ts";
 import { startDaemon } from "../../../core/src/daemon.ts";
 import { log } from "../../../core/src/logger.ts";
 
 const BIN = resolve(import.meta.dirname, "../../bin/dura.ts");
 
-type Channels = Awaited<ReturnType<typeof loadChannels>>;
-
-/**
- * The Telegram transport is a separate package, loaded only when the daemon starts. Core never
- * imports it; this composition point is the only place the two meet.
- */
-async function loadChannels(parsed: Parsed): Promise<{
+type Channels = {
   start(): Promise<void>;
   stop(): Promise<void>;
   status?(): Promise<Record<string, unknown>>;
   methods?: Record<string, (params: Record<string, unknown>, connection: never) => Promise<unknown>>;
   verifyExtra?: () => Promise<import("../../../core/src/verify.ts").Check[]>;
   botLabels?: () => Promise<string[]>;
-} | undefined> {
-  if (has(parsed, "no-telegram")) return undefined;
-  try {
-    const module = await import("../../../telegram/src/index.ts");
-    return module.createTelegramTransport();
-  } catch (error) {
-    const message = String(error);
-    if (message.includes("telegram/src/index.ts") || message.includes("Cannot find module")) {
-      log.warn("telegram.unavailable", { error: message });
-      return undefined;
+};
+
+/**
+ * Exactly one transport is imported and started. Core never imports either package; this
+ * composition point is the only place the two meet, and the config enum is the only switch.
+ */
+async function loadChannels(parsed: Parsed, config: DuraConfig): Promise<Channels | undefined> {
+  if (has(parsed, "no-chat") || has(parsed, "no-telegram")) return undefined;
+  if (config.chat.active === "telegram") {
+    try {
+      const module = await import("../../../telegram/src/index.ts");
+      return module.createTelegramTransport();
+    } catch (error) {
+      throw new Error("cannot load the Telegram transport: " + String(error));
     }
-    throw error;
   }
+  if (config.chat.active === "discord") {
+    try {
+      const module = await import("../../../discord/src/index.ts");
+      return module.createDiscordTransport();
+    } catch (error) {
+      throw new Error("cannot load the Discord transport: " + String(error));
+    }
+  }
+  throw new Error("chat.active must be telegram or discord (got " + JSON.stringify(config.chat.active) + ")");
 }
 
 async function waitForReady(pid: number, timeoutMs = 30_000): Promise<Record<string, unknown>> {
@@ -55,7 +61,7 @@ async function waitForReady(pid: number, timeoutMs = 30_000): Promise<Record<str
 
 function childArgs(parsed: Parsed, foreground: boolean): string[] {
   const args = [BIN, "start", ...(foreground ? ["--foreground"] : [])];
-  if (has(parsed, "no-telegram")) args.push("--no-telegram");
+  if (has(parsed, "no-chat") || has(parsed, "no-telegram")) args.push("--no-chat");
   for (const label of flagAll(parsed, "bot")) args.push("--bot", label);
   return args;
 }
@@ -79,7 +85,9 @@ export async function startDetached(parsed: Parsed): Promise<void> {
 
 async function runForeground(parsed: Parsed): Promise<void> {
   const config = await readConfig();
-  const channels = await loadChannels(parsed);
+  const problems = validateConfig(config);
+  if (problems.length > 0) throw new Error("invalid config: " + problems.join("; "));
+  const channels = await loadChannels(parsed, config);
   const handle = await startDaemon({
     config,
     console: true,
@@ -120,7 +128,7 @@ async function runWatch(parsed: Parsed): Promise<void> {
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
   start();
-  for (const dir of ["../../../core/src", "../../../telegram/src"]) {
+  for (const dir of ["../../../core/src", "../../../telegram/src", "../../../discord/src"]) {
     const target = resolve(import.meta.dirname, dir);
     try {
       await stat(target);

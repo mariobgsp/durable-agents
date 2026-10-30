@@ -1,19 +1,19 @@
 # Roadmap and decisions
 
-This document is binding for the CLI + Telegram product. It replaces the browser-first plan.
+This document is binding for the CLI + one-chat-surface product. It replaces the browser-first plan.
 
 ## Locked decisions
 
 | Item | Value |
 | --- | --- |
-| Shape | One daemon process; CLI + Telegram bots + read-only fleet TUI. No HTTP listener. |
+| Shape | One daemon process; CLI + one chat surface (Telegram or Discord) + read-only fleet TUI. No HTTP listener. |
 | Engine | `@earendil-works/pi-durable` **1.3.0**, pinned. No fork; only public options. |
-| Chat surface | Telegram, one long-poll loop per registered bot. Agents store a home bot label. |
-| Setup | `dura init`: five strictly sequential steps (Agents, Provider, Telegram, Service, Connection test), resumable via `config.setup`. |
-| Data | `~/.dura-file` (DURA_HOME overrides). Provider keys in credentials.json 0600; bot tokens in secrets/telegram.json 0600. |
+| Chat surface | Mutually exclusive: `chat.active` is Telegram or Discord. Telegram uses one long-poll loop per registered bot and one home bot per agent. Discord uses one outbound Gateway connection per bot and binds agents at the thread/channel level. |
+| Setup | `dura init`: five strictly sequential steps (Agents, Provider, Chat surface, Service, Connection test), resumable via `config.setup`. The surface step records `chat:<platform>`. |
+| Data | `~/.dura-file` (DURA_HOME overrides). Provider keys in credentials.json 0600; bot tokens in secrets/telegram.json or secrets/discord.json 0600. |
 | Providers | Any pi-ai built-in provider; key-only wizard; default opencode-go / deepseek-v4.1-flash. Catalog imported only by the CLI. |
 | Permissions | Agents default to tier full, cwd $HOME, all tools. Policy, not a sandbox; systemd MemoryMax bounds the process. |
-| Runs | At most five concurrent, bounded queue; schedules skip when busy; Telegram notices queue position. |
+| Runs | At most five concurrent, bounded queue; schedules skip when busy; the active surface notices queue position. |
 | Orchestrator | A config pointer. Admin tools are role-scoped: create several agents, message/delegate, read and patch AGENT.md/SOUL.md with a sha256 guard and history. |
 | Fleet | `dura monitor` only. Read-only except the explicit add-agent form. |
 | Language | System text English; `npm run lint:lang` enforces it. |
@@ -53,10 +53,22 @@ This document is binding for the CLI + Telegram product. It replaces the browser
 - README/roadmap/design docs rewritten; the old E2E suite replaced by seven daemon + fake-Bot-API scenarios.
 - `npm run check`, `npm run e2e`, `npm run bench` green.
 
+### Phase 8 — Discord surface (DONE, first cut)
+- Config `chat.active` and `discord` section; validation rejects unknown surfaces; legacy `telegram` setup step maps to `chat:telegram`.
+- `packages/discord`: Gateway v10 (HELLO/IDENTIFY/heartbeat/RESUME, 4004/4014 handling), REST v10 with rate-limit and 429 retry, registry/users/state 0600.
+- DM and thread routing; one durable session per Discord thread; `/new`, `/threads`, `/rename`, `/archive`, `/agent`, `/bind`, `/unbind`.
+- Native slash commands plus `!command` fallback; streaming edits, 2,000-char splitting with fence repair, files, question buttons.
+- Owner-only moderation: timeout, kick, ban, unban, warn, warnings, audit; confirmation buttons; hierarchy and self/owner guards.
+- Agent-facing `discord` tool (send, thread create/archive/list, server info, opt-in moderation).
+- `dura chat`, `dura discord`, Discord-aware `bot`/`user`/`status`/`doctor`/`verify`; fake Discord E2E server and eight scenarios.
+- Phase 2: auto-moderation (spam/link/word/raid), welcome/role menus, tickets, forum-channel parity, group/room bindings.
+
 ## Known gaps
 
 - No E2E scenario for the group/nyahut flow end to end (the room code itself is unchanged and unit-covered by the
   previous suite; the transport path is not).
 - Voice/video, MCP servers, per-agent hooks and a skills curator are not started.
+- Discord auto-moderation, welcome/role menus, tickets and forum-channel parity are phase 2; group/room bindings
+  on Discord are not implemented yet.
 - The benchmark uses the faux provider: it measures daemon memory under tool load, not real provider buffers.
 - `dura tune` reports zram-generator steps instead of installing packages.

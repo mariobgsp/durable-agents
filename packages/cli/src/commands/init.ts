@@ -9,22 +9,32 @@ import { runStop } from "./stop.ts";
 import { useBotRegistry } from "../bots.ts";
 import { createAgent } from "../../../core/src/agent-admin.ts";
 import { listAgents, readAgent } from "../../../core/src/agents.ts";
-import { completeStep, readConfig, updateConfig, type DuraConfig } from "../../../core/src/config.ts";
+import { completeStep, isSurfaceComplete, readConfig, surfaceStep, updateConfig, type ChatPlatform, type DuraConfig } from "../../../core/src/config.ts";
 import { createOrchestrator, hydrateOrchestrator, orchestratorId, replaceOrchestrator } from "../../../core/src/orchestrator.ts";
 import { addProviderKey, builtinProviderIds, providerRows, testProvider } from "../../../core/src/providers.ts";
 import { models } from "../../../core/src/models.ts";
 import { BotApi } from "../../../telegram/src/client.ts";
 import { addBot, defaultBot, loadRegistry, setDefaultBot } from "../../../telegram/src/registry.ts";
 import { loadUsers, setOwner } from "../../../telegram/src/users.ts";
+import { DiscordApi } from "../../../discord/src/client.ts";
+import {
+  addDiscordBot,
+  defaultDiscordBot,
+  loadDiscordRegistry,
+  setDefaultDiscordBot,
+  setDiscordBotDefaultAgent,
+} from "../../../discord/src/registry.ts";
+import { loadDiscordUsers, setDiscordOwner } from "../../../discord/src/users.ts";
 import { duraHome, repoRoot } from "../../../core/src/paths.ts";
 import { runMigrate } from "./migrate.ts";
 import { runService } from "./service.ts";
 import { runTune } from "./tune.ts";
 
 /**
- * The setup wizard. Strictly sequential — 1 Agents, 2 Provider, 3 Telegram, 4 Service, 5 Connection
- * test — with completion recorded in config.setup so a re-run resumes at the first unfinished step
- * and a passing test is the only proof of success.
+ * The setup wizard. Strictly sequential — 1 Agents, 2 Provider, 3 Chat surface, 4 Service, 5
+ * Connection test — with completion recorded in config.setup so a re-run resumes at the first
+ * unfinished step and a passing test is the only proof of success. Step 3 chooses Telegram or
+ * Discord; only that surface is configured, and only one is ever active.
  */
 
 type Staged = {
@@ -38,12 +48,12 @@ type Staged = {
 
 type WizardState = { staged: Staged[] };
 
-const STEPS = ["agents", "provider", "telegram", "service", "test"] as const;
+const STEPS = ["agents", "provider", "chat", "service", "test"] as const;
 type Step = (typeof STEPS)[number];
 const TITLES: Record<Step, string> = {
   agents: "Agents",
   provider: "Provider",
-  telegram: "Telegram",
+  chat: "Chat surface",
   service: "Service and tuning",
   test: "Connection test",
 };
@@ -241,9 +251,132 @@ async function bindOwner(api: BotApi): Promise<string | undefined> {
   return undefined;
 }
 
-async function stepTelegram(state: WizardState): Promise<void> {
+function discordSlug(username: string): string {
+  return username.replace(/[^a-zA-Z0-9-]+/g, "-").toLowerCase().replace(/^-+|-+$/g, "").slice(0, 32) || "bot";
+}
+
+function discordInvite(applicationId: string): string {
+  const bits: bigint[] = [1n << 10n, 1n << 11n, 1n << 38n, 1n << 35n, 1n << 34n, 1n << 16n, 1n << 15n, 1n << 14n, 1n << 6n, 1n << 13n, 1n << 40n, 1n << 1n, 1n << 2n, 1n << 7n];
+  const permissions = bits.reduce((sum, bit) => sum | bit, 0n).toString();
+  return "https://discord.com/oauth2/authorize?client_id=" + applicationId + "&permissions=" + permissions + "&scope=bot%20applications.commands";
+}
+
+function discordTokenFromEnv(): { token?: string; label?: string } {
+  const pair = process.env.DURA_DISCORD_BOTS?.split(",").map((part) => part.trim()).find(Boolean);
+  if (pair) {
+    const colon = pair.indexOf(":");
+    if (colon > 0) return { label: pair.slice(0, colon), token: pair.slice(colon + 1) };
+    return { token: pair };
+  }
+  const token = process.env.DURA_DISCORD_TOKEN;
+  return token ? { token } : {};
+}
+
+async function stepChat(state: WizardState): Promise<void> {
   print("");
-  print(paint("bold", "Step " + stepNumber("telegram") + " of 5 — Telegram setup"));
+  print(paint("bold", "Step " + stepNumber("chat") + " of 5 — Chat surface"));
+  const config = await readConfig({ fresh: true });
+  const current = config.chat.active;
+  const requested = flag(parsedFlags, "platform");
+  const choice: ChatPlatform =
+    requested === "telegram" || requested === "discord"
+      ? requested
+      : has(parsedFlags, "yes")
+        ? current
+        : ((await choose("Which chat surface should be active?", [
+            { label: "Telegram bot" + (current === "telegram" ? " (current)" : ""), value: "telegram" },
+            { label: "Discord bot" + (current === "discord" ? " (current)" : ""), value: "discord" },
+          ])) as ChatPlatform);
+  if (choice !== current) {
+    await updateConfig({ chat: { active: choice } });
+    await updateConfig({ setup: { verifiedAt: null } });
+  }
+  print(paint("dim", "Only one surface is active at a time; the other stays configured but is ignored."));
+  if (choice === "telegram") await stepTelegramSurface(state);
+  else await stepDiscordSurface(state);
+  await completeStep(surfaceStep(choice));
+  print(paint("green", "step complete"));
+}
+
+async function stepDiscordSurface(state: WizardState): Promise<void> {
+  print("");
+  print(paint("bold", "Discord setup"));
+  const config = await readConfig();
+  const apiBase = config.discord.apiBase;
+  let registry = await loadDiscordRegistry();
+
+  if (registry.bots.length === 0 || has(parsedFlags, "add-bot")) {
+    let adding = registry.bots.length === 0 || (await confirm("Add another Discord bot?", true));
+    while (adding) {
+      const env = discordTokenFromEnv();
+      const raw = flag(parsedFlags, "discord-token") ?? env.token ?? (await secret("Discord bot token"));
+      if (!raw.trim()) fail("a Discord bot token is required", 4);
+      const api = new DiscordApi({ token: raw.trim(), apiBase });
+      const me = await api.getMe();
+      let applicationId = me.id;
+      try {
+        applicationId = (await api.getApplication()).id;
+      } catch {
+        // The bot user id is the application id for normal bots.
+      }
+      const label = (await ask("Label for this bot", flag(parsedFlags, "discord-label") ?? env.label ?? discordSlug(me.username))).toLowerCase();
+      registry = await addDiscordBot({ label, token: raw.trim(), applicationId, botId: me.id, username: me.username });
+      print(paint("green", "added") + " " + label + " @" + me.username);
+      print("invite: " + discordInvite(applicationId));
+      adding = await confirm("Add another Discord bot?", false);
+    }
+    registry = await setDefaultDiscordBot(await ask("Which label is the default Discord bot?", registry.default || registry.bots[0]?.label || ""));
+  }
+
+  const defaultEntry = defaultDiscordBot(registry);
+  if (!defaultEntry) fail("no Discord bot configured", 4);
+  const api = new DiscordApi({ token: defaultEntry.token, apiBase, label: defaultEntry.label });
+  print("invite: " + discordInvite(defaultEntry.applicationId));
+  print(paint("dim", "Enable Message Content Intent in the Discord Developer Portal, then invite the bot."));
+
+  const explicitOwner = flag(parsedFlags, "owner-id") ?? process.env.DURA_DISCORD_OWNER_ID;
+  let owner = explicitOwner;
+  if (!owner && interactive()) owner = await ask("Owner Discord user id (right-click a user > Copy User ID)", "");
+  if (owner) {
+    const user = await api.getUser(owner).catch(() => undefined);
+    if (!user) fail("Discord user not found: " + owner, 4);
+    const users = await setDiscordOwner(await loadDiscordUsers(), owner, user.username);
+    print(paint("green", "owner") + " " + owner + (users.owner ? "" : " (not saved)"));
+    try {
+      const dm = await api.createDM(owner);
+      await api.sendMessage(dm.id, { content: "dura setup: Discord is connected. DMs will reach your default agent.", allowed_mentions: { parse: [] } });
+      print(paint("green", "owner DM delivered"));
+    } catch {
+      print(paint("yellow", "owner DM failed; invite the bot to a mutual server, then send it a DM"));
+    }
+  } else {
+    print(paint("yellow", "no owner id; run dura init again with --owner-id or dura user owner <id>"));
+  }
+
+  for (const staged of state.staged) {
+    if (staged.orchestrator) {
+      const files = await createOrchestrator({ id: staged.id, name: staged.name, responsibility: staged.responsibility });
+      print(paint("green", "created") + " " + files.record.id + " as the orchestrator");
+      continue;
+    }
+    const files = await createAgent({ id: staged.id, name: staged.name, responsibility: staged.responsibility, telegramBot: null, caller: "wizard" });
+    print(paint("green", "created") + " " + files.record.id);
+  }
+
+  const agents = await listAgents();
+  const defaultAgent = orchestratorId() ?? agents[0]?.id;
+  if (defaultAgent) {
+    await setDiscordBotDefaultAgent(defaultEntry.label, defaultAgent);
+    print(paint("green", "default agent") + " " + defaultAgent + " (DMs and unbound threads)");
+  } else {
+    print(paint("yellow", "no agent yet; create one in step 1 or with dura agent create"));
+  }
+  print(paint("dim", "In a server use /new to create a thread for another agent; the bot is a fleet connection, not one bot per agent."));
+}
+
+async function stepTelegramSurface(state: WizardState): Promise<void> {
+  print("");
+  print(paint("bold", "Telegram setup"));
   let registry = await loadRegistry();
 
   if (registry.bots.length === 0 || has(parsedFlags, "add-bot")) {
@@ -337,8 +470,6 @@ async function stepTelegram(state: WizardState): Promise<void> {
     });
     print(paint("green", "created") + " " + files.record.id + (files.record.telegramBot ? " on " + files.record.telegramBot : " (unpaired)"));
   }
-  await completeStep("telegram");
-  print(paint("green", "step complete"));
 }
 
 async function stepService(): Promise<void> {
@@ -418,13 +549,15 @@ export async function runInit(parsed: Parsed): Promise<void> {
   const run: Record<Step, () => Promise<void>> = {
     agents: () => stepAgents(state, config),
     provider: () => stepProvider(state, config),
-    telegram: () => stepTelegram(state),
+    chat: () => stepChat(state),
     service: () => stepService(),
     test: () => stepTest(state),
   };
 
   for (const step of STEPS) {
-    if (config.setup.completed.includes(step) && !has(parsed, "redo")) {
+    const explicitSurface = step === "chat" && Boolean(flag(parsed, "platform"));
+    const done = step === "chat" ? isSurfaceComplete(config, config.chat.active) : config.setup.completed.includes(step);
+    if (done && !has(parsed, "redo") && !explicitSurface) {
       print("");
       print(paint("dim", "Step " + stepNumber(step) + " of 5 — " + TITLES[step] + ": done"));
       continue;

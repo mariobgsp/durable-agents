@@ -13,6 +13,11 @@ import { BotApi } from "../../../telegram/src/client.ts";
 import { readConfig } from "../../../core/src/config.ts";
 
 export async function runUser(parsed: Parsed): Promise<void> {
+  const active = await readConfig();
+  if (active.chat.active === "discord") {
+    const { runDiscordUser } = await import("./user-discord.ts");
+    return runDiscordUser(parsed);
+  }
   const [action = "list", target] = parsed.positional;
 
   if (action === "list") {

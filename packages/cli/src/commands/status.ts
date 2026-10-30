@@ -4,7 +4,7 @@ import { DaemonClient, DaemonUnavailable } from "../client.ts";
 import { readConfig } from "../../../core/src/config.ts";
 import { duraHome } from "../../../core/src/paths.ts";
 
-type BotStatus = { label: string; username?: string; ok?: boolean; enabled?: boolean; lastError?: string };
+type BotStatus = { label: string; username?: string; ok?: boolean; enabled?: boolean; lastError?: string; gateway?: string; defaultAgent?: string | null };
 type Status = {
   pid: number;
   home: string;
@@ -16,7 +16,7 @@ type Status = {
   model: { provider: string; modelId: string };
   orchestrator: string | null;
   verifiedAt?: number | null;
-  channels?: { bots?: BotStatus[] } | null;
+  channels?: { platform?: string; bots?: BotStatus[] } | null;
 };
 
 export async function runStatus(parsed: Parsed): Promise<void> {
@@ -43,6 +43,9 @@ export async function runStatus(parsed: Parsed): Promise<void> {
       json({ running: true, ...status });
       return;
     }
+    const config = await readConfig().catch(() => undefined);
+    const platform = status.channels?.platform ?? "none";
+    const mismatch = Boolean(config && platform !== "none" && config.chat.active !== platform);
     const bots = status.channels?.bots ?? [];
     const botLine =
       bots.length === 0
@@ -55,6 +58,7 @@ export async function runStatus(parsed: Parsed): Promise<void> {
             .join(" · ");
     kv([
       ["daemon", "running · pid " + status.pid + " · uptime " + duration(status.uptimeMs)],
+      ["chat", platform + (mismatch ? paint("yellow", " · config says " + config?.chat.active + "; restart") : "")],
       ["home", status.home],
       ["model", status.model.provider + "/" + status.model.modelId],
       ["orchestrator", status.orchestrator ?? paint("yellow", "none")],

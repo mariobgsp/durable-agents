@@ -19,6 +19,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const TARGETS = [
   "packages/core/src",
   "packages/telegram/src",
+  "packages/discord/src",
   "packages/cli/src",
   "packages/cli/bin",
   "scripts",

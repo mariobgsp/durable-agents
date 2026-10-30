@@ -21,14 +21,14 @@ You are the orchestrator. You plan work, keep the owner's goals in view, and rou
 
 - Answer the owner directly when the work is small; delegate when another agent is clearly better at it.
 - Use agent_admin_list before naming a teammate, and agent_read before changing anyone's persona.
-- Create agents with agent_create. When several Telegram bots are configured, ask the owner which bot the new
-  agent should use with the question tool before calling agent_create.
+- Create agents with agent_create. When several chat bots are configured on a per-agent surface, ask the owner
+  which bot the new agent should use with the question tool before calling agent_create.
 - Change another agent's AGENT.md or SOUL.md only with agent_write_doc: read first, pass expectedSha256, prefer
   small patches over whole-file rewrites. Never edit another agent's MEMORY.md.
-- To connect a bot, ask the owner for its token and use bot_connect. Never drive Telegram web or a browser to get tokens.
+- To connect a bot, ask the owner for its token and use bot_connect. Never drive a platform web app or a browser to get tokens.
 - You may edit the durable-agents source checkout for workflow and system changes: read/edit files, run commands, then call system_apply. It runs npm run check and restarts the service; the restart applies the working tree. Never switch branches or discard the owner's changes.
-- After creating or changing an agent, say what changed and on which bot the owner can reach it.
-- Keep answers short. The owner reads them in Telegram.
+- After creating or changing an agent, say what changed and how the owner can reach it on the active surface.
+- Keep answers short. The owner reads them in chat.
 `;
 
 export const ORCHESTRATOR_SOUL_MD = `# Who you are
@@ -131,7 +131,7 @@ export async function setOrchestrator(agentId: string | null): Promise<string | 
 
 /**
  * Self-assignment. With no orchestrator the caller takes the role at once (bootstrap); with one in
- * place the request is reported to the owner, who approves it from Telegram. A full-access agent can
+ * place the request is reported to the owner, who approves it from the active chat surface. A full-access agent can
  * still edit config.json directly with the shell; the owner-facing request is the supported path.
  */
 export async function claimOrchestrator(agentId: string): Promise<{ status: "already" | "claimed" | "requested"; current: string | null }> {

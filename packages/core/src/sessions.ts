@@ -65,17 +65,33 @@ export type SessionRecord = {
   scheduleId?: string;
   /** The other agent in a directed inbox/delegation thread. */
   peer?: string;
-  /** The transport this thread is bound to (set by the Telegram runtime). */
+  /** The transport this thread is bound to (set by the active chat runtime). */
   channel?: SessionChannel;
 };
 
-export type SessionChannel = {
+export type TelegramSessionChannel = {
   kind: "telegram";
   bot: string;
   chatId: string;
   messageThreadId?: number;
   lastMessageId?: number;
 };
+
+export type DiscordSessionChannel = {
+  kind: "discord";
+  bot: string;
+  guildId?: string;
+  channelId: string;
+  threadId?: string;
+  parentId?: string;
+  lastMessageId?: string;
+};
+
+/**
+ * A session remembers where it came from. The union is deliberately open at the edges: old
+ * sessions.json rows are Telegram-only, and a Discord thread is identified by snowflakes (strings).
+ */
+export type SessionChannel = TelegramSessionChannel | DiscordSessionChannel;
 
 /** Shape sent to the UI: id is always a string so it is safe in URLs and keys. */
 export type WireSession = {

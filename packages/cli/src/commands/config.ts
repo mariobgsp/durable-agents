@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { type Parsed, has } from "../args.ts";
-import { fail, json, print } from "../output.ts";
-import { readConfig, writeConfig, type DuraConfig } from "../../../core/src/config.ts";
+import { fail, json, paint, print } from "../output.ts";
+import { readConfig, validateConfig, writeConfig, type DuraConfig } from "../../../core/src/config.ts";
 import { configPath } from "../../../core/src/paths.ts";
 
 function getPath(value: unknown, keys: string[]): unknown {
@@ -36,7 +36,13 @@ export async function runConfig(parsed: Parsed): Promise<void> {
   const [action = "get", ...rest] = parsed.positional;
   if (action === "validate") {
     const config = await readConfig({ fresh: true });
-    json({ ok: true, path: configPath, version: config.version });
+    const problems = validateConfig(config);
+    json({ ok: problems.length === 0, path: configPath, version: config.version, active: config.chat.active, problems });
+    if (problems.length > 0) {
+      print(paint("red", "invalid config:"));
+      for (const problem of problems) print("· " + problem);
+      process.exit(1);
+    }
     return;
   }
   if (action === "edit") {
@@ -66,6 +72,8 @@ export async function runConfig(parsed: Parsed): Promise<void> {
     if (keys.length === 0) fail("invalid key", 2);
     const config = await readConfig({ fresh: true });
     setPath(config, keys, parseValue(rawValue ?? ""));
+    const problems = validateConfig(config as DuraConfig);
+    if (problems.length > 0) fail("invalid config: " + problems.join("; "), 2);
     await writeConfig(config as DuraConfig);
     json({ ok: true, key: keys.join("."), value: getPath(config, keys) });
     return;

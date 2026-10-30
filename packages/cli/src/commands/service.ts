@@ -24,7 +24,7 @@ function systemctl(args: string[]): Promise<{ code: number; text: string }> {
 function unitText(): string {
   return [
     "[Unit]",
-    "Description=dura-agents daemon (CLI + Telegram)",
+    "Description=dura-agents daemon (CLI + one chat surface)",
     "After=network-online.target",
     "Wants=network-online.target",
     "",

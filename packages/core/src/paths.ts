@@ -63,6 +63,14 @@ export const telegramUsersPath = resolve(telegramDir, "users.json");
 export const telegramStatePath = resolve(telegramDir, "state.json");
 export const telegramTmpDir = resolve(telegramDir, "tmp");
 
+/** Discord mirrors the Telegram layout, but only one of the two directories is read in a run. */
+export const discordBotsPath = resolve(secretsDir, "discord.json");
+export const discordDir = resolve(duraHome, "discord");
+export const discordUsersPath = resolve(discordDir, "users.json");
+export const discordStatePath = resolve(discordDir, "state.json");
+export const discordWarningsPath = resolve(discordDir, "warnings.json");
+export const discordTmpDir = resolve(discordDir, "tmp");
+
 /** The repository root: where node_modules and the sources live. */
 export const repoRoot = resolve(import.meta.dirname, "../../..");
 /** Existing pi credentials; read only, never written. */
