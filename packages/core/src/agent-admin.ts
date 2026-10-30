@@ -472,7 +472,7 @@ export const agentAdminListTool = defineTool({
         agent.id + " — " + agent.name,
         agent.enabled === false ? "disabled" : "enabled",
         agent.provider + "/" + agent.modelId,
-        "bot: " + (botsArePerAgent() ? (agent.telegramBot ?? "default") : "thread/DM"),
+        "bot: " + (botsArePerAgent() ? (agent.telegramBot ?? "unpaired") : "thread/DM"),
         agent.responsibility ? "responsibility: " + agent.responsibility : "",
         agent.threadCount + " threads",
         isOrchestrator(agent.id) ? "ORCHESTRATOR" : "",
@@ -511,7 +511,7 @@ export const agentReadTool = defineTool({
           type: "text" as const,
           text:
             "Agent " + args.agent + " (" + files.record.name + ") · " + files.record.provider + "/" + files.record.modelId +
-            " · bot " + (botsArePerAgent() ? (files.record.telegramBot ?? "default") : "thread/DM") + " · " + (files.record.enabled === false ? "disabled" : "enabled") +
+            " · bot " + (botsArePerAgent() ? (files.record.telegramBot ?? "unpaired") : "thread/DM") + " · " + (files.record.enabled === false ? "disabled" : "enabled") +
             "\nAGENT.md sha256 " + docs.agent.sha256 + " (" + docs.agent.lines + " lines)\n" + docs.agent.text +
             "\nSOUL.md sha256 " + docs.soul.sha256 + " (" + docs.soul.lines + " lines)\n" + docs.soul.text,
         },
@@ -562,8 +562,12 @@ export const agentCreateTool = defineTool({
           {
             type: "text" as const,
             text:
-              "Created agent " + files.record.id + " (" + files.record.name + ") on " +
-              (botsArePerAgent() ? "bot " + (files.record.telegramBot ?? "default") : "threads/DMs") +
+              "Created agent " + files.record.id + " (" + files.record.name + ") " +
+              (botsArePerAgent()
+                ? files.record.telegramBot
+                  ? "on bot " + files.record.telegramBot
+                  : "with no bot yet (unpaired; connect one with bot_connect)"
+                : "on threads/DMs") +
               " with " + files.record.provider + "/" + files.record.modelId + ".",
           },
         ],
