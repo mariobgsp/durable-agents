@@ -83,8 +83,12 @@ async function createInteractive(parsed: Parsed): Promise<void> {
   });
   if (has(parsed, "json")) json(files.record);
   else {
-    print(paint("green", "created") + " " + files.record.id + " on bot " + bot);
-    print("chat: message @" + bot);
+    // An unpaired agent is a real outcome: all bots may already belong to someone, and "on bot default"
+    // names a bot that does not exist.
+    print(
+      paint("green", "created") + " " + files.record.id + (bot ? " on bot " + bot : " (no bot yet; unpaired)"),
+    );
+    if (bot) print("chat: message @" + bot);
   }
 }
 
