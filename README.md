@@ -101,8 +101,9 @@ buttons for the current thread), `/usage`, `/reload` (owner: tools and thread re
 service restart, with confirmation), `/agents`, `/memory`, `/schedules`, `/group`, `/bind`, `/status`,
 `/whoami`, `/compact`, `/stop`, `/abort`, `/grant`, `/connect`, `/orchestrator`, `/bots`, `/settings`, `/mcp`,
 `/prune`, `/help`.
-Each message gets a brief `Think · planning the next step` placeholder plus short DSH-style progress lines
-(`Bash · running a command · step 1`). A message sent while the run is live is **steered** into it
+Each message gets a brief `Think · planning the next step` placeholder, then one status message — edited at
+most once every 1.2 s — that shows the phase (or the thinking text as it streams) and the last three calls in
+the call's own words (`⚙️ bash: git status`, `⚙️ read: core/src/live.ts`). A message sent while the run is live is **steered** into it
 (`Steer · added to the current run`). Final answers use Telegram **Rich Messages** (GFM headings, tables, task lists,
 long code, up to 30k characters) when the API supports them, with HTML as fallback; generated files follow.
 `/stop` aborts the active run and withdraws queued messages. The `question` tool renders inline buttons.
@@ -232,7 +233,7 @@ pollers. It samples PSS for the daemon and every descendant every 100 ms.
 | --- | --- | --- | --- | --- | --- | --- |
 | `npm run bench` | **5/5** | 4.6 s | **246 MB** | 190 MB | 105 MB | < 2048 MB |
 
-	extit{This run used the offline faux provider; see the caveat at the end of this README.}
+*This run used the offline faux provider; see the caveat at the end of this README.*
 
 Levers: a five-slot run semaphore with a bounded queue; harness retention (partial commits 250 ms, context 30 s,
 documents 60 s); code mode capped at 128 MB; one Chromium with idle shutdown; bounded render caches; watchers only
