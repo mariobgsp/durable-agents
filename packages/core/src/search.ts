@@ -134,7 +134,9 @@ export function formatSearchReport(query: string, hits: readonly SearchHit[]): s
 }
 
 export const webSearchTool = defineTool({
-  name: "web-search",
+  // The name has to match what an agent.json asks for: the tool list is filtered by exact name in
+  // toolsByName(), and "search" is what the wizard, the existing records and the progress renderers use.
+  name: "search",
   description:
     "Search the public web through DuckDuckGo's keyless HTML endpoint for titles, URLs and snippets. A failure is " +
     "reported as a failure, never as an empty result list, so quote the error instead of assuming there was nothing.",

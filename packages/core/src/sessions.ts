@@ -18,6 +18,7 @@ import { agentAdminTools, orchestratorClaimTool } from "./agent-admin.ts";
 import { mcpTools } from "./mcp.ts";
 import { isOrchestrator, orchestratorId } from "./orchestrator.ts";
 import { fileTools } from "./file-tools.ts";
+import { webSearchTool } from "./search.ts";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, models, resolveDefaultModel, type ModelRef } from "./models.ts";
 import { sessionsPath } from "./paths.ts";
 import { purgeConversation } from "./storage.ts";
@@ -539,16 +540,20 @@ export function agentChangeOf(files: Awaited<ReturnType<typeof readAgent>>): Age
   // The orchestrator's administrative tools are a property of the role, not of its tool list, so an
   // edited agent.json cannot accidentally grant them to anyone else or remove them from the orchestrator.
   const adminTools = isOrchestrator(files.record.id) ? agentAdminTools : [];
-  // MCP is global: every connected server's tools are offered to every agent, whatever its own tool list says.
-  for (const tool of [...selected, rememberTool, ...meshTools, ...fileTools, ...adminTools, orchestratorClaimTool, ...mcpTools()]) {
+  // `search` is offered to every agent for the same reason `remember` is: it is read-only and keyless, so there
+  // is no per-agent policy to set, and a record that forgets the name must not lose the tool. MCP is global for
+  // the same kind of reason: every connected server's tools are offered whatever an agent's own list says.
+  const always: ToolRegistration[] = [rememberTool, webSearchTool];
+  for (const tool of [...always, ...selected, ...meshTools, ...fileTools, ...adminTools, orchestratorClaimTool, ...mcpTools()]) {
     byName.set(tool.name, tool);
   }
   return {
     model: { provider: files.record.provider, modelId: files.record.modelId },
     thinkingLevel: files.record.thinkingLevel,
     instructions: renderInstructions(files),
-    // `remember` is always offered: keeping memory is part of being an agent, not a tool the owner has to
-    // switch on first. Mesh tools follow the agent's policy; everything else comes from its own list.
+    // `remember` and `search` are always offered: keeping memory and reading the public web are part of being
+    // an agent, not tools the owner has to switch on first. Mesh tools follow the agent's policy; everything
+    // else comes from its own list.
     tools: [...byName.values()],
     // No cwd means the owner's home: the product promises tools work there by default, and the
     // daemon's own working directory (the repository) is not the agent's workspace.
