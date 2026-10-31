@@ -8,6 +8,7 @@ import { reloadEverything } from "../../core/src/reload.ts";
 import { startOperation } from "../../core/src/system.ts";
 import { errorFields, log } from "../../core/src/logger.ts";
 import { orchestratorId, setOrchestrator, subscribeOrchestrator } from "../../core/src/orchestrator.ts";
+import { approveSudoRequest, denySudoRequest } from "../../core/src/sudo.ts";
 import { assignBotToAgent, releaseBot, setBotConnector, setBotResolver, subscribeAdmin } from "../../core/src/agent-admin.ts";
 import { subscribeDocChanges } from "../../core/src/doc-store.ts";
 import {
@@ -82,7 +83,13 @@ type BotHandle = {
   guilds: number;
 };
 
-type PendingQuestion = { sessionId: string; channelId: string; options: string[]; expiresAt: number };
+type PendingQuestion = {
+  sessionId: string;
+  channelId: string;
+  options: string[];
+  expiresAt: number;
+  approval?: { kind: "sudo"; digest: string; action?: string };
+};
 type PendingConfirmation = { input: ModerationInput; expiresAt: number };
 type CommandContext = {
   bot: BotHandle;
@@ -621,10 +628,25 @@ export class DiscordRuntime {
     const answer = [...fresh].reverse().find((entry) => entry.role === "assistant" && entry.text.trim().length > 0);
 
     if (question) {
-      const data = (question.data ?? {}) as { options?: unknown };
+      const data = (question.data ?? {}) as { options?: unknown; approval?: unknown };
       const options = Array.isArray(data.options) ? data.options.filter((value): value is string => typeof value === "string") : [];
+      const approvalData = data.approval as { kind?: unknown; digest?: unknown; action?: unknown } | undefined;
+      const approval =
+        approvalData && approvalData.kind === "sudo" && typeof approvalData.digest === "string"
+          ? {
+              kind: "sudo" as const,
+              digest: approvalData.digest,
+              ...(typeof approvalData.action === "string" ? { action: approvalData.action } : {}),
+            }
+          : undefined;
       const nonce = randomUUID().slice(0, 10);
-      this.questions.set(nonce, { sessionId, channelId, options, expiresAt: Date.now() + QUESTION_TTL_MS });
+      this.questions.set(nonce, {
+        sessionId,
+        channelId,
+        options,
+        expiresAt: Date.now() + QUESTION_TTL_MS,
+        ...(approval ? { approval } : {}),
+      });
       const components = questionComponents(options, nonce);
       await edit("❓ waiting for your answer…");
       await handle.api.sendMessage(channelId, {
@@ -1266,6 +1288,34 @@ export class DiscordRuntime {
       if (!pending || pending.expiresAt < Date.now()) {
         this.questions.delete(nonce);
         return void (await this.respondInteraction(interaction, { type: 7, data: { content: "This question expired.", components: [] } }));
+      }
+      if (pending.approval) {
+        if (!owner) {
+          return void (await this.respondInteraction(interaction, { type: 4, data: { content: "Owner only.", flags: 64 } }));
+        }
+        const choice = Number(index);
+        if (choice !== 0 && choice !== 1) {
+          return void (await this.respondInteraction(interaction, { type: 7, data: { content: "Unknown option.", components: [] } }));
+        }
+        this.questions.delete(nonce);
+        const result =
+          choice === 0
+            ? await approveSudoRequest(pending.sessionId, pending.approval.digest)
+            : denySudoRequest(pending.sessionId, pending.approval.digest);
+        if (!result.ok) {
+          return void (await this.respondInteraction(interaction, { type: 7, data: { content: result.message, components: [] } }));
+        }
+        await this.respondInteraction(interaction, {
+          type: 7,
+          data: { content: result.message.slice(0, 1900), components: [] },
+        });
+        await this.submitAnswer(handle, pending.channelId, pending.sessionId, result.message);
+        log.info("discord.sudo_answered", {
+          sessionId: pending.sessionId,
+          action: pending.approval.action ?? "",
+          approved: choice === 0,
+        });
+        return;
       }
       const option = pending.options[Number(index)];
       if (option === undefined) return void (await this.respondInteraction(interaction, { type: 7, data: { content: "Unknown option.", components: [] } }));

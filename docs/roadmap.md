@@ -12,7 +12,7 @@ This document is binding for the CLI + one-chat-surface product. It replaces the
 | Setup | `dura init`: five strictly sequential steps (Agents, Provider, Chat surface, Service, Connection test), resumable via `config.setup`. The surface step records `chat:<platform>`. |
 | Data | `~/.dura-file` (DURA_HOME overrides). Provider keys in credentials.json 0600; bot tokens in secrets/telegram.json or secrets/discord.json 0600. |
 | Providers | Any pi-ai built-in provider; key-only wizard; default opencode-go / deepseek-v4.1-flash. Catalog imported only by the CLI. |
-| Permissions | Agents default to tier full, cwd $HOME, all tools. Policy, not a sandbox; systemd MemoryMax bounds the process. |
+| Permissions | Agents default to tier full, cwd $HOME, all tools. Policy, not a sandbox; systemd MemoryMax bounds the process. Approved sudo maintenance is installed per host by `dura sudo install` and runs in transient units. |
 | Runs | At most five concurrent, bounded queue; schedules skip when busy; the active surface notices queue position. |
 | Orchestrator | A config pointer. Admin tools are role-scoped: create several agents, message/delegate, read and patch AGENT.md/SOUL.md with a sha256 guard and history. |
 | Fleet | `dura monitor` only. Read-only except the explicit add-agent form. |
@@ -63,6 +63,14 @@ This document is binding for the CLI + one-chat-surface product. It replaces the
 - `dura chat`, `dura discord`, Discord-aware `bot`/`user`/`status`/`doctor`/`verify`; fake Discord E2E server and eight scenarios.
 - Phase 2: auto-moderation (spam/link/word/raid), welcome/role menus, tickets, forum-channel parity, group/room bindings.
 
+### Phase 9 — Privileged maintenance (DONE)
+
+- `dura sudo install` detects /etc/os-release and the package manager, prints and writes exact sudoers rules,
+  validates with visudo, probes, and records sudo.json. `status` reports OS/drift; `uninstall` removes.
+- cleanup, memory and update are fixed actions; `--root` adds arbitrary `run`. Every use is an owner-only,
+  one-shot approval showing the exact commands; execution happens in a transient systemd user unit.
+- E2E: `sudo-detect`, `sudo-cleanup`, `sudo-deny`, `sudo-not-installed`, `sudo-run-fixed`, `discord-sudo`.
+
 ## Known gaps
 
 - No E2E scenario for the group/nyahut flow end to end (the room code itself is unchanged and unit-covered by the
@@ -72,3 +80,6 @@ This document is binding for the CLI + one-chat-surface product. It replaces the
   on Discord are not implemented yet.
 - The benchmark uses the faux provider: it measures daemon memory under tool load, not real provider buffers.
 - `dura tune` reports zram-generator steps instead of installing packages.
+- Privileged maintenance supports dnf/dnf5/yum, apt-get, pacman, zypper and apk. Fedora atomic (rpm-ostree)
+  reports update unsupported; unknown managers need --root or manual rules. There is no password/askpass path:
+  sudo must be NOPASSWD for the installed rule, and the installer needs a terminal for its one password prompt.

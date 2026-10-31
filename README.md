@@ -78,6 +78,7 @@ dura logs -f                  # JSON lines: lifecycle, connection, conversations
 | `dura usage` / `memory` / `schedule` / `storage` / `vault` | Reports and data |
 | `dura config get \| set \| edit \| validate` | config.json |
 | `dura service install \| uninstall \| status` | systemd user unit |
+| `dura sudo install \| uninstall \| status` | Privileged maintenance: exact sudoers rules for the detected OS |
 | `dura tune status \| apply` | zram/sysctl report; applies only missing defaults |
 | `dura migrate` | Copy an older data directory into DURA_HOME |
 | `dura doctor` | Diagnostics, without making model calls |
@@ -178,6 +179,43 @@ branch and working-tree changes, and `system_apply` runs `npm run check` and the
 systemd unit runs from the same checkout, the restart loads the edited source and config. A failed check applies
 nothing. This is meant for workflow and system changes, not for replacing the owner's uncommitted work.
 
+## Privileged maintenance (sudo)
+
+An agent can ask to clean system caches, drop memory caches, or update the host's packages. Nothing runs until
+the owner presses a button in chat, and the capability itself is installed once, explicitly:
+
+~~~bash
+dura sudo install            # fixed actions: cleanup, memory, update
+dura sudo install --root     # also allows the run action (arbitrary root commands)
+dura sudo status
+dura sudo uninstall
+~~~
+
+The installer detects the OS from /etc/os-release and the binaries on PATH: Fedora/RHEL (dnf), Debian/Ubuntu
+(apt-get), Arch/Omarchy (pacman), openSUSE (zypper), Alpine (apk). It prints the exact commands and the
+/etc/sudoers.d/dura-agents content, asks, writes the rule with sudo, validates it with visudo, and probes it
+before recording ~/.dura-file/sudo.json. Re-run after an OS upgrade if status reports drift.
+
+The fixed actions are:
+
+| Action | What it does |
+| --- | --- |
+| cleanup | package cache (paccache/pacman, dnf clean, apt clean, and so on), journal data beyond 200 MB, system temp files per systemd-tmpfiles |
+| memory | sync, then vm.drop_caches=3 (page cache, dentries, inodes) |
+| update | the detected package manager's full system upgrade |
+
+They do not delete project folders or user files, clear swap, kill processes, or update the durable-agents
+checkout (that is dura update / system_apply). Fedora atomic (rpm-ostree) reports update as unsupported;
+unknown package managers can still use memory or --root.
+
+Every use is a chat question showing the detected OS, the exact commands and a size or free-memory preview. The
+answer is owner-only, one-shot and expires after 15 minutes. Approved commands run in a transient systemd user
+unit - a sibling of dura.service - so the daemon keeps NoNewPrivileges and ProtectSystem while sudo and package
+managers work; the host's sudoers file remains the authority. No password is ever sent through chat: a command
+without a NOPASSWD rule fails with an instruction instead of hanging. --root writes NOPASSWD: ALL and enables
+the run action; that is passwordless root for the account, and the chat approval is a policy gate, not a
+containment boundary.
+
 ## MCP (global)
 
 MCP servers are installed once and belong to every agent. The daemon speaks the stdio transport: a command, its
@@ -222,6 +260,7 @@ was pruned.
 ```text
 ~/.dura-file/                  (DURA_HOME overrides; PI_DATA_DIR is a one-release alias)
   config.json                  0600
+  sudo.json                    0600 privileged-maintenance record (dura sudo install)
   credentials.json             provider keys, 0600
   secrets/telegram.json        Telegram bot tokens, 0600 (inactive when Discord is active)
   secrets/discord.json         Discord bot tokens, 0600 (inactive when Telegram is active)
@@ -237,7 +276,9 @@ was pruned.
 ```
 
 Agents default to permission tier **full**, cwd **$HOME**, and every tool. Tiers, blocked tools and per-thread grants
-remain available. The tier is a policy, not a sandbox: the operating-system account is the boundary.
+remain available. The tier is a policy, not a sandbox: the operating-system account is the boundary. Approved
+privileged maintenance is the deliberate exception: it runs in a transient unit outside that sandbox, as
+described above.
 
 ## Providers
 
@@ -280,7 +321,7 @@ sudo operation, and never overwrites a custom value. This host already had zram0
 
 ```bash
 npm run check     # tsc + language lint
-npm run e2e       # thirty-one daemon-driven scenarios, offline
+npm run e2e       # forty-two scenarios, offline
 npm run bench     # the five-agent memory gate
 ```
 
@@ -291,7 +332,8 @@ files and SQLite state. Scenarios: `init-wizard`, `discord-init`, `provider-cata
 `telegram-orchestrator`, `orchestrator-docs`, `orchestrator-claim`, `orchestrator-claim-approval`,
 `orchestrator-repo`, `mcp-global`, `memory-tool`, `thread-prune`, `retention`, `telegram-stop`,
 `telegram-steer`, `telegram-progress`, `bot-token-connect`, `verify`, `tui-json`, `discord-chat`,
-`discord-thread`, `discord-question`, `discord-moderation`, `discord-tool`, `discord-verify`, `chat-exclusive`.
+`discord-thread`, `discord-question`, `discord-moderation`, `discord-tool`, `discord-verify`, `chat-exclusive`,
+`sudo-detect`, `sudo-cleanup`, `sudo-deny`, `sudo-not-installed`, `sudo-run-fixed`, `discord-sudo`.
 `verify` is also tested against the real Telegram API on this machine: bot @samriobot,
 opencode-go, a live agent answer in ~2.8 s.
 
@@ -321,6 +363,17 @@ code blocks now), the memory graph (use `dura memory`) and the screenshot gate.
 - Voice and video are not implemented. MCP servers, per-agent hooks and a skills curator are not started.
 - `dura tune` does not install packages; when no zram device exists it prints the zram-generator configuration to
   apply.
+- Privileged maintenance covers system package caches, journal data beyond 200 MB, system temp files and the
+  detected package manager's full upgrade. It does not remove project folders or user files, clear swap or kill
+  processes. Fedora atomic (rpm-ostree) reports update unsupported; other unsupported managers need --root or
+  manual rules.
+- `dura sudo install` needs a terminal for the sudo password (or a valid sudo timestamp). Approvals expire after
+  15 minutes and are lost on a daemon restart. Root mode is passwordless root for the account, so any local
+  process can use the installed rule; the chat approval is a policy gate, not containment. Approved commands run
+  outside the service sandbox and MemoryMax in transient units; a long upgrade can outlive the tool call and
+  continues in the unit named in the result.
+- On SELinux-enforcing Fedora, the transient unit runs in the user manager's domain; a policy that confines it can
+  deny a maintenance command, and the command output reports the denial.
 
 ## License
 

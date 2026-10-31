@@ -17,6 +17,8 @@ import { meshToolsFor } from "./mesh-tools.ts";
 import { agentAdminTools, orchestratorClaimTool } from "./agent-admin.ts";
 import { mcpTools } from "./mcp.ts";
 import { isOrchestrator, orchestratorId } from "./orchestrator.ts";
+import { policyOf } from "./permissions.ts";
+import { sudoTool } from "./sudo.ts";
 import { fileTools } from "./file-tools.ts";
 import { webSearchTool } from "./search.ts";
 import { DEFAULT_MODEL_ID, DEFAULT_PROVIDER, models, resolveDefaultModel, type ModelRef } from "./models.ts";
@@ -556,11 +558,14 @@ export function agentChangeOf(files: Awaited<ReturnType<typeof readAgent>>): Age
   // The orchestrator's administrative tools are a property of the role, not of its tool list, so an
   // edited agent.json cannot accidentally grant them to anyone else or remove them from the orchestrator.
   const adminTools = isOrchestrator(files.record.id) ? agentAdminTools : [];
+  // Root maintenance follows the tier, not the record's list: Full Access agents get it, Standard agents never
+  // do, and a Custom agent can ask for it by listing "sudo". The tool re-checks the agent at execution.
+  const sudoTools = policyOf(files.record).tier === "full" ? [sudoTool] : [];
   // `search` is offered to every agent for the same reason `remember` is: it is read-only and keyless, so there
   // is no per-agent policy to set, and a record that forgets the name must not lose the tool. MCP is global for
   // the same kind of reason: every connected server's tools are offered whatever an agent's own list says.
   const always: ToolRegistration[] = [rememberTool, webSearchTool];
-  for (const tool of [...always, ...selected, ...meshTools, ...fileTools, ...adminTools, orchestratorClaimTool, ...mcpTools()]) {
+  for (const tool of [...always, ...sudoTools, ...selected, ...meshTools, ...fileTools, ...adminTools, orchestratorClaimTool, ...mcpTools()]) {
     byName.set(tool.name, tool);
   }
   return {

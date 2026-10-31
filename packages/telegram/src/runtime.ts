@@ -8,6 +8,7 @@ import { bootRestartNotice, onRestart, startOperation, type RestartBrief } from 
 import { syncBotCommands } from "./command-catalog.ts";
 import { errorFields, log } from "../../core/src/logger.ts";
 import { orchestratorId, setOrchestrator, subscribeOrchestrator } from "../../core/src/orchestrator.ts";
+import { approveSudoRequest, denySudoRequest } from "../../core/src/sudo.ts";
 import { assignBotToAgent, releaseBot, setBotConnector, setBotResolver, subscribeAdmin } from "../../core/src/agent-admin.ts";
 import { subscribeDocChanges } from "../../core/src/doc-store.ts";
 import { isRoom, postToRoom, updateRoom } from "../../core/src/rooms.ts";
@@ -2264,7 +2265,46 @@ export class TelegramRuntime {
       if (!session) return void (await handle.api.sendMessage(chatId, "That question expired."));
       const entries = await transcript(sessionId ?? "");
       const question = [...entries].reverse().find((entry) => entry.kind === "chat.question");
-      const options = (question?.data as { options?: unknown } | undefined)?.options;
+      const questionData = (question?.data ?? {}) as { options?: unknown; approval?: unknown };
+      const approval = questionData.approval as
+        | { kind?: unknown; digest?: unknown; action?: unknown }
+        | undefined;
+      if (approval && approval.kind === "sudo" && typeof approval.digest === "string") {
+        if (!owner) return void (await handle.api.sendMessage(chatId, "Owner only."));
+        const choice = Number(index);
+        if (choice !== 0 && choice !== 1) {
+          return void (await handle.api.sendMessage(chatId, "That option is gone."));
+        }
+        const result =
+          choice === 0
+            ? await approveSudoRequest(sessionId ?? "", approval.digest)
+            : denySudoRequest(sessionId ?? "", approval.digest);
+        if (!result.ok) {
+          await handle.api
+            .editMessage(chatId, message.message_id, "<i>This approval expired.</i>")
+            .catch(() => undefined);
+          return;
+        }
+        await handle.api
+          .editMessage(chatId, message.message_id, "<i>" + escapeText(result.message) + "</i>")
+          .catch(() => undefined);
+        await this.routeText({
+          handle,
+          chatId,
+          ...(message.message_thread_id === undefined ? {} : { threadId: message.message_thread_id }),
+          sessionId: sessionId ?? "",
+          agentId: session.agent ?? "agent",
+          text: result.message,
+          requestId: "tg:sudo:" + query.id,
+        });
+        log.info("telegram.sudo_answered", {
+          sessionId,
+          action: String(approval.action ?? ""),
+          approved: choice === 0,
+        });
+        return;
+      }
+      const options = questionData.options;
       const list = Array.isArray(options) ? options.filter((value): value is string => typeof value === "string") : [];
       const answer = list[Number(index)];
       if (!answer) return void (await handle.api.sendMessage(chatId, "That option is gone."));

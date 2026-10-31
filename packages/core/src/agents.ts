@@ -116,7 +116,7 @@ function emitAgents(): void {
 }
 
 /** What a new agent gets: the same tool set pi ships with, including code mode. */
-export const DEFAULT_AGENT_TOOLS = ["read", "write", "edit", "bash", "terminal", "coding", "codemode", "discord"] as const;
+export const DEFAULT_AGENT_TOOLS = ["read", "write", "edit", "bash", "terminal", "coding", "codemode", "discord", "sudo"] as const;
 
 export const AGENT_TEMPLATE = `# Role
 
@@ -416,6 +416,8 @@ function workingSection(): string {
     "`Durable agents (me)` keeps the work in this thread; `pi` and `opencode` hand it to that CLI, which is already logged in for this user.",
     "Do not ask again in a thread where the owner already chose. If one executor is unavailable, say so and offer the rest.",
     "Use the `terminal` tool for builds, tests, git and inspection. Never tell the owner to open a terminal: report what changed (files, diff stat, the decisive test lines) in your answer.",
+    "Privileged maintenance (system cleanup, memory caches, package updates, or a root command the owner explicitly wants) goes through the `sudo` tool, never through `terminal` or `bash`: the daemon sandbox blocks sudo there, and the tool asks the owner before anything runs.",
+    "Do not claim a privileged command ran until the tool returns its output, and do not retry a command the owner denied.",
     "When you hand a task to `pi` or `opencode` through the `coding` tool, relay the useful part of its output and name the files it touched.",
   ].join("\n");
 }
