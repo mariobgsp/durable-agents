@@ -7,6 +7,7 @@ import { DaemonClient, DaemonUnavailable } from "../client.ts";
 import { readConfig, validateConfig } from "../../../core/src/config.ts";
 import { discordBotsPath, duraHome, telegramBotsPath } from "../../../core/src/paths.ts";
 import { models } from "../../../core/src/models.ts";
+import { bootFacts } from "./service.ts";
 
 type Row = { check: string; ok: boolean; detail: string };
 
@@ -99,6 +100,27 @@ export async function runDoctor(parsed: Parsed): Promise<void> {
     detail: zram.code === 0 ? zram.text.replace(/\s+/g, " ") : "no zram device (dura tune)",
   });
   rows.push({ check: "swappiness", ok: true, detail: swappiness.text || "unavailable" });
+
+  try {
+    const facts = await bootFacts();
+    const missing = [
+      facts.enabled ? null : "unit not enabled",
+      facts.linger ? null : "lingering is off (sudo loginctl enable-linger " + (process.env.USER ?? "") + ")",
+    ].filter((entry): entry is string => entry !== null);
+    rows.push({
+      check: "boot",
+      // A checkout with no unit is a valid dev setup. An installed unit that is not enabled, or one that
+      // cannot outlive the login session, is a reboot that silently does nothing — what this row catches.
+      ok: facts.installed ? missing.length === 0 : true,
+      detail: !facts.installed
+        ? "no service installed (dura service install to survive a reboot)"
+        : missing.length === 0
+          ? "systemd user unit enabled · lingering on"
+          : missing.join(" · "),
+    });
+  } catch (error) {
+    rows.push({ check: "boot", ok: false, detail: String(error) });
+  }
 
   try {
     const client = await DaemonClient.connect();

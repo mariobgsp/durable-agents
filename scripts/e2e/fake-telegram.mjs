@@ -9,6 +9,8 @@ export async function startFakeTelegram() {
   const bots = new Map(); // token -> { id, username, label, updates: [], sent: [], edits: [], documents: [], getUser: 0 }
   const tokenByLabel = new Map();
   const sockets = new Set();
+  /** "token:method" -> how many more calls to answer by dropping the connection. */
+  const refused = new Map();
 
   function botFor(token) {
     const entry = bots.get(token);
@@ -45,6 +47,15 @@ export async function startFakeTelegram() {
         return;
       }
       const body = chunks.length > 0 ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+      // A cold boot: the network is not up yet, so the connection dies before any reply. Destroying the
+      // socket instead of answering 5xx is what the client sees when the laptop has no route yet, and it
+      // is the one failure the client's own retry cannot absorb.
+      const refusals = refused.get(token + ":" + method) ?? 0;
+      if (refusals > 0) {
+        refused.set(token + ":" + method, refusals - 1);
+        response.destroy();
+        return;
+      }
       switch (method) {
         case "getMe":
           reply(response, 200, { ok: true, result: { id: Number(entry.id), is_bot: true, first_name: entry.label, username: entry.username } });
@@ -170,6 +181,10 @@ export async function startFakeTelegram() {
     },
     pollCount(label) {
       return botFor(tokenByLabel.get(label)).pollCount;
+    },
+    /** Drop the connection for the next `times` calls of one method, the way a laptop with no route does. */
+    fail(label, method, times = 1) {
+      refused.set(tokenByLabel.get(label) + ":" + method, times);
     },
     commandSets(label) {
       return botFor(tokenByLabel.get(label)).commandSets;

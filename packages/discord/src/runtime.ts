@@ -34,7 +34,7 @@ import { readArtifact } from "../../core/src/artifacts.ts";
 import type { Check } from "../../core/src/verify.ts";
 import type { AttachmentDraft } from "../../core/src/attachments.ts";
 import { createDiscordToolsExtension } from "../../core/src/discord-tool.ts";
-import { DiscordApi } from "./client.ts";
+import { DiscordApi, DiscordApiError } from "./client.ts";
 import { DISCORD_INTENTS, DiscordGateway, type GatewayEvent } from "./gateway.ts";
 import {
   addDiscordBot,
@@ -223,7 +223,13 @@ export class DiscordRuntime {
     );
 
     for (const bot of this.registry.bots.filter((entry) => entry.enabled)) {
-      await this.startBot(bot.label).catch((error) => log.error("discord.bot_start_failed", { label: bot.label, ...errorFields(error) }));
+      const up = await this.startBot(bot.label).catch((error) => {
+        log.error("discord.bot_start_failed", { label: bot.label, ...errorFields(error) });
+        return false;
+      });
+      // The usual cause is a cold boot: this process is up before the laptop's network is. Keep trying
+      // instead of leaving the bot silent until someone restarts the daemon.
+      if (!up) void this.startBotWithRetry(bot.label);
     }
     log.info("discord.started", { bots: [...this.handles.keys()] });
   }
@@ -241,10 +247,10 @@ export class DiscordRuntime {
     await this.stateQueue;
   }
 
-  private async startBot(label: string): Promise<void> {
+  private async startBot(label: string): Promise<boolean> {
     const bot = discordBotByLabel(this.registry, label);
     if (!bot) throw new Error("unknown Discord bot: " + label);
-    if (this.handles.has(label)) return;
+    if (this.handles.has(label)) return true;
     const config = await readConfig();
     const api = new DiscordApi({ token: bot.token, apiBase: config.discord.apiBase, label });
     let me: DiscordUser;
@@ -253,7 +259,9 @@ export class DiscordRuntime {
     } catch (error) {
       await this.markHealth(label, false, "stopped", error instanceof Error ? error.message : String(error));
       log.error("discord.identity_failed", { label, ...errorFields(error) });
-      return;
+      // A rejected token is not a network that has not come up yet: retrying it forever only burns calls.
+      if (error instanceof DiscordApiError && error.fatal) throw error;
+      return false;
     }
     let applicationId = bot.applicationId;
     try {
@@ -277,6 +285,33 @@ export class DiscordRuntime {
     this.handles.set(label, handle);
     await this.markHealth(label, false, "connecting");
     void gateway.start(20_000).catch((error) => log.warn("discord.gateway_start_failed", { label, ...errorFields(error) }));
+    return true;
+  }
+
+  /**
+   * Retry the first connection of one bot with backoff until it is up.
+   *
+   * Only the boot path uses this: `startBot` stays fail-fast on a rejected token, and the Gateway has its
+   * own reconnect loop once the handle exists. This covers the window where the laptop's network is not
+   * up yet and the identity call is the only thing standing between the bot and its socket.
+   */
+  private async startBotWithRetry(label: string): Promise<void> {
+    let attempt = 0;
+    while (!this.stopping && !this.handles.has(label)) {
+      attempt += 1;
+      await new Promise((done) => setTimeout(done, Math.min(30_000, 1_000 * 2 ** Math.min(attempt - 1, 5))));
+      if (this.stopping) return;
+      try {
+        if (await this.startBot(label)) {
+          log.info("discord.bot_retried", { label, attempt });
+          return;
+        }
+        log.warn("discord.bot_retry", { label, attempt });
+      } catch (error) {
+        log.warn("discord.bot_retry", { label, attempt, fatal: true, ...errorFields(error) });
+        return;
+      }
+    }
   }
 
   private async markHealth(label: string, ok: boolean, state: "stopped" | "connecting" | "ready", error?: string): Promise<void> {

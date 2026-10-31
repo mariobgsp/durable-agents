@@ -71,6 +71,22 @@ This document is binding for the CLI + one-chat-surface product. It replaces the
   one-shot approval showing the exact commands; execution happens in a transient systemd user unit.
 - E2E: `sudo-detect`, `sudo-cleanup`, `sudo-deny`, `sudo-not-installed`, `sudo-run-fixed`, `discord-sudo`.
 
+### Phase 10 — Survives a reboot (DONE)
+
+- `dura service install` reads systemd back and prints `starts at boot: yes/no`; a failure to enable lingering is
+  reported with the exact `sudo loginctl enable-linger` command instead of a success message. `dura service status
+  --json` exposes the same facts, and `dura doctor` shows them as one `boot` row.
+- The first bot connection is retried with backoff (1 s to 30 s, until it is up) in both transports. A user unit
+  starts at boot, before the laptop's network is, and the user manager has no `network-online.target` to order
+  against.
+- A bot that comes up late still reports the restart to its chats and recovers the deliveries the previous process
+  left behind (Telegram, per bot, once each).
+- E2E: `telegram-cold-boot` - the fake Bot API drops the connection for the first identity calls and the bot has to
+  come up anyway.
+- The unit quotes `NODE_OPTIONS`: systemd splits `Environment=` on whitespace, so the unquoted form kept the heap cap
+  and silently dropped `--max-semi-space-size`, with an `Invalid environment assignment` line in the journal on
+  every start. `dura service status` prints that journal, which is how it was found.
+
 ## Known gaps
 
 - No E2E scenario for the group/nyahut flow end to end (the room code itself is unchanged and unit-covered by the
@@ -83,3 +99,7 @@ This document is binding for the CLI + one-chat-surface product. It replaces the
 - Privileged maintenance supports dnf/dnf5/yum, apt-get, pacman, zypper and apk. Fedora atomic (rpm-ostree)
   reports update unsupported; unknown managers need --root or manual rules. There is no password/askpass path:
   sudo must be NOPASSWD for the installed rule, and the installer needs a terminal for its one password prompt.
+- A schedule window missed while the machine was off is counted, not replayed: the run waits for its next window
+  and `missedRuns` shows how many were skipped.
+- The restart notice ("Back after Xs", interrupted runs resuming) is Telegram-only; a Discord restart reconnects
+  the Gateway but says nothing in the channel.

@@ -10,6 +10,14 @@ vault) or speaks NDJSON over `$DURA_HOME/run/daemon.sock`.
 - Readiness is a 0600 `run/ready.json` plus one `DURA_READY` stdout line, so a detached start needs no pipe.
 - SIGINT/SIGTERM stop pollers (aborting the in-flight long poll), the scheduler, IPC and the harness within 15 s.
 
+## Boot
+
+`systemctl --user` starts the unit at boot only when it is enabled and the user lingers; `dura service install`
+reads both back instead of assuming them. The unit cannot order against the network — the user manager has no
+`network-online.target` — so a transport whose first identity call fails retries it with backoff, and a bot that
+comes up late reports its restart and recovers pending deliveries then. `boot()` opens the harness and calls
+`resume()` before any transport or the scheduler can read the store, so interrupted runs are rescheduled first.
+
 ## IPC
 
 ```text

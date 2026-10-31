@@ -21,7 +21,7 @@ Type=simple
 WorkingDirectory=%h/Projects/durable-agents
 Environment=DURA_HOME=%h/.dura-file
 Environment=DURA_LOG_LEVEL=info
-Environment=NODE_OPTIONS=--max-old-space-size=1400 --max-semi-space-size=16
+Environment="NODE_OPTIONS=--max-old-space-size=1400 --max-semi-space-size=16"
 Environment=NODE_COMPILE_CACHE=%h/.dura-file/cache/node
 ExecStart=/usr/bin/env node %h/Projects/durable-agents/packages/cli/bin/dura.ts start --foreground
 
