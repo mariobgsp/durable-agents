@@ -44,6 +44,8 @@ export const browserArtifactDir = resolve(duraHome, "browser", "shots");
 
 /** The last system operation, written only at a terminal phase. */
 export const systemPath = resolve(duraHome, "system.json");
+/** The installed privileged-maintenance record, written by `dura sudo install`. */
+export const sudoPath = resolve(duraHome, "sudo.json");
 /** The restart handshake between the daemon and a supervisor (systemd or dura start --watch). */
 export const restartSentinelPath = resolve(duraHome, "run", "restart-request");
 

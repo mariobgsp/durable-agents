@@ -26,13 +26,13 @@ export type PermissionPolicy = {
 };
 
 /**
- * The two tools that can reach anything the user can.
+ * The tools that can reach anything the user can.
  *
- * A shell runs any command with the user's permissions, and code mode runs a program that calls the other
- * tools. A tier called "Standard" that left both switched on would be a rename of Full Access, so Standard
- * refuses them by name.
+ * A shell runs any command with the user's permissions, code mode runs a program that calls the other tools,
+ * and sudo runs root maintenance after an owner approval. A tier called "Standard" that left them switched on
+ * would be a rename of Full Access, so Standard refuses them by name.
  */
-export const ESCAPE_HATCHES = ["bash", "terminal", "coding", "browser", "codemode"] as const;
+export const ESCAPE_HATCHES = ["bash", "terminal", "coding", "browser", "codemode", "sudo"] as const;
 
 /** Tools whose `path` argument is checked against the agent's roots. */
 const PATH_TOOLS = new Set(["read", "write", "edit", "publish_file"]);

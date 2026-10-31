@@ -25,6 +25,7 @@ const HELP = [
   "  orchestrator         Show, set, create or replace the orchestrator",
   "  user                 Allowlist: list, add, remove, pending, approve, invite",
   "  service              Install, remove or inspect the systemd user unit",
+  "  sudo                 Privileged maintenance helper: install, uninstall, status",
   "  tune                 Report or apply zram/sysctl tuning",
   "  migrate              Copy an older data directory into DURA_HOME",
   "",
@@ -195,6 +196,11 @@ export async function main(argv: readonly string[]): Promise<void> {
     case "tune": {
       const { runTune } = await import("./commands/tune.ts");
       await runTune(parsed);
+      return;
+    }
+    case "sudo": {
+      const { runSudoCommand } = await import("./commands/sudo.ts");
+      await runSudoCommand(parsed);
       return;
     }
     case "migrate": {

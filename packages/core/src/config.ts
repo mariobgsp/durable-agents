@@ -100,7 +100,7 @@ export type DuraConfig = {
 };
 
 export const DEFAULT_TOOLS = [
-  "read", "write", "edit", "bash", "terminal", "coding", "codemode",
+  "read", "write", "edit", "bash", "terminal", "coding", "codemode", "sudo",
   "browser", "vault", "question", "discord",
   "create_file", "create_pdf", "publish_file",
 ];

@@ -13,6 +13,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { models } from "./models.ts";
 import { permissionsExtension } from "./permissions.ts";
 import { questionTool } from "./questions.ts";
+import { sudoTool } from "./sudo.ts";
 import { meshToolsExtension } from "./mesh-tools.ts";
 import { agentAdminExtension } from "./agent-admin.ts";
 import { fileToolsExtension } from "./file-tools.ts";
@@ -177,6 +178,10 @@ function installCoreExtensions(): void {
 
   // Asking the user a question: one durable `chat.question` entry with the option buttons, then the turn ends.
   registry.install(defineExtension({ name: "question", tools: [questionTool] }));
+
+  // Privileged maintenance. The tool asks the owner before every command; the sudoers file installed by
+  // `dura sudo install` is the real authority, and the tool only ever runs the commands recorded there.
+  registry.install(defineExtension({ name: "sudo", tools: [sudoTool] }));
 
   // The agent network. The extension is installed once; the agent's own mesh policy decides which tools are
   // offered, so a shared registry cannot leak delegate to an agent that only asked for messages.
