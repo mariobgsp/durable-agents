@@ -57,6 +57,30 @@ dura monitor                   # fleet TUI (q quit, r refresh, a add agent)
 dura logs -f                  # JSON lines: lifecycle, connection, conversations, errors
 ```
 
+## Surviving a restart
+
+A reboot is a restart nobody asked for, and it is the one this daemon is built around. Every message, tool call
+and generation is a durable task in SQLite, so the process coming back is enough to finish the work.
+
+What a boot does, in order: `boot()` reopens the harness and calls `resume()`, which reschedules the runs that
+were in flight; every conversation is rebound so MCP servers and bot pairings are live; schedules are recomputed;
+and the transport reconnects. A chat that had work in flight is told how long the service was gone and how many
+runs resume, and runs left undelivered by the previous process are re-attached, so the answer still arrives.
+
+One thing must be installed once for the process to come back by itself:
+
+```bash
+dura service install      # systemd user unit, enable --now, loginctl enable-linger
+dura service status       # starts at boot: yes/no, and what is missing
+dura doctor               # the same verdict as one row
+```
+
+Lingering is what starts the user manager at boot instead of at the first login. When `loginctl enable-linger`
+needs polkit or root, `install` says so and prints the exact command rather than claiming the job is done.
+There is no network ordering to rely on in a user unit - `network-online.target` does not exist in the user
+manager - so the first bot connection is retried with backoff (1 s to 30 s, until it is up; a rejected token is
+transient-proof and not retried) instead of giving up when the laptop's Wi-Fi is slower than the boot.
+
 ## CLI
 
 | Command | Purpose |
@@ -335,7 +359,7 @@ swappiness 150.
 
 ```bash
 npm run check     # tsc + language lint
-npm run e2e       # forty-two scenarios, offline
+npm run e2e       # forty-three scenarios, offline
 npm run bench     # the five-agent memory gate
 ```
 
@@ -346,7 +370,8 @@ files and SQLite state. Scenarios: `bot-pairing`, `bot-token-connect`, `chat-exc
 `discord-tool`, `discord-verify`, `init-wizard`, `mcp-global`, `memory-tool`, `orchestrator-claim`,
 `orchestrator-claim-approval`, `orchestrator-docs`, `orchestrator-repo`, `provider-catalog`, `retention`,
 `sudo-cleanup`, `sudo-deny`, `sudo-detect`, `sudo-not-installed`, `sudo-run-fixed`, `telegram-admin-commands`,
-`telegram-chat`, `telegram-delivery-recovery`, `telegram-orchestrator`, `telegram-plan`, `telegram-progress`,
+`telegram-chat`, `telegram-cold-boot`, `telegram-delivery-recovery`, `telegram-orchestrator`, `telegram-plan`,
+`telegram-progress`,
 `telegram-question`, `telegram-question-followup`, `telegram-restart-notice`, `telegram-restart-notice-crash`,
 `telegram-steer`, `telegram-stop`, `telegram-typing`, `thread-prune`, `tui-json`, `verify`.
 `verify` is also tested against the real Telegram API on this machine: bot @samriobot,
@@ -390,6 +415,10 @@ code blocks now), the memory graph (use `dura memory`) and the screenshot gate.
   continues in the unit named in the result.
 - On SELinux-enforcing Fedora, the transient unit runs in the user manager's domain; a policy that confines it can
   deny a maintenance command, and the command output reports the denial.
+- A schedule window missed while the machine was off is counted, not replayed: the run waits for its next window
+  and `missedRuns` shows how many were skipped.
+- The restart notice ("Back after Xs", interrupted runs resuming) is Telegram-only; a Discord restart reconnects
+  the Gateway but says nothing in the channel.
 
 ## License
 

@@ -205,6 +205,10 @@ export class TelegramRuntime {
   private readonly handles = new Map<string, BotHandle>();
   private stopping = false;
   private readonly seen = new Map<string, number>();
+  /** Bots that already reported a restart and recovered their deliveries, so a bot that comes up late
+   *  repeats neither the notice nor the recovery for a bot that was already up. */
+  private readonly restartReported = new Set<string>();
+  private readonly recovered = new Set<string>();
   /** Placeholder messages per session, so /stop can turn every pending card into "stopped." */
   private readonly thinking = new Map<string, Map<number, { chatId: number; threadId?: number; label: string }>>();
   private stateQueue: Promise<void> = Promise.resolve();
@@ -249,7 +253,12 @@ export class TelegramRuntime {
     );
 
     for (const bot of this.registry.bots.filter((entry) => entry.enabled)) {
-      await this.startBot(bot.label).catch((error) => log.error("telegram.bot_start_failed", { label: bot.label, ...errorFields(error) }));
+      await this.startBot(bot.label).catch((error) => {
+        log.error("telegram.bot_start_failed", { label: bot.label, ...errorFields(error) });
+        // The usual cause is a cold boot: this process is up before the laptop's network is. Keep trying
+        // instead of leaving the bot silent until someone restarts the daemon.
+        void this.startBotWithRetry(bot.label);
+      });
     }
     // While the bots are up and before recovery steals the pending records: this is the one moment where the
     // number of interrupted runs is still the truth about what the last process left behind.
@@ -300,6 +309,36 @@ export class TelegramRuntime {
     this.handles.set(label, handle);
     handle.loop = this.poll(handle);
     log.info("telegram.connected", { label, username: me.username });
+  }
+
+  /**
+   * Retry the first connection of one bot with backoff until it is up.
+   *
+   * Only the boot path uses this: `startBot` stays fail-fast so `bot_connect` and `/bots` still name a bad
+   * token instead of hanging on it. The poll loop has its own retry, so this is the only place where a
+   * network that is not there yet can leave a bot permanently down.
+   */
+  private async startBotWithRetry(label: string): Promise<void> {
+    let attempt = 0;
+    while (!this.stopping && !this.handles.has(label)) {
+      attempt += 1;
+      await new Promise((done) => setTimeout(done, Math.min(30_000, 1_000 * 2 ** Math.min(attempt - 1, 5))));
+      if (this.stopping) return;
+      try {
+        await this.startBot(label);
+      } catch (error) {
+        const fatal = error instanceof TelegramError && (error.status === 401 || error.status === 409);
+        log.warn("telegram.bot_retry", { label, attempt, fatal, ...errorFields(error) });
+        if (fatal) return;
+        continue;
+      }
+      log.info("telegram.bot_retried", { label, attempt });
+      // A bot that comes up late owes its chats exactly what the boot path owes them: the restart notice
+      // it missed while it was down, and the runs left undelivered by the previous process.
+      await this.reportRestart().catch((error) => log.warn("telegram.restart_report_failed", errorFields(error)));
+      this.recoverDeliveries();
+      return;
+    }
   }
 
   private async poll(handle: BotHandle): Promise<void> {
@@ -1375,9 +1414,12 @@ export class TelegramRuntime {
    */
   private async reportRestart(): Promise<void> {
     const boot = bootRestartNotice();
+    // Per bot, once: a bot that connects after a cold boot reports its own restart when it is finally up,
+    // and a bot that was already up is not told twice.
+    const outstanding = [...this.handles.values()].filter((handle) => !this.restartReported.has(handle.label));
     // No brief but work in flight: the last process was killed before it could say goodbye. That is still a
     // restart the chats have to hear about, and the pending records are the proof it happened.
-    const inFlight = [...this.handles.values()].some((handle) => pendingDeliveries(this.state, handle.label).length > 0);
+    const inFlight = outstanding.some((handle) => pendingDeliveries(this.state, handle.label).length > 0);
     if (!boot && !inFlight) return;
     const seconds = boot ? Math.max(0, boot.downtimeMs) / 1000 : null;
     const span = seconds === null ? null : seconds < 1 ? "under a second" : Math.round(seconds) + "s";
@@ -1387,7 +1429,8 @@ export class TelegramRuntime {
       : "\u2705 <b>Back</b> after " + span + " \u00b7 " + escapeHtml(cause);
     let edited = 0;
     let fresh = 0;
-    for (const handle of this.handles.values()) {
+    for (const handle of outstanding) {
+      this.restartReported.add(handle.label);
       const interrupted = pendingDeliveries(this.state, handle.label);
       const covered = new Set<string>();
       for (const [key, record] of boot ? restartNotices(this.state, handle.label) : []) {
@@ -1499,6 +1542,8 @@ export class TelegramRuntime {
    */
   private recoverDeliveries(): void {
     for (const [label, handle] of this.handles) {
+      if (this.recovered.has(label)) continue;
+      this.recovered.add(label);
       for (const pending of pendingDeliveries(this.state, label)) {
         void this.resumeDelivery(handle, pending).catch((error) => {
           log.warn("telegram.recovery_failed", { label, sessionId: pending.sessionId, ...errorFields(error) });
