@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -161,9 +162,33 @@ async function readText(path: string, fallback = ""): Promise<string> {
 
 async function writeText(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  const tmp = path + ".tmp";
+  // One temp name per write. Two writers of the same file sharing `path + ".tmp"` race: the first rename
+  // consumes the temp file and the second fails with ENOENT, or the writes interleave and one body is lost.
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(tmp, text);
   await rename(tmp, path);
+}
+
+/**
+ * One queue per agent for memory writes. `appendMemory` reads the whole file, adds one line and writes it
+ * back, so two concurrent `remember` calls would each write a body that lacks the other's note. Serialising
+ * per agent makes that read-modify-write atomic; nothing else is serialised, so the fleet keeps running
+ * in parallel.
+ */
+const memoryWrites = new Map<string, Promise<void>>();
+
+function queueMemoryWrite<T>(id: string, task: () => Promise<T>): Promise<T> {
+  const previous = memoryWrites.get(id) ?? Promise.resolve();
+  const next = previous.then(task, task);
+  const settled = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  memoryWrites.set(id, settled);
+  void settled.then(() => {
+    if (memoryWrites.get(id) === settled) memoryWrites.delete(id);
+  });
+  return next;
 }
 
 async function readRecord(id: string): Promise<AgentRecord | null> {
@@ -365,17 +390,19 @@ export async function appendMemory(id: string, note: string): Promise<{ saved: b
   const clean = note.replace(/\s+/g, " ").trim().slice(0, 500);
   if (!clean) throw new Error("a memory note cannot be empty");
 
-  const existing = await readMemory(id);
-  const line = "- " + new Date().toISOString().slice(0, 10) + " \u00b7 " + clean;
-  const lower = clean.toLowerCase();
-  const duplicate = existing
-    .split("\n")
-    .some((entry) => entry.trim().toLowerCase().endsWith(lower));
-  if (duplicate) return { saved: false, line };
+  return queueMemoryWrite(id, async () => {
+    const existing = await readMemory(id);
+    const line = "- " + new Date().toISOString().slice(0, 10) + " \u00b7 " + clean;
+    const lower = clean.toLowerCase();
+    const duplicate = existing
+      .split("\n")
+      .some((entry) => entry.trim().toLowerCase().endsWith(lower));
+    if (duplicate) return { saved: false, line };
 
-  const body = existing.trim().length > 0 ? existing.trimEnd() + "\n" + line + "\n" : "# Memory\n\n" + line + "\n";
-  await writeText(memoryPath(id), body);
-  return { saved: true, line };
+    const body = existing.trim().length > 0 ? existing.trimEnd() + "\n" + line + "\n" : "# Memory\n\n" + line + "\n";
+    await writeText(memoryPath(id), body);
+    return { saved: true, line };
+  });
 }
 
 /**
