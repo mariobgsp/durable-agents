@@ -355,6 +355,13 @@ CLI). The systemd unit sets `MemoryHigh=1700M`, `MemoryMax=2G`, `MemorySwapMax=1
 defaults with a sudo operation, and never overwrites a custom value. This host already had zram0 (zstd) and
 swappiness 150.
 
+## Branches
+
+Two long-lived branches: changes are committed to `develop`, and `main` only receives merges from `develop`
+once the change has been tested. No topic branches — a pull request into `main` from any other head branch is
+refused by the `branch-guard` workflow. Details, the definition of "tested" and the day-to-day commands:
+[docs/branches.md](docs/branches.md).
+
 ## Testing
 
 ```bash

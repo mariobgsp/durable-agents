@@ -1,0 +1,27 @@
+name: branch-guard
+
+# One integration branch: every change lands on `develop`, and `main` only receives merges from `develop`.
+# See docs/branches.md. This check refuses a pull request into `main` from any other head branch, so a topic
+# branch cannot reach `main` even by accident.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  source-is-develop:
+    name: source is develop
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse any head branch other than develop
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$HEAD_REF" != "develop" ]; then
+            echo "::error::main only receives merges from develop (this pull request comes from '$HEAD_REF'). Commit to develop instead of opening a topic branch."
+            exit 1
+          fi
+          echo "ok: develop -> main"
