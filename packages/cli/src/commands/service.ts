@@ -17,7 +17,9 @@ function run(command: string, args: string[]): Promise<{ code: number; text: str
     child.stdout.on("data", (chunk) => (text += String(chunk)));
     child.stderr.on("data", (chunk) => (text += String(chunk)));
     child.on("error", () => done({ code: -1, text: command + " is not available" }));
-    child.on("exit", (code) => done({ code: code ?? -1, text: text.trim() }));
+    // "close", not "exit": exit can fire before the last stdout chunk is delivered, which made
+    // `dura service status` intermittently report lingering as off.
+    child.on("close", (code) => done({ code: code ?? -1, text: text.trim() }));
   });
 }
 
