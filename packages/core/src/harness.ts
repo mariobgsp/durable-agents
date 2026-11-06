@@ -17,7 +17,7 @@ import { sudoTool } from "./sudo.ts";
 import { meshToolsExtension } from "./mesh-tools.ts";
 import { agentAdminExtension } from "./agent-admin.ts";
 import { fileToolsExtension } from "./file-tools.ts";
-import { rememberTool } from "./remember.ts";
+import { preferTool, rememberTool } from "./remember.ts";
 import { webSearchTool } from "./search.ts";
 import { dataDir, dbPath } from "./paths.ts";
 
@@ -170,7 +170,7 @@ function installCoreExtensions(): void {
 
   // Memory: one line per agent, written by the agent itself. Installed for the registry, then selected by
   // every agent in agentChangeOf() — a tool that is offered but not registered answers "not available".
-  registry.install(defineExtension({ name: "memory", tools: [rememberTool] }));
+  registry.install(defineExtension({ name: "memory", tools: [rememberTool, preferTool] }));
 
   // Permissions: a policy, not a sandbox. It refuses the escape hatches for a Standard agent and keeps a
   // scoped agent inside its roots; the systemd unit is what actually contains an allowed tool.

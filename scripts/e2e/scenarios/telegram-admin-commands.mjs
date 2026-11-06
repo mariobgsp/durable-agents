@@ -45,6 +45,21 @@ export default {
         JSON.stringify(confirmation.replyMarkup).includes("svc:restart"),
         "the confirmation carries the restart callback",
       );
+
+      const before = (await h.client.request("sessions.list")).length;
+      h.text("main", 100, "/new Groceries");
+      const created = await h.waitFor(
+        () => h.fake.sent("main").find((message) => message.text.includes("New thread #")),
+        15_000,
+        "the new-thread confirmation",
+      );
+      const sessions = await h.client.request("sessions.list");
+      assert.equal(sessions.length, before + 1, "the new thread became a durable session");
+      const fresh = sessions.find((session) => session.title === "Groceries");
+      assert.ok(fresh, "the thread keeps the title given to /new");
+      assert.ok(created.text.includes("#" + fresh.id), "the confirmation names the thread id");
+      assert.ok(created.text.includes("agent helper"), "the confirmation names the agent");
+      assert.ok(created.text.includes("/threads"), "the confirmation points at /threads");
     } finally {
       await h.stop();
     }

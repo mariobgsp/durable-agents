@@ -1,5 +1,5 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { resolve } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
@@ -13,22 +13,47 @@ import { fillSecret } from "./vault-store.ts";
  *
  * The constraints here are memory and sessions, and they pull in opposite directions. Sessions want a real
  * profile that survives restarts; memory wants no browser at all. The compromise is one profile, one process,
- * one tab, a small renderer limit, and an idle timer that closes the process after fifteen minutes — so an
- * idle server costs nothing and the owner's logins still survive because they live in the profile directory,
- * not in the process.
+ * one tab, a small renderer limit, a capped V8 heap, and an idle timer that closes the process after a few
+ * idle minutes — so an idle server costs nothing and the owner's logins still survive because they live in
+ * the profile directory, not in the process.
  *
  * A login is filled from the vault and the typed values are never returned. The tool cannot read a password,
  * and the page text a model sees is redacted of every vault value before it is returned.
  */
 
-const IDLE_MS = 15 * 60_000;
+const DEFAULT_IDLE_MS = 5 * 60_000;
+
+/**
+ * How long an idle browser is kept.
+ *
+ * Chromium is the largest resident cost on this machine (about 450 MB of PSS with one page open), and it is
+ * only needed while a page action runs, so the window it is allowed to sit idle in is short and configurable:
+ * `DURA_BROWSER_IDLE_SECONDS` (minimum 5, default 300) rather than a constant someone has to recompile.
+ */
+function configuredIdleMs(): number {
+  const seconds = Number(process.env.DURA_BROWSER_IDLE_SECONDS ?? "");
+  if (Number.isFinite(seconds) && seconds >= 5) return Math.round(seconds) * 1000;
+  return DEFAULT_IDLE_MS;
+}
+
+const IDLE_MS = configuredIdleMs();
 const LAUNCH_TIMEOUT_MS = 20_000;
 const NAVIGATION_TIMEOUT_MS = 25_000;
+
+/** "4m 30s", "45s": the idle window as the owner reads it, not as milliseconds. */
+function idleLabel(): string {
+  const total = Math.round(IDLE_MS / 1000);
+  if (total < 60) return total + "s";
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return seconds === 0 ? minutes + "m" : minutes + "m " + seconds + "s";
+}
 
 type Mode = "headless" | "headful";
 
 type BrowserState = {
-  child: ChildProcess;
+  /** Absent when the browser was adopted: it was already running, so this process holds no handle to it. */
+  child?: ChildProcess;
   mode: Mode;
   port: number;
   profileDir: string;
@@ -38,15 +63,31 @@ type BrowserState = {
   idleTimer?: NodeJS.Timeout;
 };
 
-let state: BrowserState | undefined;
-let starting: Promise<BrowserState> | undefined;
 /**
- * One browser, one tab, one action at a time.
+ * The browser belongs to the process, not to this module.
  *
- * pi-durable runs tools in parallel, and two page actions on the same tab would interleave navigations and
- * fills. The lock is a promise chain rather than a queue object: a failed action releases it in finally.
+ * The tool module can be loaded more than once in one process — a reloaded agent graph, a second copy of the
+ * package — and a module-scoped `state` then hides a running browser from the copy that is asked to use it:
+ * `status` answered "idle" for a chromium that was alive, `close` left it running, and every action spawned a
+ * chromium that aborted on the profile lock (exit 21) and then attached to the previous browser's leftover
+ * devtools port, abandoning one more tab per call. One holder on globalThis gives the whole process a single
+ * browser, a single tab and a single lock.
  */
-let browserLock: Promise<void> = Promise.resolve();
+type BrowserHolder = {
+  state?: BrowserState;
+  starting?: Promise<BrowserState>;
+  /**
+   * One browser, one tab, one action at a time.
+   *
+   * pi-durable runs tools in parallel, and two page actions on the same tab would interleave navigations and
+   * fills. The lock is a promise chain rather than a queue object: a failed action releases it in finally.
+   */
+  lock: Promise<void>;
+};
+
+const HOLDER_KEY = Symbol.for("dura.browser.holder");
+const globalScope = globalThis as unknown as Record<symbol, BrowserHolder | undefined>;
+const holder: BrowserHolder = (globalScope[HOLDER_KEY] ??= { lock: Promise.resolve() });
 
 export type BrowserStatus = {
   running: boolean;
@@ -56,7 +97,36 @@ export type BrowserStatus = {
   profileDir: string;
   binary: string | null;
   idleMinutes: number;
+  /** Localised idle window, e.g. "5m" or "45s". */
+  idleLabel: string;
 };
+
+/**
+ * The user agent headless chromium should send.
+ *
+ * Headless chromium announces itself as `HeadlessChrome`, and sites that dislike automation answer that with a
+ * bare 403 that looks exactly like a network block — x.com does, and the owner reads it as "the tool is
+ * broken". Headful keeps its own user agent; headless gets the version of the binary that is really running.
+ */
+export function desktopUserAgent(binary: string): string {
+  const fromEnv = process.env.PI_BROWSER_UA;
+  if (fromEnv) return fromEnv;
+  let major = "124";
+  try {
+    const printed = execFileSync(binary, ["--version"], { encoding: "utf8", timeout: 5000 });
+    const found = /(\d+)\.\d+\.\d+\.\d+/.exec(printed);
+    if (found?.[1]) major = found[1];
+  } catch {
+    // A binary that will not print a version still gets a plausible one.
+  }
+  const platform =
+    process.platform === "darwin"
+      ? "Macintosh; Intel Mac OS X 10_15_7"
+      : process.platform === "win32"
+        ? "Windows NT 10.0; Win64; x64"
+        : "X11; Linux x86_64";
+  return "Mozilla/5.0 (" + platform + ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + major + ".0.0.0 Safari/537.36";
+}
 
 /** Where the browser binary is. The environment wins, then the usual names on PATH. */
 export function browserBinary(): string | null {
@@ -232,11 +302,150 @@ async function openTarget(port: number): Promise<{ ws: string; cdp: Cdp }> {
     req.end();
   });
   if (!created.webSocketDebuggerUrl) throw new Error("the browser created a tab without a devtools socket");
-  const cdp = new Cdp(created.webSocketDebuggerUrl);
+  return connectTarget(created.webSocketDebuggerUrl);
+}
+
+/** Attach to one page target and turn on the two domains the actions need. */
+async function connectTarget(webSocketDebuggerUrl: string): Promise<{ ws: string; cdp: Cdp }> {
+  const cdp = new Cdp(webSocketDebuggerUrl);
   await cdp.ready();
   await cdp.send("Page.enable");
   await cdp.send("Runtime.enable");
-  return { ws: created.webSocketDebuggerUrl, cdp };
+  return { ws: webSocketDebuggerUrl, cdp };
+}
+
+/** The port chromium writes after it starts. It outlives the process, so it is never trusted on its own. */
+function devtoolsPortFile(): string {
+  return resolve(browserProfileDir, "DevToolsActivePort");
+}
+
+function portFromFile(): number | undefined {
+  try {
+    const parsed = Number(readFileSync(devtoolsPortFile(), "utf8").split("\n")[0]?.trim() ?? "");
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function devtoolsJson(port: number, path: string, method = "GET"): Promise<unknown> {
+  return new Promise((done, fail) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path, method, timeout: 3000 }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk: string) => (body += chunk));
+      res.on("end", () => {
+        try {
+          done(JSON.parse(body));
+        } catch {
+          fail(new Error("devtools answered with something that is not json"));
+        }
+      });
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      fail(new Error("devtools did not answer"));
+    });
+    req.on("error", fail);
+    req.end();
+  });
+}
+
+type TargetInfo = { id?: string; type?: string; url?: string; webSocketDebuggerUrl?: string };
+
+/**
+ * Drop the blank tab chromium opens on launch.
+ *
+ * The browser starts on `about:blank` and the tool then adds the tab it drives, so a running browser always
+ * carried one extra page — and one extra renderer, around fifty megabytes — that nothing ever reads. Only blank
+ * pages are closed here: a page the owner left open is never touched.
+ */
+async function closeBlankTabs(port: number, keepWs: string): Promise<void> {
+  let listed: unknown;
+  try {
+    listed = await devtoolsJson(port, "/json/list");
+  } catch {
+    return;
+  }
+  if (!Array.isArray(listed)) return;
+  for (const target of listed as TargetInfo[]) {
+    if (target.type !== "page" || !target.id) continue;
+    if (target.webSocketDebuggerUrl === keepWs) continue;
+    if (target.url && target.url !== "about:blank") continue;
+    try {
+      await devtoolsText(port, "/json/close/" + target.id);
+    } catch {
+      // A tab that is already gone is exactly the outcome wanted.
+    }
+  }
+}
+
+/** The same devtools call, for endpoints that answer with plain text instead of json. */
+function devtoolsText(port: number, path: string): Promise<string> {
+  return new Promise((done, fail) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path, method: "GET", timeout: 3000 }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk: string) => (body += chunk));
+      res.on("end", () => done(body));
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      fail(new Error("devtools did not answer"));
+    });
+    req.on("error", fail);
+    req.end();
+  });
+}
+
+/**
+ * Take over a chromium that is already running on this profile.
+ *
+ * A second launch cannot start a browser on a locked profile; it aborts and leaves the first one serving the
+ * old devtools port. Adopting that browser is both correct and cheap: the page the owner opened stays, and no
+ * process is spawned at all. The newest tab with a real URL is reused, so `open` → `read` → `click` chains
+ * stay on one tab instead of piling up blank ones.
+ */
+async function adoptRunning(mode: Mode): Promise<BrowserState | undefined> {
+  const port = portFromFile();
+  if (!port) return undefined;
+  try {
+    await portOpen(port);
+  } catch {
+    return undefined;
+  }
+  let pages: TargetInfo[] = [];
+  try {
+    const listed = await devtoolsJson(port, "/json/list");
+    if (Array.isArray(listed)) pages = (listed as TargetInfo[]).filter((target) => target.type === "page" && target.webSocketDebuggerUrl);
+  } catch {
+    pages = [];
+  }
+  const reusable = pages.find((target) => target.url && target.url !== "about:blank") ?? pages[0];
+  const target = reusable?.webSocketDebuggerUrl ? await connectTarget(reusable.webSocketDebuggerUrl) : await openTarget(port);
+  await closeBlankTabs(port, target.ws);
+  return {
+    mode: holder.state?.mode ?? mode,
+    port,
+    profileDir: browserProfileDir,
+    targetWs: target.ws,
+    cdp: target.cdp,
+    lastUsed: Date.now(),
+  };
+}
+
+/** Close a browser this process did not spawn: the only handle is the devtools endpoint. */
+async function closeAdopted(port: number): Promise<void> {
+  try {
+    const version = (await devtoolsJson(port, "/json/version")) as { webSocketDebuggerUrl?: string };
+    if (!version?.webSocketDebuggerUrl) return;
+    const cdp = new Cdp(version.webSocketDebuggerUrl);
+    await cdp.ready();
+    await cdp.send("Browser.close", {}, 4000).catch(() => undefined);
+    cdp.close();
+  } catch {
+    // Already gone.
+  }
 }
 
 function armIdle(browser: BrowserState): void {
@@ -248,15 +457,21 @@ function armIdle(browser: BrowserState): void {
 }
 
 export async function ensureBrowser(mode: Mode = "headless"): Promise<BrowserState> {
-  if (state && state.mode === mode && !state.child.killed) {
-    state.lastUsed = Date.now();
-    armIdle(state);
-    return state;
+  if (holder.state && holder.state.mode === mode && !holder.state.child?.killed) {
+    holder.state.lastUsed = Date.now();
+    armIdle(holder.state);
+    return holder.state;
   }
-  if (state) await closeBrowser();
-  if (starting) return starting;
+  if (holder.state) await closeBrowser();
+  if (holder.starting) return holder.starting;
 
-  starting = (async () => {
+  holder.starting = (async () => {
+    const adopted = await adoptRunning(mode);
+    if (adopted) {
+      holder.state = adopted;
+      armIdle(adopted);
+      return adopted;
+    }
     const binary = browserBinary();
     if (!binary) {
       throw new Error(
@@ -288,37 +503,45 @@ export async function ensureBrowser(mode: Mode = "headless"): Promise<BrowserSta
       "--disk-cache-size=33554432",
       "--window-size=1280,900",
       "--mute-audio",
-      ...(mode === "headless" ? ["--headless=new"] : []),
+      ...(mode === "headless" ? ["--headless=new", "--user-agent=" + desktopUserAgent(binary)] : []),
       "about:blank",
     ];
+    // A port file left by an earlier browser points at a dead port, or at another browser's live one.
+    try {
+      unlinkSync(devtoolsPortFile());
+    } catch {
+      // Nothing to clear.
+    }
     const child = spawn(binary, args, {
       stdio: ["ignore", "ignore", "ignore"],
       env: { ...process.env, DISPLAY: process.env.DISPLAY ?? ":0" },
     });
     child.unref();
-    const portFile = resolve(browserProfileDir, "DevToolsActivePort");
     const deadline = Date.now() + LAUNCH_TIMEOUT_MS;
     let port = 0;
     while (Date.now() < deadline) {
-      if (!existsSync(portFile)) {
-        await new Promise((done) => setTimeout(done, 120));
-        continue;
-      }
-      const first = readFileSync(portFile, "utf8").split("\n")[0]?.trim() ?? "";
-      const parsed = Number(first);
-      if (Number.isInteger(parsed) && parsed > 0) {
-        port = parsed;
+      const found = portFromFile();
+      if (found) {
+        port = found;
         break;
       }
+      // A browser that aborts (a locked profile, a broken install) never writes the port; say so instead of
+      // waiting out the whole deadline.
+      if (child.exitCode !== null) break;
       await new Promise((done) => setTimeout(done, 120));
     }
     if (port === 0) {
       child.kill("SIGKILL");
-      throw new Error("the browser started but never reported a devtools port");
+      throw new Error(
+        child.exitCode !== null
+          ? "the browser exited before it opened devtools (the profile may be locked by another browser)"
+          : "the browser started but never reported a devtools port",
+      );
     }
     await waitForPort(port, deadline);
     const target = await openTarget(port);
-    state = {
+    await closeBlankTabs(port, target.ws);
+    const created: BrowserState = {
       child,
       mode,
       port,
@@ -327,29 +550,35 @@ export async function ensureBrowser(mode: Mode = "headless"): Promise<BrowserSta
       cdp: target.cdp,
       lastUsed: Date.now(),
     };
-    armIdle(state);
+    holder.state = created;
+    armIdle(created);
     child.once("exit", () => {
-      if (state?.child === child) {
-        state = undefined;
-        starting = undefined;
+      if (holder.state?.child === child) {
+        holder.state = undefined;
+        holder.starting = undefined;
       }
     });
-    return state;
+    return created;
   })();
 
   try {
-    return await starting;
+    return await holder.starting;
   } finally {
-    starting = undefined;
+    holder.starting = undefined;
   }
 }
 
 export async function closeBrowser(): Promise<void> {
-  if (!state) return;
-  const current = state;
-  state = undefined;
+  if (!holder.state) return;
+  const current = holder.state;
+  holder.state = undefined;
   if (current.idleTimer) clearTimeout(current.idleTimer);
   current.cdp.close();
+  if (!current.child) {
+    // Adopted: there is no child handle, so the browser is asked to quit over devtools.
+    await closeAdopted(current.port);
+    return;
+  }
   try {
     current.child.kill("SIGTERM");
   } catch {
@@ -373,7 +602,7 @@ export async function closeBrowser(): Promise<void> {
  */
 process.once("exit", () => {
   try {
-    state?.child.kill("SIGKILL");
+    holder.state?.child?.kill("SIGKILL");
   } catch {
     // Already gone.
   }
@@ -381,11 +610,14 @@ process.once("exit", () => {
 
 export function browserStatus(): BrowserStatus {
   return {
-    running: state !== undefined,
-    ...(state ? { mode: state.mode, pid: state.child.pid ?? undefined, port: state.port } : {}),
+    running: holder.state !== undefined,
+    ...(holder.state
+      ? { mode: holder.state.mode, pid: holder.state.child?.pid ?? undefined, port: holder.state.port }
+      : {}),
     profileDir: browserProfileDir,
     binary: browserBinary(),
     idleMinutes: Math.round(IDLE_MS / 60_000),
+    idleLabel: idleLabel(),
   };
 }
 
@@ -435,6 +667,12 @@ async function fill(cdp: Cdp, selector: string, value: string): Promise<void> {
   if (outcome !== "ok") throw new Error("no field matched " + selector);
 }
 
+/** Press Enter in whatever field has focus. */
+async function pressEnter(cdp: Cdp): Promise<void> {
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+}
+
 async function navigate(cdp: Cdp, url: string): Promise<void> {
   const loaded = cdp.once("Page.loadEventFired", NAVIGATION_TIMEOUT_MS);
   await cdp.send("Page.navigate", { url }, NAVIGATION_TIMEOUT_MS);
@@ -459,7 +697,7 @@ export const browserTool = defineTool({
   description:
     "Drive a real browser that keeps the owner's existing logins (one persistent profile). Headless by default, " +
     "headful on request. Actions: open, read, screenshot, click, type, login, close, status. The browser starts " +
-    "only when a page action runs and closes itself after fifteen idle minutes; never leave it running for no " +
+    "only when a page action runs and closes itself after a short idle window; never leave it running for no " +
     "reason. login fills a username and password from the vault and returns only the resulting page, never the " +
     "values.",
   parameters: Type.Object({
@@ -485,8 +723,8 @@ export const browserTool = defineTool({
   }),
   async execute(args) {
     let release!: () => void;
-    const previous = browserLock;
-    browserLock = new Promise<void>((done) => (release = done));
+    const previous = holder.lock;
+    holder.lock = new Promise<void>((done) => (release = done));
     await previous;
     try {
       if (args.action === "status") {
@@ -496,9 +734,9 @@ export const browserTool = defineTool({
             {
               type: "text" as const,
               text: status.running
-                ? "Browser running (" + status.mode + ", pid " + status.pid + ", idle timeout " + status.idleMinutes + "m)."
+                ? "Browser running (" + status.mode + ", pid " + (status.pid ?? "adopted") + ", closes after " + status.idleLabel + " idle)."
                 : status.binary
-                  ? "Browser idle. It starts on the first page action and closes after " + status.idleMinutes + " idle minutes."
+                  ? "Browser idle. It starts on the first page action and closes after " + status.idleLabel + " idle."
                   : "No browser binary found. Install chromium or set PI_BROWSER_BIN.",
             },
           ],
@@ -542,12 +780,25 @@ export const browserTool = defineTool({
           args.usernameSelector ?? 'input[type="email"], input[name="email"], input[name="username"], input[autocomplete="username"]';
         const passSelector = args.passwordSelector ?? 'input[type="password"]';
         if (secret.username) await fill(cdp, userSelector, secret.username);
+        // Two-step forms (x.com among them) ask for the name first and only then reveal the password field, so a
+        // missing password field is a step to advance, not a failure.
+        const passwordField = "Boolean(document.querySelector(" + selectorJson(passSelector) + "))";
+        if ((await evaluate(cdp, passwordField)) !== true) {
+          if (args.submitSelector) {
+            await evaluate(cdp, "document.querySelector(" + selectorJson(args.submitSelector) + ")?.click()");
+          } else {
+            await pressEnter(cdp);
+          }
+          const deadline = Date.now() + 10_000;
+          while (Date.now() < deadline && (await evaluate(cdp, passwordField)) !== true) {
+            await new Promise((done) => setTimeout(done, 250));
+          }
+        }
         await fill(cdp, passSelector, secret.secret);
         if (args.submitSelector) {
           await evaluate(cdp, "document.querySelector(" + selectorJson(args.submitSelector) + ")?.click()");
         } else {
-          await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
-          await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+          await pressEnter(cdp);
         }
         await new Promise((done) => setTimeout(done, 1200));
         return {
@@ -611,7 +862,6 @@ export const browserTool = defineTool({
         };
       }
 
-      // read
       return { output: [{ type: "text" as const, text: await pageSummary(cdp) }] };
     } catch (error) {
       return {

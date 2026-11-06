@@ -1,17 +1,17 @@
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import { type Parsed, flag, has } from "../args.ts";
-import { fail, json, paint, print, table, bytes } from "../output.ts";
+import { type Parsed, flag, has, subArgs } from "../args.ts";
+import { fail, json, paint, print, table } from "../output.ts";
 import { ask, choose, confirm, interactive, secret } from "../prompts.ts";
-import { DaemonClient, DaemonUnavailable } from "../client.ts";
+import { DaemonClient, connectOrUndefined } from "../client.ts";
 import { startDetached } from "./start.ts";
 import { runStop } from "./stop.ts";
 import { useBotRegistry } from "../bots.ts";
 import { createAgent } from "../../../core/src/agent-admin.ts";
 import { listAgents, readAgent } from "../../../core/src/agents.ts";
 import { completeStep, isSurfaceComplete, readConfig, surfaceStep, updateConfig, type ChatPlatform, type DuraConfig } from "../../../core/src/config.ts";
-import { createOrchestrator, hydrateOrchestrator, orchestratorId, replaceOrchestrator } from "../../../core/src/orchestrator.ts";
-import { addProviderKey, builtinProviderIds, providerRows, testProvider } from "../../../core/src/providers.ts";
+import { createOrchestrator, hydrateOrchestrator, orchestratorId } from "../../../core/src/orchestrator.ts";
+import { addProviderKey, builtinProviderIds, providerRows } from "../../../core/src/providers.ts";
 import { models } from "../../../core/src/models.ts";
 import { BotApi } from "../../../telegram/src/client.ts";
 import { addBot, defaultBot, loadRegistry, setDefaultBot } from "../../../telegram/src/registry.ts";
@@ -72,14 +72,9 @@ async function waitForDaemon(timeoutMs: number): Promise<boolean> {
 }
 
 async function daemonRunning(): Promise<boolean> {
-  try {
-    const client = await DaemonClient.connect(undefined, 700);
-    client.close();
-    return true;
-  } catch (error) {
-    if (error instanceof DaemonUnavailable) return false;
-    throw error;
-  }
+  const client = await connectOrUndefined();
+  client?.close();
+  return client !== undefined;
 }
 
 async function maybeMigration(): Promise<void> {
@@ -478,12 +473,12 @@ async function stepService(): Promise<void> {
   if (has(parsedFlags, "no-service")) {
     print(paint("dim", "service skipped (--no-service)"));
   } else if (await confirm("Install and start the systemd user service?", true)) {
-    await runService({ positional: ["install"], flags: new Map(), booleans: new Set() });
+    await runService(subArgs("install"));
   } else {
     print(paint("dim", "service skipped; start manually with dura start"));
   }
   if (!has(parsedFlags, "no-tune") && (await confirm("Report host memory tuning (zram/sysctl)?", true))) {
-    await runTune({ positional: ["status"], flags: new Map(), booleans: new Set() });
+    await runTune(subArgs("status"));
   }
   await completeStep("service");
   print(paint("green", "step complete"));
@@ -518,14 +513,14 @@ async function stepTest(state: WizardState): Promise<void> {
   if (!result.ok) {
     print("");
     print(paint("red", "connection test failed; fix the failing check and run: dura verify"));
-    if (started && !has(parsedFlags, "keep-running")) await runStop({ positional: [], flags: new Map(), booleans: new Set() });
+    if (started && !has(parsedFlags, "keep-running")) await runStop(subArgs());
     process.exit(1);
   }
   await completeStep("test");
   print("");
   print(paint("green", "setup complete and verified"));
   if (!(await confirm("Keep the daemon running?", true)) && started) {
-    await runStop({ positional: [], flags: new Map(), booleans: new Set() });
+    await runStop(subArgs());
   }
 }
 

@@ -1,11 +1,15 @@
 import { context, harnessInstance } from "../../core/src/harness.ts";
 import { activeIds } from "../../core/src/activity.ts";
+import { shortAge } from "../../core/src/format.ts";
+import { phaseLabel, progressLine } from "../../core/src/progress.ts";
+import { sleepBackoff } from "../../core/src/retry.ts";
 import { listAgents, readAgent, readMemory, isThinkingLevel, THINKING_LEVELS, applyThinkingLevel, type AgentRecord, type ThinkingLevel } from "../../core/src/agents.ts";
-import { readConfig, updateConfig } from "../../core/src/config.ts";
+import { distillSession } from "../../core/src/learnings.ts";
+import { readConfig } from "../../core/src/config.ts";
 import { models } from "../../core/src/models.ts";
 import { reloadEverything } from "../../core/src/reload.ts";
 import { bootRestartNotice, onRestart, startOperation, type RestartBrief } from "../../core/src/system.ts";
-import { syncBotCommands } from "./command-catalog.ts";
+import { findCommand, helpText, menuRows, syncBotCommands } from "./command-catalog.ts";
 import { errorFields, log } from "../../core/src/logger.ts";
 import { orchestratorId, setOrchestrator, subscribeOrchestrator } from "../../core/src/orchestrator.ts";
 import { approveSudoRequest, denySudoRequest } from "../../core/src/sudo.ts";
@@ -32,7 +36,7 @@ import { readArtifact } from "../../core/src/artifacts.ts";
 import type { Check } from "../../core/src/verify.ts";
 import type { AttachmentDraft } from "../../core/src/attachments.ts";
 import { BotApi, TelegramError } from "./client.ts";
-import { attachmentFromMessage, captionOf, MediaError } from "./media.ts";
+import { attachmentFromMessage, MediaError } from "./media.ts";
 import {
   loadRegistry,
   publicRegistry,
@@ -51,7 +55,7 @@ import {
   chatKey,
   getChat,
   setChat,
-  saveState,
+  persistState,
   rememberMessage,
   sessionForMessage,
   setPending,
@@ -63,26 +67,15 @@ import {
   type TgState,
   type PendingDelivery,
 } from "./state.ts";
-import {
-  approvePending,
-  denyPending,
-  isAllowed,
-  loadUsers,
-  notePending,
-  roleOf,
-  saveUsers,
-  setOwner,
-  type Users,
-} from "./users.ts";
+import { approvePending, denyPending, isAllowed, loadUsers, notePending, roleOf, type Users } from "./users.ts";
 import { escapeHtml, markdownToHtml, questionKeyboard, renderAnswer, renderRichAnswer, splitMessage, buttons } from "./render.ts";
-import type { TgCallbackQuery, TgChat, TgMessage, TgUpdate } from "./types.ts";
+import type { TgCallbackQuery, TgMessage, TgUpdate } from "./types.ts";
 
 /**
- * The Telegram runtime: one long poll per bot, one allowlist, one state file. It is deliberately a
+ * The Telegram runtime: one data dir, one state file. It is deliberately a
  * thin transport over the core services — every durable decision (session, room, schedule, agent)
  * belongs to core. A Telegram failure can stop a poller; it cannot lose a run.
  */
-
 function modelKeyboard(provider: string, ids: string[], page: number): ReturnType<typeof buttons> {
   const perPage = 10;
   const pages = Math.max(1, Math.ceil(ids.length / perPage));
@@ -126,31 +119,6 @@ const RUN_START_GRACE_MS = 15_000;
 const OUTCOME_GRACE_MS = 10_000;
 
 /**
- * One line per call, in the words of the call itself.
- *
- * The summary comes from the tool's own arguments (`bash: git status`, `edit: core/src/live.ts`), so the line
- * says what ran rather than that something ran. Eight words is the budget: a trace the owner reads in a
- * notification, not a log.
- */
-function progressLine(tool: string, summary?: string): string {
-  const name = tool.toLowerCase();
-  const label =
-    name === "bash" || name === "terminal" ? "bash"
-    : name === "read" ? "read"
-    : name === "write" || name === "edit" || name === "create_file" ? name
-    : name === "grep" || name === "glob" || name === "find" ? "search"
-    : name === "codemode" ? "codemode"
-    : name === "coding" ? "coding"
-    : name === "browser" ? "browser"
-    : name === "question" ? "asking you"
-    : name.startsWith("mcp__") ? "mcp: " + tool.split("__").slice(2).join("__")
-    : name.startsWith("agents_") ? "team: " + name.replace("agents_", "")
-    : tool;
-  const detail = (summary ?? "").trim();
-  return detail ? label + ": " + detail : label;
-}
-
-/**
  * The status message while a run is in flight: the thought, then the calls.
  *
  * It is one message that is edited, not a new message per call, because a burst of twenty notifications for
@@ -163,40 +131,7 @@ function liveStatus(input: { thinking?: string; phase: string | null; lines: str
   return [head, ...tail].filter(Boolean).join("\n");
 }
 
-function phaseLabel(phase: string | null): string {
-  if (phase === "thinking") return "\u{1F9E0} thinking…";
-  if (phase === "writing") return "\u270D\uFE0F writing the answer…";
-  if (phase === "compacting") return "\u{1F5DC}\uFE0F compacting the context…";
-  if (phase === "retrying") return "\u{1F501} retrying…";
-  if (phase === "tool") return "\u2699\uFE0F working…";
-  return "starting…";
-}
-
 type BotHandle = { label: string; api: BotApi; loop: Promise<void> | undefined; stopping: boolean; abort: AbortController };
-
-const MENU_ROWS = [
-  [{ text: "Agents", data: "cmd:agents" }, { text: "New thread", data: "cmd:new" }],
-  [{ text: "Threads", data: "cmd:threads" }, { text: "Plan", data: "cmd:plan" }],
-  [{ text: "Model", data: "cmd:model" }, { text: "Usage", data: "cmd:usage" }],
-  [{ text: "Stop", data: "cmd:stop" }, { text: "Abort", data: "cmd:abort" }],
-  [{ text: "Reload", data: "cmd:reload" }, { text: "Restart", data: "cmd:restart" }],
-  [{ text: "Group", data: "cmd:group" }, { text: "Schedules", data: "cmd:schedules" }],
-  [{ text: "Memory", data: "cmd:memory" }, { text: "Bots", data: "cmd:bots" }],
-  [{ text: "MCP", data: "cmd:mcp" }, { text: "Prune", data: "cmd:prune" }],
-  [{ text: "Status", data: "cmd:status" }, { text: "Help", data: "cmd:help" }],
-];
-
-function escapeText(text: string): string {
-  return escapeHtml(text);
-}
-
-function age(ms: number): string {
-  const seconds = Math.max(0, Math.round(ms / 1000));
-  if (seconds < 60) return seconds + "s";
-  if (seconds < 3600) return Math.round(seconds / 60) + "m";
-  if (seconds < 86_400) return Math.round(seconds / 3600) + "h";
-  return Math.round(seconds / 86_400) + "d";
-}
 
 export class TelegramRuntime {
   private registry!: BotRegistry;
@@ -211,7 +146,6 @@ export class TelegramRuntime {
   private readonly recovered = new Set<string>();
   /** Placeholder messages per session, so /stop can turn every pending card into "stopped." */
   private readonly thinking = new Map<string, Map<number, { chatId: number; threadId?: number; label: string }>>();
-  private stateQueue: Promise<void> = Promise.resolve();
   private unsubscribers: (() => void)[] = [];
 
   async start(): Promise<void> {
@@ -322,7 +256,7 @@ export class TelegramRuntime {
     let attempt = 0;
     while (!this.stopping && !this.handles.has(label)) {
       attempt += 1;
-      await new Promise((done) => setTimeout(done, Math.min(30_000, 1_000 * 2 ** Math.min(attempt - 1, 5))));
+      await sleepBackoff(attempt, { capMs: 30_000 });
       if (this.stopping) return;
       try {
         await this.startBot(label);
@@ -376,15 +310,14 @@ export class TelegramRuntime {
         await this.persist();
         log.error("telegram.poll_failed", { bot: handle.label, fatal, failures, ...errorFields(error) });
         if (fatal) return;
-        const delay = Math.min(15_000, 1_000 * 2 ** Math.min(failures - 1, 4));
-        await new Promise((done) => setTimeout(done, delay));
+        await sleepBackoff(failures, { capMs: 15_000, maxExponent: 4 });
       }
     }
   }
 
+  /** Write the state file, through the state module's one queue. */
   private async persist(): Promise<void> {
-    this.stateQueue = this.stateQueue.then(() => saveState(this.state)).catch(() => undefined);
-    await this.stateQueue;
+    await persistState(this.state);
   }
 
   /** The registry/health snapshot used by status, the fleet TUI and the wizard. */
@@ -610,50 +543,22 @@ export class TelegramRuntime {
 
   private async handleCommand(handle: BotHandle, message: TgMessage, text: string, owner: boolean): Promise<void> {
     const [raw, ...parts] = text.split(/\s+/);
-    const command = (raw ?? "").split("@")[0]?.replace(/^\//, "") ?? "";
+    const typed = ((raw ?? "").split("@")[0] ?? "").replace(/^\//, "").toLowerCase();
+    const spec = findCommand(typed);
+    const command = spec?.name ?? typed;
     const argument = parts.join(" ").trim();
     const chatId = message.chat.id;
     const key = chatKey(chatId, message.message_thread_id);
 
+    if (spec?.access === "owner" && !owner) {
+      return void (await handle.api.sendMessage(chatId, "Owner only.", { threadId: message.message_thread_id }));
+    }
+
     switch (command) {
-      case "start":
-        await this.sendMenu(handle, message);
-        return;
       case "help":
-        await handle.api.sendMessage(
-          chatId,
-          [
-            "<b>Commands</b>",
-            "/menu — buttons",
-            "/new [title] — new thread",
-            "/threads — list and switch threads",
-            "/plan [goal] — ask for a plan before executing",
-            "/model [provider/model] — show or change the model",
-            "/thinking [level|all level] — reasoning effort for one agent or every agent",
-            "/usage — usage report",
-            "/agents — switch agent",
-            "/memory [agent] — memory notes",
-            "/schedules — cron schedules",
-            "/status — daemon and connection",
-            "/whoami — your id and role",
-            "/compact — compact this thread",
-            "/abort — abort the current run",
-            "/group — group settings · /bind &lt;id&gt; — owner",
-            "/connect &lt;agent&gt; &lt;token&gt; — pair a bot from a token, no browser (owner)",
-            "/stop — stop the current run and every queued message",
-            "/mcp — MCP servers and tools for all agents (owner)",
-            "/prune [days] — remove stale threads (owner)",
-            "/reload — reload tools and threads (owner)",
-            "/restart — restart the service (owner)",
-            "/orchestrator — show or choose (owner)",
-            "/bots — bot registry (owner)",
-            "/settings — configuration (owner)",
-          ].join("\n"),
-          { threadId: message.message_thread_id },
-        );
+        await handle.api.sendMessage(chatId, helpText(), { threadId: message.message_thread_id });
         return;
       case "menu":
-      case "commands":
         await this.sendMenu(handle, message);
         return;
       case "whoami":
@@ -692,6 +597,9 @@ export class TelegramRuntime {
         return;
       case "compact":
         await this.compactCurrent(handle, message, owner);
+        return;
+      case "learn":
+        await this.learnCurrent(handle, message);
         return;
       case "restart-thread":
         await this.restartCurrent(handle, message, argument, owner);
@@ -759,8 +667,8 @@ export class TelegramRuntime {
     const bots = this.registry.bots.find((bot) => bot.label === handle.label);
     await handle.api.sendMessage(
       message.chat.id,
-      "<b>dura-agents</b>\n@" + escapeText(bots?.username ?? handle.label) + " · owner " + (this.users.owner ? "set" : "missing"),
-      { keyboard: buttons(MENU_ROWS), threadId: message.message_thread_id },
+      "<b>dura-agents</b>\n@" + escapeHtml(bots?.username ?? handle.label) + " · owner " + (this.users.owner ? "set" : "missing"),
+      { keyboard: buttons(menuRows()), threadId: message.message_thread_id },
     );
   }
 
@@ -782,10 +690,10 @@ export class TelegramRuntime {
     const bot = this.registry.bots.find((entry) => entry.label === handle.label);
     await handle.api.sendMessage(
       message.chat.id,
-      "<b>" + escapeText(paired.name) + "</b> (" + escapeText(paired.id) + ")\n" +
-        "bot @" + escapeText(bot?.username ?? handle.label) + " · one bot, one agent\n" +
-        "model " + escapeText(paired.provider + "/" + paired.modelId) + " · " + (paired.permissions ?? "inferred") + "\n" +
-        (paired.responsibility ? "responsibility: " + escapeText(paired.responsibility) + "\n" : "") +
+      "<b>" + escapeHtml(paired.name) + "</b> (" + escapeHtml(paired.id) + ")\n" +
+        "bot @" + escapeHtml(bot?.username ?? handle.label) + " · one bot, one agent\n" +
+        "model " + escapeHtml(paired.provider + "/" + paired.modelId) + " · " + (paired.permissions ?? "inferred") + "\n" +
+        (paired.responsibility ? "responsibility: " + escapeHtml(paired.responsibility) + "\n" : "") +
         "/new starts a thread · /threads switches · /bots shows other pairings (owner)",
       { threadId: message.message_thread_id },
     );
@@ -801,7 +709,7 @@ export class TelegramRuntime {
       return;
     }
     const rows = list.map((session) => [
-      { text: session.title.slice(0, 40) + " · " + age(Date.now() - session.updatedAt), data: "thread:" + session.id },
+      { text: session.title.slice(0, 40) + " · " + shortAge(Date.now() - session.updatedAt), data: "thread:" + session.id },
     ]);
     await handle.api.sendMessage(message.chat.id, "Threads:", {
       keyboard: buttons(rows),
@@ -811,7 +719,6 @@ export class TelegramRuntime {
 
   private async newThread(handle: BotHandle, message: TgMessage, title: string): Promise<void> {
     const key = chatKey(message.chat.id, message.message_thread_id);
-    const binding = getChat(this.state, handle.label, key);
     const paired = await this.pairedAgent(handle.label);
     if (!paired) return void (await this.offerPairing(handle, message));
     const agentId = paired.id;
@@ -825,7 +732,17 @@ export class TelegramRuntime {
       sessionId: session.id,
       ...(message.message_thread_id ? { topicId: message.message_thread_id } : {}),
     });
-    await handle.api.sendMessage(message.chat.id, "New thread: " + escapeText(session.title), { threadId: message.message_thread_id });
+    // The confirmation doubles as orientation: which thread you are in now, who answers, and the two
+    // commands that get you back or rename it. "New thread: New thread" told the owner nothing.
+    const named = title.trim().length > 0;
+    await handle.api.sendMessage(
+      message.chat.id,
+      "<b>New thread #" + session.id + "</b>\n" +
+        (named ? "“" + escapeHtml(session.title) + "”\n" : "") +
+        "agent " + escapeHtml(agentId) + " · model " + escapeHtml(paired.provider + "/" + paired.modelId) + "\n" +
+        "Send a message to start it · /threads to switch · /rename to name it",
+      { threadId: message.message_thread_id },
+    );
   }
 
   private async switchThread(handle: BotHandle, message: TgMessage, argument: string): Promise<void> {
@@ -847,7 +764,7 @@ export class TelegramRuntime {
       sessionId: id,
       ...(message.message_thread_id ? { topicId: message.message_thread_id } : {}),
     });
-    await handle.api.sendMessage(message.chat.id, "Switched to: " + escapeText(session.title), { threadId: message.message_thread_id });
+    await handle.api.sendMessage(message.chat.id, "Switched to: " + escapeHtml(session.title), { threadId: message.message_thread_id });
   }
 
   private async renameThread(handle: BotHandle, message: TgMessage, title: string): Promise<void> {
@@ -858,7 +775,7 @@ export class TelegramRuntime {
     }
     const { renameSession } = await import("../../core/src/sessions.ts");
     const renamed = await renameSession(binding.sessionId, title);
-    await handle.api.sendMessage(message.chat.id, renamed ? "Renamed to: " + escapeText(renamed.title) : "A title cannot be empty.");
+    await handle.api.sendMessage(message.chat.id, renamed ? "Renamed to: " + escapeHtml(renamed.title) : "A title cannot be empty.");
   }
 
   private async abortCurrent(handle: BotHandle, message: TgMessage): Promise<void> {
@@ -871,8 +788,30 @@ export class TelegramRuntime {
     await handle.api.sendMessage(message.chat.id, ok ? "Aborted." : "That thread is already idle.");
   }
 
+  /**
+   * `/learn`: run the learning layer on this thread now.
+   *
+   * Any participant may ask; what it writes is the agent's own memory and the fleet preferences, both of
+   * which the next answer already reads. The automatic pass runs after the thread goes quiet, so this is
+   * the "I am about to close this thread, keep what mattered" shortcut.
+   */
+  private async learnCurrent(handle: BotHandle, message: TgMessage): Promise<void> {
+    const binding = getChat(this.state, handle.label, chatKey(message.chat.id, message.message_thread_id));
+    if (!binding?.sessionId) return void (await handle.api.sendMessage(message.chat.id, "No active thread."));
+    await handle.api.sendMessage(message.chat.id, "Reading this thread for anything worth keeping…", {
+      threadId: message.message_thread_id,
+    });
+    const result = await distillSession(binding.sessionId, { forced: true });
+    const lines: string[] = [];
+    if (result.skipped) lines.push("Nothing new (" + result.skipped + ").");
+    for (const note of result.preferences) lines.push("preference: " + note);
+    for (const note of result.memory) lines.push("memory: " + note);
+    for (const note of result.lessons) lines.push("lesson: " + note);
+    if (!result.skipped && lines.length === 0) lines.push("Nothing durable in this thread.");
+    await handle.api.sendMessage(message.chat.id, lines.join("\n"), { threadId: message.message_thread_id });
+  }
+
   private async compactCurrent(handle: BotHandle, message: TgMessage, owner: boolean): Promise<void> {
-    if (!owner) return void (await handle.api.sendMessage(message.chat.id, "Owner only."));
     const binding = getChat(this.state, handle.label, chatKey(message.chat.id, message.message_thread_id));
     if (!binding?.sessionId) return void (await handle.api.sendMessage(message.chat.id, "No active thread."));
     const ok = await compactSession(binding.sessionId);
@@ -880,7 +819,6 @@ export class TelegramRuntime {
   }
 
   private async restartCurrent(handle: BotHandle, message: TgMessage, handoff: string, owner: boolean): Promise<void> {
-    if (!owner) return void (await handle.api.sendMessage(message.chat.id, "Owner only."));
     const binding = getChat(this.state, handle.label, chatKey(message.chat.id, message.message_thread_id));
     if (!binding?.sessionId) return void (await handle.api.sendMessage(message.chat.id, "No active thread."));
     const ok = await restartSession(binding.sessionId, handoff || undefined);
@@ -976,7 +914,6 @@ export class TelegramRuntime {
   }
 
   private async grant(handle: BotHandle, message: TgMessage, argument: string, owner: boolean): Promise<void> {
-    if (!owner) return void (await handle.api.sendMessage(message.chat.id, "Owner only."));
     const binding = getChat(this.state, handle.label, chatKey(message.chat.id, message.message_thread_id));
     if (!binding?.sessionId) return void (await handle.api.sendMessage(message.chat.id, "No active thread."));
     const { setSessionGrant } = await import("../../core/src/sessions.ts");
@@ -994,7 +931,7 @@ export class TelegramRuntime {
     ].filter(Boolean);
     if (owner) {
       lines.push("", "agents:");
-      for (const agent of report.agents.slice(0, 10)) lines.push("· " + escapeText(agent.name) + " " + agent.today.tokens.toLocaleString("en-US"));
+      for (const agent of report.agents.slice(0, 10)) lines.push("· " + escapeHtml(agent.name) + " " + agent.today.tokens.toLocaleString("en-US"));
     }
     await handle.api.sendMessage(message.chat.id, lines.join("\n"));
   }
@@ -1007,12 +944,11 @@ export class TelegramRuntime {
     const notes = memory.split("\n").filter((line) => line.trim().startsWith("- ")).slice(-15);
     await handle.api.sendMessage(
       message.chat.id,
-      "<b>Memory</b> " + escapeText(agentId) + "\n" + (notes.length ? escapeHtml(notes.join("\n")) : "(empty)"),
+      "<b>Memory</b> " + escapeHtml(agentId) + "\n" + (notes.length ? escapeHtml(notes.join("\n")) : "(empty)"),
     );
   }
 
   private async sendBots(handle: BotHandle, message: TgMessage, owner: boolean): Promise<void> {
-    if (!owner) return void (await handle.api.sendMessage(message.chat.id, "Owner only."));
     const [agents, status] = await Promise.all([
       listAgents(),
       this.status() as Promise<{ bots: { label: string; username?: string; ok: boolean; enabled: boolean; default: boolean }[] }>,
@@ -1037,13 +973,12 @@ export class TelegramRuntime {
   }
 
   private async sendOrchestrator(handle: BotHandle, message: TgMessage, argument: string, owner: boolean): Promise<void> {
-    if (!owner) return void (await handle.api.sendMessage(message.chat.id, "Owner only."));
     if (argument) {
       try {
         await setOrchestrator(argument);
-        await handle.api.sendMessage(message.chat.id, "Orchestrator: " + escapeText(argument));
+        await handle.api.sendMessage(message.chat.id, "Orchestrator: " + escapeHtml(argument));
       } catch (error) {
-        await handle.api.sendMessage(message.chat.id, escapeText(String(error)));
+        await handle.api.sendMessage(message.chat.id, escapeHtml(String(error)));
       }
       return;
     }
@@ -1052,14 +987,13 @@ export class TelegramRuntime {
     const rows = agents.slice(0, 10).map((agent) => [{ text: (agent.id === current ? "• " : "") + agent.name, data: "orch:" + agent.id }]);
     await handle.api.sendMessage(
       message.chat.id,
-      "Orchestrator: " + escapeText(current ?? "none") + "\nChoose one:" +
+      "Orchestrator: " + escapeHtml(current ?? "none") + "\nChoose one:" +
         (agents.length === 0 ? " (no agents yet)" : ""),
       agents.length > 0 ? { keyboard: buttons(rows) } : undefined,
     );
   }
 
   private async bindGroup(handle: BotHandle, message: TgMessage, argument: string, owner: boolean): Promise<void> {
-    if (!owner) return void (await handle.api.sendMessage(message.chat.id, "Owner only."));
     if (message.chat.type === "private") return void (await handle.api.sendMessage(message.chat.id, "/bind is for a group."));
     const id = argument.trim();
     if (!id || !(await isRoom(id))) {
@@ -1081,12 +1015,11 @@ export class TelegramRuntime {
       const room = record?.room;
       await handle.api.sendMessage(
         message.chat.id,
-        "<b>Group</b> " + escapeText(record?.title ?? binding.sessionId) + "\nmembers " + (room?.members.join(", ") ?? "-") +
+        "<b>Group</b> " + escapeHtml(record?.title ?? binding.sessionId) + "\nmembers " + (room?.members.join(", ") ?? "-") +
           "\nmode " + (room?.mode ?? "-") + " · speaker " + (binding.speakerBot ?? handle.label),
       );
       return;
     }
-    if (!owner) return void (await handle.api.sendMessage(message.chat.id, "Owner only."));
     if (field === "mode") {
       const mode = rest[0];
       if (mode !== "nyahut" && mode !== "moderator" && mode !== "silent") {
@@ -1111,7 +1044,6 @@ export class TelegramRuntime {
   }
 
   private async approve(handle: BotHandle, message: TgMessage, argument: string, owner: boolean): Promise<void> {
-    if (!owner) return void (await handle.api.sendMessage(message.chat.id, "Owner only."));
     if (!argument) {
       const rows = this.users.pending.map((user) => [{ text: (user.username ?? user.id) + " → approve", data: "ap:" + user.id }]);
       await handle.api.sendMessage(message.chat.id, rows.length ? "Pending:" : "No pending users.", rows.length ? { keyboard: buttons(rows) } : undefined);
@@ -1127,7 +1059,7 @@ export class TelegramRuntime {
     if (schedules.length === 0) return void (await handle.api.sendMessage(message.chat.id, "No schedules."));
     const lines = schedules.slice(0, 15).map(
       (schedule) =>
-        "· " + escapeText(schedule.name) + " · " + schedule.agentId + " · " + schedule.cron +
+        "· " + escapeHtml(schedule.name) + " · " + schedule.agentId + " · " + schedule.cron +
         (schedule.enabled ? "" : " (paused)") +
         (schedule.nextRunAt ? " · next " + new Date(schedule.nextRunAt).toLocaleString() : ""),
     );
@@ -1145,7 +1077,7 @@ export class TelegramRuntime {
       return;
     }
     const lines = rooms.slice(0, 15).map(
-      (room) => "· " + escapeText(room.title) + " — id " + room.id + " · " + (room.room?.mode ?? "-") + " · " + (room.room?.members.join(", ") ?? ""),
+      (room) => "· " + escapeHtml(room.title) + " — id " + room.id + " · " + (room.room?.mode ?? "-") + " · " + (room.room?.members.join(", ") ?? ""),
     );
     await handle.api.sendMessage(
       message.chat.id,
@@ -1158,9 +1090,9 @@ export class TelegramRuntime {
     await handle.api.sendMessage(
       message.chat.id,
       "<b>Settings</b>\n" +
-        "model " + escapeText(config.models.default.provider + "/" + config.models.default.modelId) + "\n" +
+        "model " + escapeHtml(config.models.default.provider + "/" + config.models.default.modelId) + "\n" +
         "runs " + config.limits.maxConcurrentRuns + " · queued " + config.limits.queuedRuns + "\n" +
-        "default bot " + escapeText(config.telegram.defaultBot) + "\n" +
+        "default bot " + escapeHtml(config.telegram.defaultBot) + "\n" +
         (owner ? "change model with: dura provider default \nlog: dura logs" : ""),
     );
   }
@@ -1626,7 +1558,7 @@ export class TelegramRuntime {
         });
         log.info("telegram.steer", { sessionId, submission: submission.submissionId });
       } catch (error) {
-        await handle.api.sendMessage(chatId, "Steer failed: " + escapeText(error instanceof Error ? error.message : String(error)), { threadId });
+        await handle.api.sendMessage(chatId, "Steer failed: " + escapeHtml(error instanceof Error ? error.message : String(error)), { threadId });
       }
       return;
     }
@@ -1656,7 +1588,7 @@ export class TelegramRuntime {
     } catch (error) {
       this.untrackThinking(sessionId, placeholder.message_id);
       await handle.api
-        .editMessage(chatId, placeholder.message_id, "⚠️ " + escapeText(error instanceof Error ? error.message : String(error)))
+        .editMessage(chatId, placeholder.message_id, "⚠️ " + escapeHtml(error instanceof Error ? error.message : String(error)))
         .catch(() => undefined);
     }
   }
@@ -1795,7 +1727,6 @@ export class TelegramRuntime {
   }
 
   private async prune(handle: BotHandle, message: TgMessage, argument: string, owner: boolean): Promise<void> {
-    if (!owner) return void (await handle.api.sendMessage(message.chat.id, "Owner only."));
     const days = Number.parseInt(argument, 10);
     const config = await readConfig({ fresh: true });
     const olderThanDays = Number.isFinite(days) && days > 0 ? days : config.storage.pruneAfterDays;
@@ -1807,7 +1738,7 @@ export class TelegramRuntime {
       });
       return;
     }
-    const lines = preview.candidates.slice(0, 12).map((candidate) => "· " + escapeText(candidate.title.slice(0, 50)) + " (" + age(Date.now() - candidate.updatedAt) + ")");
+    const lines = preview.candidates.slice(0, 12).map((candidate) => "· " + escapeHtml(candidate.title.slice(0, 50)) + " (" + shortAge(Date.now() - candidate.updatedAt) + ")");
     await handle.api.sendMessage(
       message.chat.id,
       "<b>Stale threads</b>\n" + preview.candidates.length + " thread(s) older than " + olderThanDays + " days:\n" +
@@ -1824,7 +1755,6 @@ export class TelegramRuntime {
   }
 
   private async mcpCommand(handle: BotHandle, message: TgMessage, argument: string, owner: boolean): Promise<void> {
-    if (!owner) return void (await handle.api.sendMessage(message.chat.id, "Owner only."));
     const { addMcpServer, mcpStatus, mcpToolInfos, reloadMcp, removeMcpServer } = await import("../../core/src/mcp.ts");
     const [sub, ...rest] = argument.split(/\s+/).filter(Boolean);
     if (sub === "add") {
@@ -1839,11 +1769,11 @@ export class TelegramRuntime {
         const result = await addMcpServer({ name, command, args });
         await handle.api.sendMessage(
           message.chat.id,
-          "MCP <b>" + escapeText(name) + "</b> connected · " + result.tools.length + " tools · " + result.rebound +
+          "MCP <b>" + escapeHtml(name) + "</b> connected · " + result.tools.length + " tools · " + result.rebound +
             " agents rebound.\nAll agents now have: " + escapeHtml(result.tools.join(", ")),
         );
       } catch (error) {
-        await handle.api.sendMessage(message.chat.id, escapeText(error instanceof Error ? error.message : String(error)));
+        await handle.api.sendMessage(message.chat.id, escapeHtml(error instanceof Error ? error.message : String(error)));
       }
       return;
     }
@@ -1852,9 +1782,9 @@ export class TelegramRuntime {
       if (!name) return void (await handle.api.sendMessage(message.chat.id, "Usage: /mcp remove &lt;name&gt;"));
       try {
         const result = await removeMcpServer(name);
-        await handle.api.sendMessage(message.chat.id, result.removed ? "Removed " + escapeText(name) + " · " + result.rebound + " agents rebound." : "No MCP server " + escapeText(name) + ".");
+        await handle.api.sendMessage(message.chat.id, result.removed ? "Removed " + escapeHtml(name) + " · " + result.rebound + " agents rebound." : "No MCP server " + escapeHtml(name) + ".");
       } catch (error) {
-        await handle.api.sendMessage(message.chat.id, escapeText(error instanceof Error ? error.message : String(error)));
+        await handle.api.sendMessage(message.chat.id, escapeHtml(error instanceof Error ? error.message : String(error)));
       }
       return;
     }
@@ -1874,14 +1804,15 @@ export class TelegramRuntime {
       return;
     }
     const lines = servers.map(
-      (server) => "· " + server.name + " · " + (server.connected ? "connected" : server.error ? "error" : "stopped") + " · " + server.tools.length + " tools" +
+      (server) => "· " + server.name + " · " + (server.state ?? (server.connected ? "connected" : "idle")) + " · " + server.tools.length + " tools" +
         (server.error ? " (" + server.error.slice(0, 80) + ")" : ""),
     );
     await handle.api.sendMessage(
       message.chat.id,
       "<b>MCP</b> (for all agents)\n" + escapeHtml(lines.join("\n")) +
         (tools.length ? "\n\n" + escapeHtml(tools.map((tool) => tool.registeredName).slice(0, 20).join(", ")) : "") +
-        "\n\n/mcp add &lt;name&gt; &lt;command&gt; [args…] · /mcp remove &lt;name&gt; · /mcp reload",
+        "\n\n/mcp add &lt;name&gt; &lt;command&gt; [args…] · /mcp remove &lt;name&gt; · /mcp reload\n" +
+          "Servers sleep when unused and start again on the next tool call.",
     );
   }
 
@@ -1909,7 +1840,6 @@ export class TelegramRuntime {
   }
 
   private async connectCommand(handle: BotHandle, message: TgMessage, argument: string, owner: boolean): Promise<void> {
-    if (!owner) return void (await handle.api.sendMessage(message.chat.id, "Owner only."));
     const [agentId, token] = argument.split(/\s+/).filter(Boolean);
     if (!agentId || !token) {
       await handle.api.sendMessage(
@@ -1925,30 +1855,32 @@ export class TelegramRuntime {
       const result = await assignBotToAgent(bot.label, agentId, "telegram");
       await handle.api.sendMessage(
         message.chat.id,
-        "Connected @" + escapeText(bot.username) + " to " + escapeText(agentId) +
-          (result.freed.length ? " · unpaired " + escapeText(result.freed.join(", ")) : "") +
+        "Connected @" + escapeHtml(bot.username) + " to " + escapeHtml(agentId) +
+          (result.freed.length ? " · unpaired " + escapeHtml(result.freed.join(", ")) : "") +
           (removed ? " · token message deleted" : " · delete the token message manually"),
       );
       log.info("telegram.bot_connected", { label: bot.label, agentId, freed: result.freed });
     } catch (error) {
-      await handle.api.sendMessage(message.chat.id, escapeText(error instanceof Error ? error.message : String(error)));
+      await handle.api.sendMessage(message.chat.id, escapeHtml(error instanceof Error ? error.message : String(error)));
     }
   }
 
+  /**
+   * /stop belongs to the thread it is typed in.
+   *
+   * It used to sweep every active session of the paired agent, which turned one topic's /stop into a kill
+   * switch for the whole agent: three parallel threads went down because one of them was stopped. The scope
+   * here is this chat topic only — the bound session, plus a card this very topic still shows.
+   */
   private async stopEverything(handle: BotHandle, message: TgMessage): Promise<void> {
-    const paired = await this.pairedAgent(handle.label);
     const binding = getChat(this.state, handle.label, chatKey(message.chat.id, message.message_thread_id));
-    const active = new Set(activeIds());
-    const { listSessions } = await import("../../core/src/sessions.ts");
-    const sessions = await listSessions();
     const targets = new Set<string>();
     if (binding?.sessionId) targets.add(binding.sessionId);
-    for (const session of sessions) {
-      if (paired && session.agent === paired.id && active.has(session.id)) targets.add(session.id);
-    }
-    // Anything still showing a thinking card in this chat is part of the stop.
+    // A thinking card this topic owns belongs to the stop even after /switch moved the binding elsewhere.
     for (const [sessionId, cards] of this.thinking) {
-      if ([...cards.values()].some((card) => card.chatId === message.chat.id)) targets.add(sessionId);
+      for (const card of cards.values()) {
+        if (card.chatId === message.chat.id && card.threadId === message.message_thread_id) targets.add(sessionId);
+      }
     }
 
     let stopped = 0;
@@ -1965,15 +1897,19 @@ export class TelegramRuntime {
     await handle.api.sendMessage(
       message.chat.id,
       stopped > 0
-        ? "Stopped " + stopped + " run(s). Queued messages were withdrawn."
-        : "Nothing is running here. Every pending thinking card was cleared.",
+        ? "Stopped " + stopped + " run(s) in this thread. Other threads keep running."
+        : "Nothing is running in this thread.",
       { threadId: message.message_thread_id },
     );
-    log.info("telegram.stop", { chatId: message.chat.id, sessions: [...targets], stopped });
+    log.info("telegram.stop", {
+      chatId: message.chat.id,
+      threadId: message.message_thread_id,
+      sessions: [...targets],
+      stopped,
+    });
   }
 
   private async reload(handle: BotHandle, message: TgMessage, owner: boolean): Promise<void> {
-    if (!owner) return void (await handle.api.sendMessage(message.chat.id, "Owner only."));
     const result = await reloadEverything();
     await syncBotCommands(handle.api).catch(() => undefined);
     const { listSessions } = await import("../../core/src/sessions.ts");
@@ -1987,7 +1923,6 @@ export class TelegramRuntime {
   }
 
   private async restartService(handle: BotHandle, message: TgMessage, owner: boolean): Promise<void> {
-    if (!owner) return void (await handle.api.sendMessage(message.chat.id, "Owner only."));
     await handle.api.sendMessage(
       message.chat.id,
       "<b>Restart the service?</b>\nThe daemon stops and systemd starts it again. In-flight runs are durable and resume.",
@@ -2067,7 +2002,7 @@ export class TelegramRuntime {
             if (seenCalls.has(call.callId)) continue;
             seenCalls.add(call.callId);
             if (call.status === "done") continue;
-            lines.push(progressLine(call.name, call.summary));
+            lines.push(progressLine(call.name, call.summary, ": "));
             if (lines.length > 3) lines.shift();
           }
           paintStatus(false);
@@ -2084,7 +2019,7 @@ export class TelegramRuntime {
         before,
         // A long run keeps its card honest instead of leaving an edit ten minutes old on screen.
         onCheckpoint: (elapsedMs) => {
-          lines.push("still running · " + age(elapsedMs));
+          lines.push("still running · " + shortAge(elapsedMs));
           if (lines.length > 3) lines.shift();
           paintStatus(true);
         },
@@ -2181,13 +2116,13 @@ export class TelegramRuntime {
           const author = entry.author ?? "agent";
           const name = agentNames.get(author) ?? author;
           if (kind === "chat.agent-message") {
-            void handle.api.sendMessage(message.chat.id, "<b>" + escapeText(name) + "</b>\n" + markdownToHtml(entry.text), { threadId: message.message_thread_id });
+            void handle.api.sendMessage(message.chat.id, "<b>" + escapeHtml(name) + "</b>\n" + markdownToHtml(entry.text), { threadId: message.message_thread_id });
           } else if (kind === "chat.note") {
-            void handle.api.sendMessage(message.chat.id, "<i>" + escapeText(name + " (note)") + "</i>\n" + markdownToHtml(entry.text), { threadId: message.message_thread_id });
+            void handle.api.sendMessage(message.chat.id, "<i>" + escapeHtml(name + " (note)") + "</i>\n" + markdownToHtml(entry.text), { threadId: message.message_thread_id });
           } else if (kind === "room.claim" || kind === "room.no-claim" || kind === "room.error" || kind === "room.no-target") {
-            void handle.api.sendMessage(message.chat.id, "<i>" + escapeText(entry.text) + "</i>", { threadId: message.message_thread_id });
+            void handle.api.sendMessage(message.chat.id, "<i>" + escapeHtml(entry.text) + "</i>", { threadId: message.message_thread_id });
           } else if (kind === "room.usage") {
-            void handle.api.sendMessage(message.chat.id, "<i>" + escapeText(entry.text) + "</i>", { threadId: message.message_thread_id });
+            void handle.api.sendMessage(message.chat.id, "<i>" + escapeHtml(entry.text) + "</i>", { threadId: message.message_thread_id });
           } else if (kind === "chat.typing") {
             void handle.api.sendChatAction(message.chat.id, "typing").catch(() => undefined);
           }
@@ -2202,7 +2137,7 @@ export class TelegramRuntime {
       await postToRoom(binding.sessionId, { text, requestId: "tg:" + handle.label + ":" + message.chat.id + ":" + message.message_id });
       await handle.api.editMessage(message.chat.id, placeholder.message_id, "<i>group finished</i>").catch(() => undefined);
     } catch (error) {
-      await handle.api.editMessage(message.chat.id, placeholder.message_id, "⚠️ " + escapeText(error instanceof Error ? error.message : String(error))).catch(() => undefined);
+      await handle.api.editMessage(message.chat.id, placeholder.message_id, "⚠️ " + escapeHtml(error instanceof Error ? error.message : String(error))).catch(() => undefined);
     } finally {
       stopTyping();
       await stopStream?.().catch(() => undefined);
@@ -2240,7 +2175,7 @@ export class TelegramRuntime {
     }
 
     if (data.startsWith("agent:")) {
-      await handle.api.sendMessage(chatId, "One bot is one agent. Use /bots to pair a bot with " + escapeText(data.slice(6)) + ".");
+      await handle.api.sendMessage(chatId, "One bot is one agent. Use /bots to pair a bot with " + escapeHtml(data.slice(6)) + ".");
       return;
     }
 
@@ -2249,13 +2184,13 @@ export class TelegramRuntime {
       const bot = data.slice(8);
       const candidates = await this.unpairedAgents();
       if (candidates.length === 0) {
-        await handle.api.sendMessage(chatId, "No unpaired agents. Create one with: dura agent create --bot " + escapeText(bot));
+        await handle.api.sendMessage(chatId, "No unpaired agents. Create one with: dura agent create --bot " + escapeHtml(bot));
         return;
       }
       const rows = candidates.slice(0, 10).map((agent) => [
         { text: agent.name + " (" + agent.id + ")", data: "botassign:" + bot + "|" + agent.id },
       ]);
-      await handle.api.sendMessage(chatId, "Assign an agent to " + escapeText(bot) + ":", { keyboard: buttons(rows) });
+      await handle.api.sendMessage(chatId, "Assign an agent to " + escapeHtml(bot) + ":", { keyboard: buttons(rows) });
       return;
     }
 
@@ -2269,11 +2204,11 @@ export class TelegramRuntime {
       try {
         const result = await assignBotToAgent(bot, agent, "telegram");
         await handle.api
-          .editMessage(chatId, message.message_id, "Bot " + escapeText(bot) + " now belongs to " + escapeText(agent) +
-            (result.freed.length ? "; unpaired " + escapeText(result.freed.join(", ")) : "") + ".")
+          .editMessage(chatId, message.message_id, "Bot " + escapeHtml(bot) + " now belongs to " + escapeHtml(agent) +
+            (result.freed.length ? "; unpaired " + escapeHtml(result.freed.join(", ")) : "") + ".")
           .catch(() => undefined);
       } catch (error) {
-        await handle.api.sendMessage(chatId, escapeText(error instanceof Error ? error.message : String(error)));
+        await handle.api.sendMessage(chatId, escapeHtml(error instanceof Error ? error.message : String(error)));
       }
       return;
     }
@@ -2283,7 +2218,7 @@ export class TelegramRuntime {
       const bot = data.slice(11);
       const freed = await releaseBot(bot, "telegram");
       await handle.api
-        .editMessage(chatId, message.message_id, freed.length ? "Unpaired " + escapeText(freed.join(", ")) + " from " + escapeText(bot) + "." : "No agent held " + escapeText(bot) + ".")
+        .editMessage(chatId, message.message_id, freed.length ? "Unpaired " + escapeHtml(freed.join(", ")) + " from " + escapeHtml(bot) + "." : "No agent held " + escapeHtml(bot) + ".")
         .catch(() => undefined);
       return;
     }
@@ -2300,7 +2235,7 @@ export class TelegramRuntime {
         agentId: paired.id,
         sessionId,
       });
-      await handle.api.sendMessage(chatId, "Thread: " + escapeText(session.title));
+      await handle.api.sendMessage(chatId, "Thread: " + escapeHtml(session.title));
       return;
     }
 
@@ -2331,7 +2266,7 @@ export class TelegramRuntime {
           return;
         }
         await handle.api
-          .editMessage(chatId, message.message_id, "<i>" + escapeText(result.message) + "</i>")
+          .editMessage(chatId, message.message_id, "<i>" + escapeHtml(result.message) + "</i>")
           .catch(() => undefined);
         await this.routeText({
           handle,
@@ -2353,7 +2288,7 @@ export class TelegramRuntime {
       const list = Array.isArray(options) ? options.filter((value): value is string => typeof value === "string") : [];
       const answer = list[Number(index)];
       if (!answer) return void (await handle.api.sendMessage(chatId, "That option is gone."));
-      await handle.api.editMessage(chatId, message.message_id, "<i>answer: " + escapeText(answer) + "</i>").catch(() => undefined);
+      await handle.api.editMessage(chatId, message.message_id, "<i>answer: " + escapeHtml(answer) + "</i>").catch(() => undefined);
       // The answer is a prompt like any other: it must open a status bubble, show typing and deliver the
       // next answer. Sending it bare left the turn running with nobody watching it, which looked stuck.
       await this.routeText({
@@ -2373,9 +2308,9 @@ export class TelegramRuntime {
       if (!owner) return void (await handle.api.sendMessage(chatId, "Owner only."));
       try {
         await setOrchestrator(data.slice(5));
-        await handle.api.sendMessage(chatId, "Orchestrator: " + escapeText(data.slice(5)));
+        await handle.api.sendMessage(chatId, "Orchestrator: " + escapeHtml(data.slice(5)));
       } catch (error) {
-        await handle.api.sendMessage(chatId, escapeText(String(error)));
+        await handle.api.sendMessage(chatId, escapeHtml(String(error)));
       }
       return;
     }
@@ -2385,10 +2320,10 @@ export class TelegramRuntime {
       const agentId = data.slice(3);
       try {
         await setOrchestrator(agentId);
-        await handle.api.editMessage(chatId, message.message_id, "Orchestrator: " + escapeText(agentId)).catch(() => undefined);
+        await handle.api.editMessage(chatId, message.message_id, "Orchestrator: " + escapeHtml(agentId)).catch(() => undefined);
         log.info("telegram.orchestrator_approved", { agentId });
       } catch (error) {
-        await handle.api.sendMessage(chatId, escapeText(error instanceof Error ? error.message : String(error)));
+        await handle.api.sendMessage(chatId, escapeHtml(error instanceof Error ? error.message : String(error)));
       }
       return;
     }
@@ -2414,7 +2349,7 @@ export class TelegramRuntime {
         .editMessage(
           chatId,
           message.message_id,
-          "Choose a model for this thread · " + escapeText(provider) + " · " + ids.length + " models",
+          "Choose a model for this thread · " + escapeHtml(provider) + " · " + ids.length + " models",
           modelKeyboard(provider, ids, page),
         )
         .catch(() => undefined);
@@ -2433,7 +2368,7 @@ export class TelegramRuntime {
       const { setSessionModel } = await import("../../core/src/sessions.ts");
       const result = await setSessionModel(binding.sessionId, { provider, modelId });
       await handle.api
-        .editMessage(chatId, message.message_id, result ? "Model: " + escapeText(provider + "/" + modelId) + " (" + result.changed + ")" : "Could not change the model.")
+        .editMessage(chatId, message.message_id, result ? "Model: " + escapeHtml(provider + "/" + modelId) + " (" + result.changed + ")" : "Could not change the model.")
         .catch(() => undefined);
       return;
     }

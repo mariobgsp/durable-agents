@@ -1,4 +1,4 @@
-import { type Parsed, flag, has, numberFlag } from "../args.ts";
+import { type Parsed, has, numberFlag } from "../args.ts";
 import { fail, json, paint, print, table, duration } from "../output.ts";
 import { withDaemon } from "../client.ts";
 import { readConfig } from "../../../core/src/config.ts";

@@ -1,6 +1,6 @@
 import { type Parsed, flag, has } from "../args.ts";
 import { fail, json, paint, print } from "../output.ts";
-import { DaemonClient, DaemonUnavailable } from "../client.ts";
+import { connectOrUndefined } from "../client.ts";
 import { readConfig } from "../../../core/src/config.ts";
 import { defaultDiscordBot, discordBotByLabel, loadDiscordRegistry, publicDiscordRegistry } from "../../../discord/src/registry.ts";
 import { loadDiscordUsers } from "../../../discord/src/users.ts";
@@ -26,14 +26,6 @@ async function bot(label?: string) {
   return { entry, api: new DiscordApi({ token: entry.token, apiBase: config.discord.apiBase, label: entry.label }) };
 }
 
-async function daemon(): Promise<DaemonClient | undefined> {
-  try {
-    return await DaemonClient.connect(undefined, 700);
-  } catch (error) {
-    if (error instanceof DaemonUnavailable) return undefined;
-    throw error;
-  }
-}
 
 export async function runDiscord(parsed: Parsed): Promise<void> {
   const [action = "whoami"] = parsed.positional;
@@ -77,7 +69,7 @@ export async function runDiscord(parsed: Parsed): Promise<void> {
 
   if (action === "threads") {
     const guildId = flag(parsed, "guild") ?? fail("usage: dura discord threads --guild <id>", 2);
-    const running = await daemon();
+    const running = await connectOrUndefined();
     if (running) {
       try {
         const threads = await running.request<unknown[]>("discord.threads", { guildId });
@@ -108,7 +100,7 @@ export async function runDiscord(parsed: Parsed): Promise<void> {
     const reason = flag(parsed, "reason") ?? fail("--reason is required", 2);
     const minutes = Number(flag(parsed, "minutes") ?? "10");
     const deleteDays = Number(flag(parsed, "delete-days") ?? "0");
-    const running = await daemon();
+    const running = await connectOrUndefined();
     if (running) {
       try {
         const result = await running.request<{ ok: boolean; text?: string; error?: string }>("discord.mod", {
@@ -147,7 +139,7 @@ export async function runDiscord(parsed: Parsed): Promise<void> {
   if (action === "commands") {
     const sub = parsed.positional[1] ?? "sync";
     if (sub !== "sync") fail("usage: dura discord commands sync", 2);
-    const running = await daemon();
+    const running = await connectOrUndefined();
     if (running) {
       try {
         const result = await running.request<{ count: number }>("discord.commands", label ? { label } : {});

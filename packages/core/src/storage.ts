@@ -1,6 +1,6 @@
 import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { agentsDir } from "./agents.ts";
 import { artifactsBytes } from "./artifacts.ts";
 import { dataDir, dbPath, meshPath, schedulesPath, sessionsPath, usageLedgerPath } from "./paths.ts";
@@ -28,6 +28,18 @@ export type StorageReport = {
   artifactBytes: number;
   totalBytes: number;
 };
+
+/**
+ * Open the durable database.
+ *
+ * `node:sqlite` is imported here, not at the top of the file: Node prints an experimental warning the first
+ * time that module loads, and a command that only sizes files or lists agents should not print a warning
+ * about a database it never opens.
+ */
+async function openDatabase(): Promise<DatabaseSync> {
+  const { DatabaseSync } = await import("node:sqlite");
+  return new DatabaseSync(dbPath);
+}
 
 async function sizeOf(path: string): Promise<number> {
   const info = await stat(path).catch(() => null);
@@ -85,7 +97,7 @@ export type CleanupResult = { before: StorageReport; after: StorageReport; recla
  */
 export async function cleanupStorage(): Promise<CleanupResult> {
   const before = await storageReport();
-  const db = new DatabaseSync(dbPath);
+  const db = await openDatabase();
   try {
     db.exec("PRAGMA busy_timeout = 5000");
     db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
@@ -145,7 +157,7 @@ export async function purgeConversation(
   );
 
   const before = await storageReport();
-  const db = new DatabaseSync(dbPath);
+  const db = await openDatabase();
   const removedRows: { table: string; rows: number }[] = [];
   try {
     db.exec("PRAGMA busy_timeout = 5000");

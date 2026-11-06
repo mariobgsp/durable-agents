@@ -1,32 +1,12 @@
 import { type Parsed, flag, has } from "../args.ts";
 import { fail, json, paint, print, table } from "../output.ts";
-import { DaemonClient, DaemonUnavailable } from "../client.ts";
+import { connectOrUndefined } from "../client.ts";
 import { readConfig } from "../../../core/src/config.ts";
 import { readAgent } from "../../../core/src/agents.ts";
-import {
-  addDiscordBot,
-  defaultDiscordBot,
-  discordBotByLabel,
-  loadDiscordRegistry,
-  maskDiscordToken,
-  publicDiscordRegistry,
-  removeDiscordBot,
-  setDefaultDiscordBot,
-  setDiscordBotDefaultAgent,
-  setDiscordBotEnabled,
-} from "../../../discord/src/registry.ts";
+import { addDiscordBot, discordBotByLabel, loadDiscordRegistry, maskDiscordToken, publicDiscordRegistry, removeDiscordBot, setDefaultDiscordBot, setDiscordBotDefaultAgent, setDiscordBotEnabled } from "../../../discord/src/registry.ts";
 import { DiscordApi } from "../../../discord/src/client.ts";
 import { secret } from "../prompts.ts";
 import { loadDiscordState } from "../../../discord/src/state.ts";
-
-async function daemon(): Promise<DaemonClient | undefined> {
-  try {
-    return await DaemonClient.connect(undefined, 700);
-  } catch (error) {
-    if (error instanceof DaemonUnavailable) return undefined;
-    throw error;
-  }
-}
 
 function slug(value: string): string {
   return value.replace(/[^a-zA-Z0-9-]+/g, "-").toLowerCase().replace(/^-+|-+$/g, "").slice(0, 32) || "bot";
@@ -80,7 +60,7 @@ export async function runDiscordBot(parsed: Parsed): Promise<void> {
     const label = (flag(parsed, "label") ?? slug(me.username)).toLowerCase();
     const agent = flag(parsed, "agent");
     if (agent && !(await readAgent(agent))) fail("unknown agent: " + agent, 4);
-    const running = await daemon();
+    const running = await connectOrUndefined();
     if (running) {
       try {
         const result = await running.request<{ label: string; username: string; agent: string | null }>("bots.add", {
@@ -112,7 +92,7 @@ export async function runDiscordBot(parsed: Parsed): Promise<void> {
     const label = target ?? fail("usage: dura bot connect <label> <agent-id>", 2);
     const agent = parsed.positional[2] ?? fail("usage: dura bot connect <label> <agent-id>", 2);
     if (!(await readAgent(agent))) fail("unknown agent: " + agent, 4);
-    const running = await daemon();
+    const running = await connectOrUndefined();
     if (running) {
       try {
         const result = await running.request<{ agentId: string; freed: string[] }>("bots.pair", { bot: label, agent });
@@ -130,7 +110,7 @@ export async function runDiscordBot(parsed: Parsed): Promise<void> {
 
   if (action === "disconnect") {
     const label = target ?? fail("usage: dura bot disconnect <label>", 2);
-    const running = await daemon();
+    const running = await connectOrUndefined();
     if (running) {
       try {
         const result = await running.request<{ freed: string[] }>("bots.release", { bot: label });
@@ -148,7 +128,7 @@ export async function runDiscordBot(parsed: Parsed): Promise<void> {
 
   if (action === "remove") {
     const label = target ?? fail("usage: dura bot remove <label>", 2);
-    const running = await daemon();
+    const running = await connectOrUndefined();
     if (running) {
       try {
         await running.request("bots.remove", { label });
@@ -173,7 +153,7 @@ export async function runDiscordBot(parsed: Parsed): Promise<void> {
 
   if (action === "enable" || action === "disable") {
     const label = target ?? fail("usage: dura bot " + action + " <label>", 2);
-    const running = await daemon();
+    const running = await connectOrUndefined();
     if (running) {
       try {
         await running.request(action === "enable" ? "bots.enable" : "bots.disable", { label });

@@ -8,11 +8,10 @@ import {
   suggestResponsibility,
   writeAgent,
   type AgentFiles,
-  type AgentInput,
   type AgentRecord,
 } from "./agents.ts";
 import { defaultCwd, readConfig } from "./config.ts";
-import { DocError, docHistory, readDoc, readDocs, writeDoc, type DocMode, type DocName, type PatchPair } from "./doc-store.ts";
+import { DocError, docHistory, readDocs, writeDoc, type DocMode, type DocName, type PatchPair } from "./doc-store.ts";
 import { errorFields, log } from "./logger.ts";
 import { reconcileMesh } from "./mesh.ts";
 import { agentResolver } from "./remember.ts";

@@ -101,11 +101,6 @@ export function markdownToHtml(markdown: string): string {
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-export function authorLabel(agentId: string | null | undefined, emoji?: string): string {
-  if (!agentId) return "you";
-  return (emoji ? emoji + " " : "") + agentId.replace(/-/g, " ");
-}
-
 export function runFooter(message: WireMsg): string {
   if (!message.run) return "";
   const seconds = Math.max(0, message.run.durationMs) / 1000;
@@ -117,11 +112,6 @@ export function runFooter(message: WireMsg): string {
   return parts.join(" · ");
 }
 
-export function summaryLine(parts: string[]): string {
-  return parts.filter(Boolean).join(" · ");
-}
-
-/** The one final rendering of an answer: text, then the footer. */
 /**
  * Rich Markdown for sendRichMessage. Telegram renders GFM headings, tables, task lists, details and
  * long code blocks here, which the HTML path cannot represent. The model's answer is already Markdown;
@@ -137,13 +127,6 @@ export function renderAnswer(message: WireMsg): string {
   const body = markdownToHtml(message.text || "(empty answer)");
   const footer = runFooter(message);
   return body + (footer ? "\n\n<i>" + escapeHtml(footer) + "</i>" : "");
-}
-
-export function renderLive(status: string, text: string): string {
-  const head = "<i>" + escapeHtml(status) + "</i>";
-  const body = text ? markdownToHtml(text) : "";
-  const combined = body ? head + "\n\n" + body : head;
-  return combined.length > 3900 ? "…" + combined.slice(-3900) : combined;
 }
 
 export function questionKeyboard(sessionId: string, options: readonly string[]): InlineKeyboard | undefined {

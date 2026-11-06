@@ -1,15 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { context, harnessInstance, installExtensions } from "../../core/src/harness.ts";
 import { activeIds } from "../../core/src/activity.ts";
-import { applyThinkingLevel, isThinkingLevel, listAgents, readAgent, readMemory, THINKING_LEVELS } from "../../core/src/agents.ts";
+import { shortAge } from "../../core/src/format.ts";
+import { phaseLabel, progressLine } from "../../core/src/progress.ts";
+import { sleepBackoff } from "../../core/src/retry.ts";
+import { isThinkingLevel, listAgents, readAgent, readMemory, THINKING_LEVELS } from "../../core/src/agents.ts";
 import { readConfig, updateConfig } from "../../core/src/config.ts";
-import { models } from "../../core/src/models.ts";
 import { reloadEverything } from "../../core/src/reload.ts";
 import { startOperation } from "../../core/src/system.ts";
 import { errorFields, log } from "../../core/src/logger.ts";
 import { orchestratorId, setOrchestrator, subscribeOrchestrator } from "../../core/src/orchestrator.ts";
 import { approveSudoRequest, denySudoRequest } from "../../core/src/sudo.ts";
-import { assignBotToAgent, releaseBot, setBotConnector, setBotResolver, subscribeAdmin } from "../../core/src/agent-admin.ts";
+import { setBotConnector, setBotResolver, subscribeAdmin } from "../../core/src/agent-admin.ts";
 import { subscribeDocChanges } from "../../core/src/doc-store.ts";
 import {
   abortSession,
@@ -62,8 +64,7 @@ import {
   discordBindingKey,
   getDiscordBinding,
   loadDiscordState,
-  rememberDiscordMessage,
-  saveDiscordState,
+  persistDiscordState,
   setDiscordBinding,
   setDiscordHealth,
   deleteDiscordBinding,
@@ -71,9 +72,9 @@ import {
   type DiscordState,
 } from "./state.ts";
 import { moderate, warningsFor, type ModerationInput } from "./moderation.ts";
-import { buttonRow, progressLine, questionComponents, splitDiscordMessage, toDiscordMarkdown } from "./render.ts";
+import { buttonRow, questionComponents, splitDiscordMessage, toDiscordMarkdown } from "./render.ts";
 import { downloadDiscordAttachments } from "./media.ts";
-import { syncDiscordCommands } from "./command-catalog.ts";
+import { DISCORD_COMMANDS, commandGroups, syncDiscordCommands } from "./command-catalog.ts";
 import type { DiscordAttachment, DiscordChannel, DiscordInteraction, DiscordMessage, DiscordUser, ReadyData } from "./types.ts";
 
 type BotHandle = {
@@ -108,15 +109,6 @@ const QUESTION_TTL_MS = 15 * 60_000;
 const CONFIRM_TTL_MS = 5 * 60_000;
 const SEEN_LIMIT = 2000;
 
-function phaseLabel(phase: string | null): string {
-  if (phase === "thinking") return "🧠 thinking…";
-  if (phase === "writing") return "✍️ writing…";
-  if (phase === "compacting") return "🗜️ compacting…";
-  if (phase === "retrying") return "🔁 retrying…";
-  if (phase === "tool") return "⚙️ working…";
-  return "starting…";
-}
-
 function statusText(input: { phase: string | null; thinking?: string; lines: string[] }): string {
   const head = input.thinking ? "🧠 " + input.thinking : phaseLabel(input.phase);
   return [head, ...input.lines.slice(-3).map((line) => "⚙️ " + line)].filter(Boolean).join("\n").slice(0, 1900);
@@ -124,14 +116,6 @@ function statusText(input: { phase: string | null; thinking?: string; lines: str
 
 function cleanContent(value: string): string {
   return value.replace(/<@!?\d+>/g, "").replace(/\s+/g, " ").trim();
-}
-
-function age(ms: number): string {
-  const seconds = Math.max(0, Math.round(ms / 1000));
-  if (seconds < 60) return seconds + "s";
-  if (seconds < 3600) return Math.round(seconds / 60) + "m";
-  if (seconds < 86_400) return Math.round(seconds / 3600) + "h";
-  return Math.round(seconds / 86_400) + "d";
 }
 
 function permissionInteger(): string {
@@ -149,12 +133,9 @@ function helpText(): string {
     "Talk to the bot in a DM, or use /new in a server channel to create a thread for one durable session.",
     "A thread is one conversation; /threads lists them, /agent moves one, /archive closes the Discord thread.",
     "",
-    "**Threads:** /new, /threads, /rename, /archive, /agent, /bind, /unbind",
-    "**Run:** /stop, /abort, /compact, /plan, /model, /thinking, /usage",
-    "**Data:** /agents, /memory, /status, /whoami",
-    "**Owner:** /bots, /orchestrator, /settings, /prune, /reload, /restart, /approve, /mod",
+    ...commandGroups().map((entry) => "**" + entry.title + ":** " + entry.names.join(", ")),
     "",
-    "Text fallbacks: !help, !new, !stop, !status, !threads.",
+    "Text fallbacks: every command also works as `!name`, e.g. !stop.",
   ].join("\n");
 }
 
@@ -169,7 +150,6 @@ export class DiscordRuntime {
   private readonly channelCache = new Map<string, { channel: DiscordChannel; at: number }>();
   private readonly unknownNotified = new Map<string, number>();
   private stopping = false;
-  private stateQueue: Promise<void> = Promise.resolve();
   private readonly unsubscribers: (() => void)[] = [];
 
   async start(): Promise<void> {
@@ -243,8 +223,7 @@ export class DiscordRuntime {
   }
 
   private async persist(): Promise<void> {
-    this.stateQueue = this.stateQueue.then(() => saveDiscordState(this.state)).catch(() => undefined);
-    await this.stateQueue;
+    await persistDiscordState(this.state);
   }
 
   private async startBot(label: string): Promise<boolean> {
@@ -299,7 +278,7 @@ export class DiscordRuntime {
     let attempt = 0;
     while (!this.stopping && !this.handles.has(label)) {
       attempt += 1;
-      await new Promise((done) => setTimeout(done, Math.min(30_000, 1_000 * 2 ** Math.min(attempt - 1, 5))));
+      await sleepBackoff(attempt, { capMs: 30_000 });
       if (this.stopping) return;
       try {
         if (await this.startBot(label)) {
@@ -557,7 +536,6 @@ export class DiscordRuntime {
       return;
     }
     const placeholder = await handle.api.sendMessage(channelId, { content: "Think · planning the next step", ...(replyTo ? { message_reference: { message_id: replyTo } } : {}), allowed_mentions: { parse: [] } });
-    rememberDiscordMessage(this.state, handle.bot.label, channelId, placeholder.id, sessionId);
     try {
       const submission = await sendMessage(sessionId, { text, ...(drafts.length ? { attachments: drafts } : {}), requestId }, "followUp");
       if (!submission) throw new Error("the thread disappeared");
@@ -625,7 +603,7 @@ export class DiscordRuntime {
             if (seenCalls.has(call.callId)) continue;
             seenCalls.add(call.callId);
             if (call.status === "done") continue;
-            lines.push(progressLine(call.name, call.summary));
+            lines.push(progressLine(call.name, (call.summary ?? "").slice(0, 90), " · "));
             if (lines.length > 3) lines.shift();
           }
           paintStatus(false);
@@ -813,6 +791,8 @@ export class DiscordRuntime {
     const positionals = options.filter((entry) => entry.name === "arg").map((entry) => String(entry.value ?? ""));
     const first = positionals[0];
     const text = positionals.join(" ").trim();
+    const spec = DISCORD_COMMANDS.find((entry) => entry.name === name);
+    if (spec?.ownerOnly && !ctx.isOwner) return void (await this.reply(ctx, "Owner only.", { ephemeral: true }));
 
     try {
       switch (name) {
@@ -965,7 +945,7 @@ export class DiscordRuntime {
       const link = channel?.kind === "discord" && channel.guildId && channel.threadId
         ? "https://discord.com/channels/" + channel.guildId + "/" + channel.threadId
         : undefined;
-      return "· " + session.title.slice(0, 60) + " · " + (session.agent ?? "no agent") + " · " + age(Date.now() - session.updatedAt) + (link ? " · " + link : "");
+      return "· " + session.title.slice(0, 60) + " · " + (session.agent ?? "no agent") + " · " + shortAge(Date.now() - session.updatedAt) + (link ? " · " + link : "");
     });
     await this.reply(ctx, "**Threads**\n" + lines.join("\n"), { ephemeral: true });
   }
@@ -1096,7 +1076,6 @@ export class DiscordRuntime {
   }
 
   private async bind(ctx: CommandContext, agentId: string | undefined, groupId: string | undefined): Promise<void> {
-    if (!ctx.isOwner) return void (await this.reply(ctx, "Owner only.", { ephemeral: true }));
     if (groupId) return void (await this.reply(ctx, "Group bindings are managed with dura group; /bind agent:<id> binds this channel to an agent.", { ephemeral: true }));
     if (!agentId) return void (await this.reply(ctx, "Usage: /bind agent:<id>", { ephemeral: true }));
     if (!(await readAgent(agentId))) return void (await this.reply(ctx, "Unknown agent: " + agentId, { ephemeral: true }));
@@ -1117,7 +1096,6 @@ export class DiscordRuntime {
   }
 
   private async unbind(ctx: CommandContext): Promise<void> {
-    if (!ctx.isOwner) return void (await this.reply(ctx, "Owner only.", { ephemeral: true }));
     const { key } = await this.currentBinding(ctx);
     await deleteDiscordBinding(this.state, ctx.bot.bot.label, key);
     await this.reply(ctx, "Binding removed.", { ephemeral: true });
@@ -1133,7 +1111,6 @@ export class DiscordRuntime {
   }
 
   private async bots(ctx: CommandContext): Promise<void> {
-    if (!ctx.isOwner) return void (await this.reply(ctx, "Owner only.", { ephemeral: true }));
     const lines = this.registry.bots.map((bot) => {
       const health = this.state.bots[bot.label]?.health;
       return "· " + bot.label + " · @" + bot.username + " · " + (health?.ok ? "ready" : health?.state ?? "stopped") + " · default " + (bot.defaultAgent ?? "none");
@@ -1142,7 +1119,6 @@ export class DiscordRuntime {
   }
 
   private async orchestrator(ctx: CommandContext, agentId: string | undefined): Promise<void> {
-    if (!ctx.isOwner) return void (await this.reply(ctx, "Owner only.", { ephemeral: true }));
     if (!agentId) return void (await this.reply(ctx, "orchestrator " + (orchestratorId() ?? "none"), { ephemeral: true }));
     if (!(await readAgent(agentId))) return void (await this.reply(ctx, "Unknown agent: " + agentId, { ephemeral: true }));
     await setOrchestrator(agentId);
@@ -1150,7 +1126,6 @@ export class DiscordRuntime {
   }
 
   private async settings(ctx: CommandContext): Promise<void> {
-    if (!ctx.isOwner) return void (await this.reply(ctx, "Owner only.", { ephemeral: true }));
     const config = await readConfig({ fresh: true });
     await this.reply(
       ctx,
@@ -1167,7 +1142,6 @@ export class DiscordRuntime {
   }
 
   private async mcpCommand(ctx: CommandContext, action: string | undefined, options: { name: string; type: number; value?: string | number | boolean }[]): Promise<void> {
-    if (!ctx.isOwner) return void (await this.reply(ctx, "Owner only.", { ephemeral: true }));
     const { addMcpServer, removeMcpServer, reloadMcp, mcpStatus, mcpToolInfos } = await import("../../core/src/mcp.ts");
     const name = options.find((entry) => entry.name === "name")?.value;
     const command = options.find((entry) => entry.name === "command")?.value;
@@ -1192,14 +1166,14 @@ export class DiscordRuntime {
     const tools = mcpToolInfos();
     await this.reply(
       ctx,
-      "**MCP**\n" + (servers.map((server) => "· " + server.name + " · " + (server.connected ? "connected" : server.error ?? "stopped") + " · " + server.tools.length + " tools").join("\n") || "none") +
-        (tools.length ? "\n" + tools.map((tool) => tool.registeredName).slice(0, 20).join(", ") : ""),
+      "**MCP**\n" + (servers.map((server) => "· " + server.name + " · " + (server.state ?? (server.connected ? "connected" : "idle")) + " · " + server.tools.length + " tools").join("\n") || "none") +
+        (tools.length ? "\n" + tools.map((tool) => tool.registeredName).slice(0, 20).join(", ") : "") +
+        "\nServers sleep when unused and start again on the next tool call.",
       { ephemeral: true },
     );
   }
 
   private async pruneCommand(ctx: CommandContext, value: string | undefined): Promise<void> {
-    if (!ctx.isOwner) return void (await this.reply(ctx, "Owner only.", { ephemeral: true }));
     const days = Number.parseInt(value ?? "", 10);
     const config = await readConfig({ fresh: true });
     const olderThanDays = Number.isFinite(days) && days > 0 ? days : config.storage.pruneAfterDays;
@@ -1214,20 +1188,17 @@ export class DiscordRuntime {
   }
 
   private async reload(ctx: CommandContext): Promise<void> {
-    if (!ctx.isOwner) return void (await this.reply(ctx, "Owner only.", { ephemeral: true }));
     const result = await reloadEverything();
     await syncDiscordCommands(ctx.bot.api, ctx.bot.bot.applicationId).catch(() => undefined);
     await this.reply(ctx, "Reloaded " + result.extensions.length + " extensions · rebound " + result.rebound + " agents.", { ephemeral: true });
   }
 
   private async restart(ctx: CommandContext): Promise<void> {
-    if (!ctx.isOwner) return void (await this.reply(ctx, "Owner only.", { ephemeral: true }));
     await startOperation("restart");
     await this.reply(ctx, "Restart requested. The daemon stops and systemd starts it again.", { ephemeral: true });
   }
 
   private async connectCommand(ctx: CommandContext, token: string, label?: string, agent?: string): Promise<void> {
-    if (!ctx.isOwner) return void (await this.reply(ctx, "Owner only.", { ephemeral: true }));
     if (!token) return void (await this.reply(ctx, "Usage: /connect token:<token> [label] [agent]", { ephemeral: true }));
     const result = await this.connectBotToken({ token, ...(label ? { label } : {}) });
     if (agent) {
@@ -1238,14 +1209,12 @@ export class DiscordRuntime {
   }
 
   private async approve(ctx: CommandContext, userId: string | undefined): Promise<void> {
-    if (!ctx.isOwner) return void (await this.reply(ctx, "Owner only.", { ephemeral: true }));
     if (!userId) return void (await this.reply(ctx, "Usage: /approve user:<id>", { ephemeral: true }));
     this.users = await approveDiscordPending(this.users, userId, ctx.userId);
     await this.reply(ctx, "Approved " + userId + ".", { ephemeral: true });
   }
 
   private async server(ctx: CommandContext): Promise<void> {
-    if (!ctx.isOwner) return void (await this.reply(ctx, "Owner only.", { ephemeral: true }));
     if (!ctx.guildId) return void (await this.reply(ctx, "This is a DM.", { ephemeral: true }));
     const guild = await ctx.bot.api.getGuild(ctx.guildId);
     const channel = ctx.channel ?? (await this.channelOf(ctx.bot.api, ctx.channelId));
@@ -1259,7 +1228,6 @@ export class DiscordRuntime {
   }
 
   private async moderationCommand(ctx: CommandContext, options: { name: string; type: number; value?: string | number | boolean }[]): Promise<void> {
-    if (!ctx.isOwner) return void (await this.reply(ctx, "Owner only.", { ephemeral: true }));
     if (!ctx.guildId) return void (await this.reply(ctx, "Moderation works in a guild only.", { ephemeral: true }));
     const sub = options.find((entry) => entry.type === 1) as unknown as { name?: string; options?: { name: string; value?: string | number | boolean }[] } | undefined;
     if (!sub?.name) return void (await this.reply(ctx, "Usage: /mod timeout|kick|ban|unban|warn|warnings|audit", { ephemeral: true }));

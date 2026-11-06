@@ -12,7 +12,8 @@ import { logPath } from "./paths.ts";
 export type LogLevel = "debug" | "info" | "warn" | "error";
 export type LogFields = Record<string, unknown>;
 
-const ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
+/** Where each level sits, lowest first. Readers that filter the log file rank by this, not by a copy. */
+export const LEVEL_RANK: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 
 export type LoggerOptions = {
   level?: LogLevel;
@@ -61,7 +62,7 @@ async function rotate(): Promise<void> {
 }
 
 function write(level: LogLevel, event: string, fields: LogFields): void {
-  if (ORDER[level] < ORDER[options.level]) return;
+  if (LEVEL_RANK[level] < LEVEL_RANK[options.level]) return;
   const line = jsonLine(level, event, fields);
   ring.push(line);
   while (ring.length > RING) ring.shift();

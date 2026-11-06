@@ -10,6 +10,21 @@ export class DaemonUnavailable extends Error {
   }
 }
 
+/**
+ * The daemon if it is running, or undefined.
+ *
+ * A command that can still do its job offline (writes the registry file, prints what is on disk) should not
+ * fail because the service is down, so this is the one place that decides that a missing socket is normal.
+ */
+export async function connectOrUndefined(timeoutMs = 700): Promise<DaemonClient | undefined> {
+  try {
+    return await DaemonClient.connect(undefined, timeoutMs);
+  } catch (error) {
+    if (error instanceof DaemonUnavailable) return undefined;
+    throw error;
+  }
+}
+
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;

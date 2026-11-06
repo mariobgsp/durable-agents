@@ -10,16 +10,11 @@ import {
   removeProviderKey,
   testProvider,
 } from "../../../core/src/providers.ts";
-import { providerStatus, models, clearApiKey, setApiKey } from "../../../core/src/models.ts";
+import { providerStatus, models } from "../../../core/src/models.ts";
 import { readConfig, updateConfig } from "../../../core/src/config.ts";
 import { secret } from "../prompts.ts";
 
 const KNOWN = ["opencode-go", "openai", "anthropic", "google", "deepseek", "openrouter"];
-
-function rowState(row: { configured: boolean; source: string | null; models: number }): string {
-  if (!row.configured) return paint("yellow", "no credential");
-  return paint("green", "ok") + " · " + row.models + " models" + (row.source ? " · " + row.source : "");
-}
 
 export async function runProvider(parsed: Parsed): Promise<void> {
   const [action = "list", target] = parsed.positional;
@@ -132,4 +127,3 @@ export async function runProvider(parsed: Parsed): Promise<void> {
   fail("usage: dura provider <list|add|models|test|remove|default|status>", 2);
 }
 
-export { KNOWN as PROVIDER_SHORTCUTS, setApiKey, clearApiKey };

@@ -13,10 +13,13 @@ export default {
     });
     try {
       h.text("main", 100, "first request");
-      await h.waitFor(async () => {
-        const status = await h.client.request("status");
-        return status.runs.active > 0;
-      }, 15_000, "the first run");
+      // The placeholder is the honest signal that the run is live: `status.runs.active` counts the run
+      // limiter, which nothing acquires yet, so it reads 0 while a run is generating.
+      await h.waitFor(
+        () => h.fake.sent("main").find((message) => message.text.includes("Think")),
+        15_000,
+        "the first run",
+      );
       h.text("main", 100, "second request while running");
       await h.waitFor(
         () => h.fake.sent("main").find((message) => message.text.includes("Steer ·")),

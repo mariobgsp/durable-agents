@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+
 import { basename } from "node:path";
 import type { AttachmentDraft } from "../../core/src/attachments.ts";
 import { mimeForName } from "../../core/src/artifacts.ts";
@@ -58,18 +58,4 @@ export async function downloadDiscordAttachments(
     });
   }
   return drafts;
-}
-
-export type OutboundDiscordFile = { name: string; data: Uint8Array; mimeType: string };
-
-/** Read one generated artifact for upload, enforcing the same ceiling as an inbound file. */
-export async function outboundDiscordFile(path: string, name: string): Promise<OutboundDiscordFile> {
-  const info = await stat(path);
-  if (info.size <= 0) throw new Error("the file is empty");
-  if (info.size > DISCORD_FILE_LIMIT) throw new Error("the file is larger than 25 MB");
-  return {
-    name: safeName(name),
-    data: await readFile(path),
-    mimeType: mimeForName(name),
-  };
 }

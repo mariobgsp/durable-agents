@@ -158,10 +158,6 @@ export class DiscordApi {
     return this.request("GET", "/users/" + encodeURIComponent(id));
   }
 
-  async getGuilds(): Promise<DiscordGuild[]> {
-    return this.request("GET", "/users/@me/guilds");
-  }
-
   async getGuild(id: Snowflake): Promise<DiscordGuild> {
     return this.request("GET", "/guilds/" + encodeURIComponent(id));
   }
@@ -222,10 +218,6 @@ export class DiscordApi {
     await this.request("DELETE", "/channels/" + encodeURIComponent(channelId) + "/messages/" + encodeURIComponent(messageId), {
       bucket: "DELETE /channels/:id/messages/:id",
     });
-  }
-
-  async sendTyping(channelId: Snowflake): Promise<void> {
-    await this.request("POST", "/channels/" + encodeURIComponent(channelId) + "/typing", { bucket: "POST /channels/:id/typing" });
   }
 
   async createThread(
@@ -323,22 +315,6 @@ export class DiscordApi {
     });
   }
 
-  async addRole(guildId: Snowflake, userId: Snowflake, roleId: Snowflake, reason?: string): Promise<void> {
-    await this.request(
-      "PUT",
-      "/guilds/" + encodeURIComponent(guildId) + "/members/" + encodeURIComponent(userId) + "/roles/" + encodeURIComponent(roleId),
-      { ...(reason ? { reason } : {}), bucket: "PUT /guilds/:id/members/:id/roles/:id" },
-    );
-  }
-
-  async removeRole(guildId: Snowflake, userId: Snowflake, roleId: Snowflake, reason?: string): Promise<void> {
-    await this.request(
-      "DELETE",
-      "/guilds/" + encodeURIComponent(guildId) + "/members/" + encodeURIComponent(userId) + "/roles/" + encodeURIComponent(roleId),
-      { ...(reason ? { reason } : {}), bucket: "DELETE /guilds/:id/members/:id/roles/:id" },
-    );
-  }
-
   async registerCommands(
     applicationId: Snowflake,
     commands: DiscordApplicationCommand[],
@@ -364,19 +340,4 @@ export class DiscordApi {
     });
   }
 
-  async editOriginalInteraction(applicationId: Snowflake, token: string, input: DiscordMessageInput): Promise<DiscordMessage> {
-    return this.request(
-      "PATCH",
-      "/webhooks/" + encodeURIComponent(applicationId) + "/" + encodeURIComponent(token) + "/messages/@original",
-      { body: this.messageBody(input), bucket: "PATCH /webhooks/:id/:token/messages/@original" },
-    );
-  }
-
-  async followUpInteraction(applicationId: Snowflake, token: string, input: DiscordMessageInput): Promise<DiscordMessage> {
-    return this.request(
-      "POST",
-      "/webhooks/" + encodeURIComponent(applicationId) + "/" + encodeURIComponent(token),
-      { body: this.messageBody(input), bucket: "POST /webhooks/:id/:token" },
-    );
-  }
 }

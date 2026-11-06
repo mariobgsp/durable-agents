@@ -16,12 +16,14 @@ export default {
           env: { ...process.env, DURA_HOME: home },
           stdio: ["ignore", "pipe", "pipe"],
         });
+        // The table is printed on stdout; stderr carries dependency warnings and must not be counted as rows.
         let text = "";
+        let errors = "";
         child.stdout.on("data", (chunk) => (text += String(chunk)));
-        child.stderr.on("data", (chunk) => (text += String(chunk)));
-        child.on("exit", (code) => done({ code, text }));
+        child.stderr.on("data", (chunk) => (errors += String(chunk)));
+        child.on("exit", (code) => done({ code, text, errors }));
       });
-      assert.equal(output.code, 0, output.text);
+      assert.equal(output.code, 0, output.errors || output.text);
       assert.ok(output.text.includes("opencode-go"), "the current provider is listed");
       const rows = output.text.split("\n").filter((line) => /^[a-z0-9-]+\s{2,}/.test(line));
       assert.ok(rows.length >= 30, "the built-in catalog is listed (" + rows.length + " rows)");

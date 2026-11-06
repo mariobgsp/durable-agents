@@ -1,4 +1,4 @@
-import { type Parsed, flag, has } from "../args.ts";
+import { type Parsed, has } from "../args.ts";
 import { bytes, fail, json, paint, print, table } from "../output.ts";
 import { withDaemon } from "../client.ts";
 

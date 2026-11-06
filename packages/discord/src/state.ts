@@ -31,15 +31,12 @@ export type DiscordBotState = {
   resumeUrl?: string;
   health: DiscordHealth;
   bindings: Record<string, DiscordBinding>;
-  lastMessages: Record<string, { sessionId: string; at: number }>;
 };
 
 export type DiscordState = { bots: Record<string, DiscordBotState> };
 
-const MESSAGE_HISTORY = 500;
-
 export function emptyDiscordBotState(): DiscordBotState {
-  return { seq: 0, health: { ok: false, checkedAt: 0, state: "stopped" }, bindings: {}, lastMessages: {} };
+  return { seq: 0, health: { ok: false, checkedAt: 0, state: "stopped" }, bindings: {} };
 }
 
 export async function loadDiscordState(): Promise<DiscordState> {
@@ -61,7 +58,6 @@ export async function loadDiscordState(): Promise<DiscordState> {
           ...(health.username ? { username: String(health.username) } : {}),
         },
         bindings: typeof state.bindings === "object" && state.bindings ? state.bindings : {},
-        lastMessages: typeof state.lastMessages === "object" && state.lastMessages ? state.lastMessages : {},
       };
     }
     return { bots };
@@ -89,9 +85,41 @@ export function discordBindingKey(input: { guildId?: string; channelId: string; 
   return (input.guildId ?? "guild") + ":" + input.channelId;
 }
 
+/**
+ * One writer for the file.
+ *
+ * The mutators below are the only writers, so two of them next to each other cannot interleave two writes of
+ * the same file and a burst costs one write. A caller that needs its change on disk awaits the promise.
+ */
+let writing: Promise<void> = Promise.resolve();
+let scheduled = false;
+
+function scheduleSave(state: DiscordState): Promise<void> {
+  if (!scheduled) {
+    scheduled = true;
+    writing = writing
+      .then(async () => {
+        scheduled = false;
+        await saveDiscordState(state);
+      })
+      .catch(() => undefined);
+  }
+  return writing;
+}
+
+/** Wait for every scheduled write to land. */
+export function flushDiscordState(): Promise<void> {
+  return writing;
+}
+
+/** Write what the state holds now, through the one queue. */
+export function persistDiscordState(state: DiscordState): Promise<void> {
+  return scheduleSave(state);
+}
+
 export async function setDiscordBinding(state: DiscordState, label: string, key: string, binding: DiscordBinding): Promise<void> {
   discordStateFor(state, label).bindings[key] = binding;
-  await saveDiscordState(state);
+  await scheduleSave(state);
 }
 
 export async function getDiscordBinding(state: DiscordState, label: string, key: string): Promise<DiscordBinding | undefined> {
@@ -100,34 +128,10 @@ export async function getDiscordBinding(state: DiscordState, label: string, key:
 
 export async function deleteDiscordBinding(state: DiscordState, label: string, key: string): Promise<void> {
   delete discordStateFor(state, label).bindings[key];
-  await saveDiscordState(state);
+  await scheduleSave(state);
 }
 
 export async function setDiscordHealth(state: DiscordState, label: string, health: DiscordHealth): Promise<void> {
   discordStateFor(state, label).health = health;
-  await saveDiscordState(state);
-}
-
-export function rememberDiscordMessage(
-  state: DiscordState,
-  label: string,
-  channelId: string,
-  messageId: string,
-  sessionId: string,
-): void {
-  const bot = discordStateFor(state, label);
-  bot.lastMessages[channelId + ":" + messageId] = { sessionId, at: Date.now() };
-  const keys = Object.keys(bot.lastMessages);
-  if (keys.length > MESSAGE_HISTORY) {
-    for (const old of keys.slice(0, keys.length - MESSAGE_HISTORY)) delete bot.lastMessages[old];
-  }
-}
-
-export function sessionForDiscordMessage(
-  state: DiscordState,
-  label: string,
-  channelId: string,
-  messageId: string,
-): string | undefined {
-  return discordStateFor(state, label).lastMessages[channelId + ":" + messageId]?.sessionId;
+  await scheduleSave(state);
 }

@@ -99,7 +99,7 @@ transient-proof and not retried) instead of giving up when the laptop's Wi-Fi is
 | `dura user list \| add \| remove \| owner \| pending \| approve \| deny \| invite` | Allowlist for the active platform |
 | `dura group list \| create \| show \| mode` | Durable groups (bind one in Telegram with /bind) |
 | `dura thread list \| prune \| delete \| restore \| purge \| purge-deleted` | Thread hygiene: prune by age, purge with export, vacuum |
-| `dura mcp list \| add \| remove \| reload \| tools` | Global MCP servers (stdio) available to every agent |
+| `dura mcp list \| add \| remove \| reload \| tools \| enable \| disable \| stop` | Global MCP servers (stdio) available to every agent; lazy by default |
 | `dura monitor [--json] [--read-only]` | Fleet TUI |
 | `dura usage` / `memory` / `schedule` / `storage` / `vault` | Reports and data |
 | `dura config get \| set \| edit \| validate` | config.json |
@@ -247,12 +247,21 @@ containment boundary.
 ## MCP (global)
 
 MCP servers are installed once and belong to every agent. The daemon speaks the stdio transport: a command, its
-arguments and optional environment. Installing or removing a server connects/disconnects it, re-registers its tools
-as `mcp__<server>__<tool>` and rebinds every conversation, so existing threads gain or lose the tools immediately.
+arguments and optional environment. Installing or removing a server re-registers its tools as
+`mcp__<server>__<tool>` and rebinds every conversation, so existing threads gain or lose the tools immediately.
+
+Servers are **lazy by default**: no child process is kept alive between calls. A tool list is cached in
+`mcp-tools.json`, so every tool stays registered while its server sleeps; the first tool call spawns the server and
+an idle server is stopped again after `idleTimeoutMs` (default 5 minutes). On a 4 GB host this is what keeps an
+unused MCP server from costing ~100 MB permanently. `dura mcp stop` frees a running server without disabling it,
+`dura mcp enable|disable` toggles a server for good, and `"lazy": false` in `mcp.json` restores always-connected
+behaviour for a server that must stay warm.
 
 ~~~bash
 dura mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem /home/mariobgsp
-dura mcp list
+dura mcp list                 # state: connected, idle, disabled or error
+dura mcp stop                 # stop running servers now; tools stay usable
+dura mcp disable filesystem
 dura mcp remove filesystem
 ~~~
 
@@ -285,6 +294,46 @@ vacuum reclaims the file. Purpose threads (inbox/delegate/schedule) are kept unl
 Telegram, `/prune [days]` offers Delete or Purge with confirmation. The Telegram binding self-heals when its thread
 was pruned.
 
+## Learning: preferences, memory, lessons
+
+Three stores, because they answer three different questions and have three different lifetimes:
+
+| Store | Answers | Written by | Reaches |
+| --- | --- | --- | --- |
+| `~/.dura-file/preferences.md` | "what does the owner want?" | `prefer` tool, `/learn`, `dura learn` | every agent's prompt |
+| `agents/<id>/MEMORY.md` | "what does this agent know?" | `remember` tool, `/learn`, a prune summary | that agent only |
+| `agents/<id>/LESSONS.md` | "how should this agent work?" | `/learn`, `dura memory <agent> lesson` | that agent only |
+
+Lessons are the part that changes judgement rather than knowledge: "probe the LAN before asking which device
+is which", "run the type check before claiming a fix". They are rendered as method, not as facts, so the next
+plan starts from what already worked. All three are capped when rendered (30 preferences, 40 memory notes,
+15 lessons) and deduped on write, so a chatty thread cannot flood a prompt.
+
+Learning is autonomous, and it does not depend on one thread being quiet:
+
+- **Idle pass.** A thread that has been idle for `learning.idleMinutes` (default 10) is distilled at once — one
+  cheap model call over its last 40 messages.
+- **Sweep.** At boot (45 s after start) and every `learning.sweepMinutes` (default 30), the daemon walks the 25
+  newest live threads, newest first, and distils the ones whose message count moved since the last pass. This is
+  the part that survives restarts: the idle timer lives in memory, the sweep reads `learnings.json`.
+- **Consolidation.** When an agent's lessons file outgrows the render limit (12), it is rewritten: duplicates,
+  obsolete and one-task lessons are merged away by one model call. Appending is how an agent learns; rewriting is
+  how it forgets. An answer that would empty the file is ignored.
+
+`learning.auto: false` turns all three off. Manually:
+
+~~~bash
+dura learn                      # the 5 most recent threads
+dura learn --all                # every live thread
+dura learn <thread-id>          # one thread
+dura learn sweep                # one autonomous pass now
+dura learn prefs                # print the fleet preferences
+dura memory orchestrator lessons # read one agent's lessons
+~~~
+
+From chat: `/learn` on the current thread. Secrets are redacted before anything is stored (`redactSecrets`), and
+nothing is written while a thread is still running.
+
 ## Data layout
 
 ```text
@@ -293,11 +342,14 @@ was pruned.
   sudo.json                    0600 privileged-maintenance record (dura sudo install)
   credentials.json             provider keys, 0600
   mcp.json                     0600 global MCP server definitions
+  mcp-tools.json               0600 cached MCP tool lists for servers that are asleep
   secrets/telegram.json        Telegram bot tokens, 0600 (inactive when Discord is active)
   secrets/discord.json         Discord bot tokens, 0600 (inactive when Telegram is active)
   app.sqlite                   durable conversations, tasks, entries
   sessions.json                thread index (also mesh.json, schedules.json, usage.jsonl, system.json)
-  agents/<id>/                 agent.json, AGENT.md, SOUL.md, MEMORY.md, .history/
+  preferences.md               fleet-wide owner preferences, rendered into every agent prompt
+  learnings.json               which threads the learning layer already distilled
+  agents/<id>/                 agent.json, AGENT.md, SOUL.md, MEMORY.md, LESSONS.md, .history/
   artifacts/<conversation>/    generated files
   vault/                       AES-256-GCM secrets and key
   telegram/                    users.json, state.json (offsets, bindings)

@@ -1,6 +1,7 @@
 import { open, stat } from "node:fs/promises";
 import { type Parsed, flag, has, numberFlag } from "../args.ts";
 import { paint, print } from "../output.ts";
+import { LEVEL_RANK, type LogLevel } from "../../../core/src/logger.ts";
 import { logPath } from "../../../core/src/paths.ts";
 
 type Line = { at?: string; level?: string; event?: string; [key: string]: unknown };
@@ -25,8 +26,7 @@ function parse(raw: string): Line | undefined {
 
 export async function runLogs(parsed: Parsed): Promise<void> {
   const level = flag(parsed, "level");
-  const rank: Record<string, number> = { debug: 10, info: 20, warn: 30, error: 40 };
-  const minimum = rank[level ?? "debug"] ?? 10;
+  const minimum = LEVEL_RANK[(level ?? "debug") as LogLevel] ?? LEVEL_RANK.debug;
   const since = numberFlag(parsed, "since");
   const sinceAt = since === undefined ? 0 : Date.now() - since * 60_000;
   const lines = numberFlag(parsed, "lines") ?? 200;
@@ -47,7 +47,7 @@ export async function runLogs(parsed: Parsed): Promise<void> {
     .filter(Boolean)
     .map(parse)
     .filter((entry): entry is Line => Boolean(entry))
-    .filter((entry) => (rank[String(entry.level)] ?? 20) >= minimum)
+    .filter((entry) => (LEVEL_RANK[String(entry.level) as LogLevel] ?? LEVEL_RANK.info) >= minimum)
     .filter((entry) => {
       if (!sinceAt) return true;
       const at = Date.parse(String(entry.at ?? ""));
@@ -76,7 +76,7 @@ export async function runLogs(parsed: Parsed): Promise<void> {
         if (!raw) continue;
         const entry = parse(raw);
         if (!entry) continue;
-        if ((rank[String(entry.level)] ?? 20) < minimum) continue;
+        if ((LEVEL_RANK[String(entry.level) as LogLevel] ?? LEVEL_RANK.info) < minimum) continue;
         print(String(entry.at ?? "") + " " + format(entry));
       }
     } finally {

@@ -1,5 +1,6 @@
+import { run } from "../exec.ts";
 import { spawn } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { type Parsed, has } from "../args.ts";
 import { fail, json, paint, print, table } from "../output.ts";
 
@@ -9,18 +10,6 @@ const RECOMMENDED: Record<string, { value: string; kernelDefault: string }> = {
   "vm.vfs_cache_pressure": { value: "50", kernelDefault: "100" },
   "vm.watermark_boost_factor": { value: "0", kernelDefault: "15000" },
 };
-
-function run(command: string, args: string[]): Promise<{ code: number; text: string }> {
-  return new Promise((done) => {
-    const child = spawn(command, args);
-    let text = "";
-    child.stdout.on("data", (chunk) => (text += String(chunk)));
-    child.stderr.on("data", (chunk) => (text += String(chunk)));
-    child.on("error", () => done({ code: -1, text: "" }));
-    child.on("exit", (code) => done({ code: code ?? -1, text: text.trim() }));
-  });
-}
-
 async function readSysctl(key: string): Promise<string | undefined> {
   const result = await run("sysctl", ["-n", key]);
   return result.code === 0 ? result.text.trim() : undefined;

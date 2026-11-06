@@ -1,4 +1,4 @@
-import { type Parsed, has } from "../args.ts";
+import { type Parsed, has, subArgs } from "../args.ts";
 import { json, paint, print, table, fail } from "../output.ts";
 import { DaemonClient, DaemonUnavailable } from "../client.ts";
 import { startDetached } from "./start.ts";
@@ -47,7 +47,7 @@ export async function runVerify(parsed: Parsed): Promise<void> {
   }
 
   if (startedHere && !has(parsed, "keep-running")) {
-    await runStop({ ...parsed, booleans: new Set(), flags: new Map(), positional: [] });
+    await runStop(subArgs());
   }
   if (!result.ok) process.exit(1);
 }

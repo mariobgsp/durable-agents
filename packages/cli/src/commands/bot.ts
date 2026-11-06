@@ -17,18 +17,10 @@ import { syncBotCommands } from "../../../telegram/src/command-catalog.ts";
 import { listAgents } from "../../../core/src/agents.ts";
 import { readConfig } from "../../../core/src/config.ts";
 import { secret } from "../prompts.ts";
-import { DaemonClient, DaemonUnavailable } from "../client.ts";
+import { connectOrUndefined } from "../client.ts";
 import { useBotRegistry } from "../bots.ts";
 import { assignBotToAgent, normalizeBotAssignments, releaseBot } from "../../../core/src/agent-admin.ts";
 
-async function daemonOrUndefined(): Promise<DaemonClient | undefined> {
-  try {
-    return await DaemonClient.connect(undefined, 700);
-  } catch (error) {
-    if (error instanceof DaemonUnavailable) return undefined;
-    throw error;
-  }
-}
 
 function slugFromUsername(username: string): string {
   const base = username.replace(/_?bot$/i, "").replace(/[^a-zA-Z0-9-]+/g, "-").toLowerCase();
@@ -95,7 +87,7 @@ export async function runBot(parsed: Parsed): Promise<void> {
     }
     if (!token) token = await secret("Bot token from @BotFather");
     if (!token.includes(":")) fail("that does not look like a bot token", 2);
-    const running = await daemonOrUndefined();
+    const running = await connectOrUndefined();
     if (running) {
       try {
         const result = await running.request<{ label: string; username: string }>("bots.add", {
@@ -143,7 +135,7 @@ export async function runBot(parsed: Parsed): Promise<void> {
   if (action === "connect") {
     const label = target ?? fail("usage: dura bot connect <label> <agent-id>", 2);
     const agent = parsed.positional[2] ?? fail("usage: dura bot connect <label> <agent-id>", 2);
-    const running = await daemonOrUndefined();
+    const running = await connectOrUndefined();
     if (running) {
       try {
         const result = await running.request<{ agentId: string; freed: string[] }>("bots.pair", { bot: label, agent });
@@ -162,7 +154,7 @@ export async function runBot(parsed: Parsed): Promise<void> {
 
   if (action === "disconnect") {
     const label = target ?? fail("usage: dura bot disconnect <label>", 2);
-    const running = await daemonOrUndefined();
+    const running = await connectOrUndefined();
     if (running) {
       try {
         const result = await running.request<{ freed: string[] }>("bots.release", { bot: label });
@@ -178,7 +170,7 @@ export async function runBot(parsed: Parsed): Promise<void> {
   }
 
   if (action === "normalize") {
-    const running = await daemonOrUndefined();
+    const running = await connectOrUndefined();
     if (running) {
       try {
         const result = await running.request<{ cleared: { agentId: string; bot: string }[] }>("bots.normalize");

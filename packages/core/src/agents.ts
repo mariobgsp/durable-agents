@@ -7,6 +7,7 @@ import { readConfig, updateConfig } from "./config.ts";
 import { models, resolveDefaultModel } from "./models.ts";
 import type { PermissionTier } from "./permissions.ts";
 import { recordStatelessUsage } from "./usage-ledger.ts";
+import { cachedPreferences, preferencesSection } from "./preferences.ts";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -67,7 +68,14 @@ export type AgentRecord = {
   telegramBot?: string;
 };
 
-export type AgentFiles = { record: AgentRecord; agentMd: string; soulMd: string; memoryMd: string };
+export type AgentFiles = {
+  record: AgentRecord;
+  agentMd: string;
+  soulMd: string;
+  memoryMd: string;
+  /** Procedural knowledge: how this agent learned to work, as opposed to what it knows. */
+  lessonsMd: string;
+};
 
 export type AgentInput = {
   id?: string;
@@ -270,6 +278,7 @@ export async function readAgent(id: string): Promise<AgentFiles | null> {
     agentMd: await readText(resolve(dirOf(id), "AGENT.md")),
     soulMd: await readText(resolve(dirOf(id), "SOUL.md")),
     memoryMd: await readText(memoryPath(id)),
+    lessonsMd: await readText(lessonsPath(id)),
   };
 }
 
@@ -356,6 +365,20 @@ export async function deleteAgent(id: string): Promise<boolean> {
   return true;
 }
 
+/**
+ * Replace an agent's lessons file with a consolidated list.
+ *
+ * The learning layer rewrites rather than appends here: consolidation is the one operation that removes
+ * lessons, because two threads can teach the same thing and a stale lesson is worse than a missing one. The
+ * history of the file is not kept — MEMORY.md and the thread transcripts remain the record of why.
+ */
+export async function writeLessons(id: string, notes: readonly string[]): Promise<void> {
+  const clean = notes.map((note) => note.replace(/\s+/g, " ").trim()).filter((note) => note.length > 0);
+  const day = new Date().toISOString().slice(0, 10);
+  const body = clean.length > 0 ? "# Lessons\n\n" + clean.map((note) => "- " + day + " \u00b7 " + note).join("\n") + "\n" : "";
+  await queueMemoryWrite("lessons:" + id, () => writeText(lessonsPath(id), body));
+}
+
 /** Notes rendered into the prompt; older ones stay on disk instead of crowding out the conversation. */
 const MEMORY_RENDER_LIMIT = 40;
 
@@ -373,6 +396,43 @@ export async function ensureAgentTmp(id: string): Promise<string> {
 
 export function memoryPath(id: string): string {
   return resolve(dirOf(id), "MEMORY.md");
+}
+
+/**
+ * The agent's lessons file: how it learned to work.
+ *
+ * MEMORY.md holds facts ("the MiFi admin is at 192.168.100.1"); this file holds method ("probe the LAN
+ * before asking the owner which device is which", "run the type check before claiming a fix"). Keeping them
+ * apart is what makes the second one grow: a lesson is only useful if it is generic enough to apply to the
+ * next task, and mixing it with facts is how memory turns into a changelog.
+ */
+export function lessonsPath(id: string): string {
+  return resolve(dirOf(id), "LESSONS.md");
+}
+
+export async function readLessons(id: string): Promise<string> {
+  return readText(lessonsPath(id));
+}
+
+/** Append one lesson, deduped and serialised per agent exactly like a memory note. */
+export async function appendLesson(id: string, note: string): Promise<{ saved: boolean; line: string }> {
+  const clean = note.replace(/\s+/g, " ").trim().slice(0, 500);
+  if (!clean) throw new Error("a lesson cannot be empty");
+
+  return queueMemoryWrite("lessons:" + id, async () => {
+    const existing = await readLessons(id);
+    const line = "- " + new Date().toISOString().slice(0, 10) + " \u00b7 " + clean;
+    const lower = clean.toLowerCase();
+    const duplicate = existing
+      .split("\n")
+      .some((entry) => entry.trim().toLowerCase().endsWith(lower));
+    if (duplicate) return { saved: false, line };
+
+    const body =
+      existing.trim().length > 0 ? existing.trimEnd() + "\n" + line + "\n" : "# Lessons\n\n" + line + "\n";
+    await writeText(lessonsPath(id), body);
+    return { saved: true, line };
+  });
 }
 
 export async function readMemory(id: string): Promise<string> {
@@ -423,6 +483,35 @@ function memorySection(memoryMd: string): string {
     "Notes you saved with the `remember` tool. They are yours in every thread, so treat them as things you already know.",
     "",
     ...(omitted > 0 ? ["(" + omitted + " older notes are on disk but omitted here)", ""] : []),
+    ...kept,
+  ].join("\n");
+}
+
+/** How many lessons are rendered: method should shape the approach, not fill the context window. */
+const LESSONS_RENDER_LIMIT = 15;
+
+/**
+ * The lessons block: the agent's own hard-won method, oldest dropped first.
+ *
+ * It is rendered as guidance rather than fact, because that is what changes behaviour. A model that reads
+ * "check whether the interface is already managed before restarting NetworkManager" plans differently on the
+ * next task; the same sentence stored as a fact is just trivia it skips.
+ */
+function lessonsSection(lessonsMd: string): string {
+  const notes = lessonsMd
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("- "));
+  if (notes.length === 0) return "";
+  const kept = notes.slice(-LESSONS_RENDER_LIMIT);
+  const omitted = notes.length - kept.length;
+  return [
+    "## Lessons you learned",
+    "",
+    "Method you picked up from previous work, distilled after those threads ended. Treat them as your own past",
+    "experience: let them shape how you plan and which checks you run before you claim something works.",
+    "",
+    ...(omitted > 0 ? ["(" + omitted + " older lessons are on disk but omitted here)", ""] : []),
     ...kept,
   ].join("\n");
 }
@@ -478,13 +567,40 @@ function scratchSection(id: string): string {
   ].join("\n");
 }
 
+/**
+ * How the fleet learns, on every request.
+ *
+ * This is the part that stops a repeated conversation. A memory note nobody reads before asking again has
+ * saved nothing, so the rule is order-of-operations — look first, ask second, write down the answer — and it
+ * names the two stores by the tool that writes each one, because "save it somewhere" is what produced the
+ * duplication this replaces.
+ */
+function learningSection(): string {
+  return [
+    "## Learning",
+    "",
+    "Before asking the owner something, check owner preferences and your memory: if the answer is already there," +
+      " use it instead of asking again.",
+    "When the owner corrects you, states a preference, or explains how they want work done, save it in the same" +
+      " turn: `prefer` when it should hold for every agent, `remember` when it is only yours.",
+    "Save the lesson, not the task: a note is durable if it still helps a month from now. Never save secrets.",
+    "A thread that has been quiet for a while is also distilled automatically into these two stores, so write" +
+      " down what the automatic pass would miss rather than repeating what it will capture.",
+  ].join("\n");
+}
+
 /** System-prompt instructions: SOUL (who you are), AGENT (rules), memory (what you learned), then scratch space. */
 export function renderInstructions(files: AgentFiles): string {
   const parts: string[] = [];
   if (files.soulMd.trim()) parts.push("## SOUL.md\n\n" + files.soulMd.trim());
   if (files.agentMd.trim()) parts.push("## AGENT.md\n\n" + files.agentMd.trim());
+  const preferences = preferencesSection(cachedPreferences());
+  if (preferences) parts.push(preferences);
   const memory = memorySection(files.memoryMd);
   if (memory) parts.push(memory);
+  const lessons = lessonsSection(files.lessonsMd);
+  if (lessons) parts.push(lessons);
+  parts.push(learningSection());
   parts.push(workingSection());
   parts.push(repairSection());
   parts.push(scratchSection(files.record.id));
