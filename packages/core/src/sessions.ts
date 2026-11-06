@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname } from "node:path";
 import type { AgentChange, Conversation, ConversationId, EntryId, ToolRegistration } from "@earendil-works/pi-durable";
 import { appendMemory, readAgent, renderInstructions, writeAgent, type ThinkingLevel } from "./agents.ts";
+import { preferTool } from "./remember.ts";
 import {
   USER_ENTRY_KIND,
   prepareUserMessage,
@@ -10,6 +11,8 @@ import {
   type UserMessageOptions,
 } from "./attachments.ts";
 import { imagePolicy, type ImagePolicy } from "./capabilities.ts";
+import { cancelLearning, scheduleLearning } from "./learnings.ts";
+import { refreshPreferences } from "./preferences.ts";
 import { rememberTool } from "./remember.ts";
 import { WATCHDOG_MS, activeIds, markActive, markIdle, markIdleIfCurrent } from "./activity.ts";
 import { context, harnessInstance, toolsByName } from "./harness.ts";
@@ -215,6 +218,7 @@ export async function renameSession(id: string, title: string): Promise<WireSess
 
 /** Soft delete: the thread leaves the list while its transcript stays recoverable in SQLite. */
 export async function deleteSession(id: string): Promise<boolean> {
+  cancelLearning(id);
   const updated = await updateSessionRecord(Number(id), { deletedAt: Date.now() });
   return updated !== null;
 }
@@ -564,7 +568,9 @@ export function agentChangeOf(files: Awaited<ReturnType<typeof readAgent>>): Age
   // `search` is offered to every agent for the same reason `remember` is: it is read-only and keyless, so there
   // is no per-agent policy to set, and a record that forgets the name must not lose the tool. MCP is global for
   // the same kind of reason: every connected server's tools are offered whatever an agent's own list says.
-  const always: ToolRegistration[] = [rememberTool, webSearchTool];
+  // `remember`, `prefer` and `search` are always offered: keeping memory, keeping the owner's standing
+  // instructions, and reading the public web are part of being an agent, not tools the owner switches on.
+  const always: ToolRegistration[] = [rememberTool, preferTool, webSearchTool];
   for (const tool of [...always, ...sudoTools, ...selected, ...meshTools, ...fileTools, ...adminTools, orchestratorClaimTool, ...mcpTools()]) {
     byName.set(tool.name, tool);
   }
@@ -588,6 +594,8 @@ export async function createSession(
   origin?: SessionOrigin,
 ): Promise<WireSession> {
   const model = await resolveDefaultModel();
+  // The prompt carries the fleet preferences, and they may have been edited by hand since boot.
+  await refreshPreferences().catch(() => undefined);
   const agentFiles = agentId ? await readAgent(agentId) : null;
   const agentChange: AgentChange = agentFiles ? agentChangeOf(agentFiles) : { model };
   return serialize(async () => {
@@ -788,6 +796,9 @@ async function settle(id: string, epoch: number): Promise<void> {
   } finally {
     clearTimeout(watchdog);
     markIdleIfCurrent(id, epoch);
+    // A thread that has stopped is the cheapest moment to learn from it: the transcript is complete, the
+    // owner has moved on, and one cheap call replaces the notes nobody remembered to write.
+    scheduleLearning(id);
   }
 }
 
@@ -900,6 +911,7 @@ export async function abortSession(id: string): Promise<boolean> {
 export async function rebindAgent(agentId: string): Promise<number> {
   const files = await readAgent(agentId);
   if (!files) return 0;
+  await refreshPreferences().catch(() => undefined);
   const change = agentChangeOf(files);
   let updated = 0;
   for (const record of await readIndex()) {

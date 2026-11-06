@@ -112,16 +112,6 @@ export async function setBotEnabled(label: string, enabled: boolean): Promise<Bo
   return registry;
 }
 
-export async function updateBotIdentity(label: string, identity: { botId: string; username: string }): Promise<BotRegistry> {
-  const registry = await loadRegistry();
-  const bot = botByLabel(registry, label);
-  if (!bot) throw new RegistryError("no bot labelled " + label);
-  bot.botId = identity.botId;
-  bot.username = identity.username;
-  await saveRegistry(registry);
-  return registry;
-}
-
 /** The registry without tokens, for status output and IPC. */
 export function publicRegistry(registry: BotRegistry): Omit<BotRegistry, "bots"> & {
   bots: Omit<BotRecord, "token">[];

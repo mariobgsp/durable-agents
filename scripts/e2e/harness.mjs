@@ -350,10 +350,12 @@ export async function startHarness(options = {}) {
     return id;
   };
 
+  // `await` the predicate: an async one used to resolve to a Promise, which is always truthy, so every
+  // `waitFor(async () => …)` returned on the first tick and asserted nothing.
   const waitFor = async (predicate, timeoutMs = 25_000, describe = "condition") => {
     const until = Date.now() + timeoutMs;
     while (Date.now() < until) {
-      const hit = predicate();
+      const hit = await predicate();
       if (hit) return hit;
       await sleep(100);
     }

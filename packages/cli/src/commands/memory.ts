@@ -1,6 +1,6 @@
 import { type Parsed, has } from "../args.ts";
 import { fail, json, paint, print } from "../output.ts";
-import { appendMemory, listAgents, readMemory } from "../../../core/src/agents.ts";
+import { appendLesson, appendMemory, lessonsPath, listAgents, readLessons, memoryPath, readMemory } from "../../../core/src/agents.ts";
 
 export async function runMemory(parsed: Parsed): Promise<void> {
   const [agentId, action = "list", ...rest] = parsed.positional;
@@ -26,8 +26,22 @@ export async function runMemory(parsed: Parsed): Promise<void> {
     else print(saved.saved ? "saved: " + saved.line : "already in memory: " + saved.line);
     return;
   }
-  if (action === "edit") {
-    fail("edit the file directly: " + (await import("../../../core/src/agents.ts")).memoryPath(agentId), 2);
+  if (action === "lessons") {
+    const text = await readLessons(agentId);
+    if (has(parsed, "json")) json({ agentId, lessons: text });
+    else print(text.trim() || paint("dim", "(no lessons yet)"));
+    return;
   }
-  fail("usage: dura memory <agent> [list|add <note>|edit]", 2);
+  if (action === "lesson") {
+    const note = rest.join(" ").trim();
+    if (!note) fail("usage: dura memory <agent> lesson <note>", 2);
+    const saved = await appendLesson(agentId, note);
+    if (has(parsed, "json")) json(saved);
+    else print(saved.saved ? "saved: " + saved.line : "already learned: " + saved.line);
+    return;
+  }
+  if (action === "edit") {
+    fail("edit the files directly: " + memoryPath(agentId) + " · " + lessonsPath(agentId), 2);
+  }
+  fail("usage: dura memory <agent> [list|add <note>|lessons|lesson <note>|edit]", 2);
 }

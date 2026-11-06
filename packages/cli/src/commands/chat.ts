@@ -1,6 +1,6 @@
-import { type Parsed, flag, has } from "../args.ts";
+import { type Parsed, has, subArgs } from "../args.ts";
 import { fail, json, paint, print, table } from "../output.ts";
-import { DaemonClient, DaemonUnavailable } from "../client.ts";
+import { DaemonClient, connectOrUndefined } from "../client.ts";
 import { startDetached } from "./start.ts";
 import { runStop } from "./stop.ts";
 import {
@@ -34,16 +34,12 @@ async function readiness(platform: ChatPlatform): Promise<{ ready: boolean; deta
 }
 
 async function daemonStatus(): Promise<Record<string, unknown> | undefined> {
+  const client = await connectOrUndefined();
+  if (!client) return undefined;
   try {
-    const client = await DaemonClient.connect(undefined, 700);
-    try {
-      return await client.request("status");
-    } finally {
-      client.close();
-    }
-  } catch (error) {
-    if (error instanceof DaemonUnavailable) return undefined;
-    throw error;
+    return await client.request("status");
+  } finally {
+    client.close();
   }
 }
 
@@ -87,7 +83,7 @@ export async function runChat(parsed: Parsed): Promise<void> {
     }
     const previous = config.chat.active;
     const wasRunning = Boolean(await daemonStatus());
-    if (wasRunning) await runStop({ positional: [], flags: new Map(), booleans: new Set() });
+    if (wasRunning) await runStop(subArgs());
     await updateConfig({ chat: { active: platform }, setup: { verifiedAt: null } });
 
     if (platform === "discord" && !has(parsed, "no-tools")) {
@@ -121,7 +117,7 @@ export async function runChat(parsed: Parsed): Promise<void> {
     } catch (error) {
       print(paint("red", "switch failed: " + (error instanceof Error ? error.message : String(error))));
       print(paint("yellow", "restoring " + previous));
-      await runStop({ positional: [], flags: new Map(), booleans: new Set() }).catch(() => undefined);
+      await runStop(subArgs()).catch(() => undefined);
       await updateConfig({ chat: { active: previous }, setup: { verifiedAt: null } });
       await startDetached(parsed).catch((restoreError) => print(paint("red", "could not restart " + previous + ": " + String(restoreError))));
       process.exit(1);

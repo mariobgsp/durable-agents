@@ -2,7 +2,8 @@
 
 Target host: 8 GB. Gate: five agents with full tools, concurrent, peak PSS of the daemon and every descendant
 < 2048 MB. MCP servers are separate child processes and are not part of the daemon's measured PSS; budget them
-separately.
+separately. They are lazy by default, so an unused server costs nothing; only a server that is mid-call, or one with
+`"lazy": false`, adds its RSS to the host total.
 
 Measured: benchmark 5/5 completed, 4.6 s wall, **247 MB peak PSS**, p95 191 MB, p50 105 MB. The harness opens at
 about 130 MB RSS on an empty database.

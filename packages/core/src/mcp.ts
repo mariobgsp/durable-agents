@@ -5,12 +5,17 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { listAgents } from "./agents.ts";
 import { errorFields, log } from "./logger.ts";
-import { mcpPath } from "./paths.ts";
+import { mcpPath, mcpToolsPath } from "./paths.ts";
 
 /**
  * MCP servers are global. One connection per server, every tool is injected into every agent's
  * conversation, and installing a server rebinds existing threads so "install this MCP" means "all
  * agents have it". Stdio transport only: command + args, JSON-RPC over newline-delimited pipes.
+ *
+ * Servers are lazy by default: the daemon keeps no child process alive between calls. Tool lists are
+ * cached on disk so every tool stays registered while its server sleeps; the first tool call spawns
+ * the server, and an idle server is stopped again after `idleTimeoutMs` (default 5 minutes). Set
+ * `"lazy": false` on a server to keep the old always-connected behaviour.
  */
 
 export type McpServerConfig = {
@@ -21,6 +26,10 @@ export type McpServerConfig = {
   env?: Record<string, string>;
   cwd?: string;
   timeoutMs?: number;
+  /** Spawn on first tool call and stop when idle (default true); false keeps it always running. */
+  lazy?: boolean;
+  /** How long a lazy server may sit unused before it is stopped; default 300000 (5 minutes). */
+  idleTimeoutMs?: number;
 };
 
 export type McpConfig = { version: 1; servers: McpServerConfig[] };
@@ -33,11 +42,17 @@ export type McpToolInfo = {
   inputSchema: Record<string, unknown>;
 };
 
+export type McpServerState = "connected" | "idle" | "disabled" | "error";
+
 export type McpServerStatus = {
   name: string;
   enabled: boolean;
   connected: boolean;
+  /** `idle` means the server is configured and its tools are registered, but no process is running. */
+  state: McpServerState;
+  lazy: boolean;
   tools: string[];
+  lastUsedAt?: string;
   error?: string;
 };
 
@@ -46,7 +61,15 @@ type ServerEntry = {
   client?: StdioClient;
   tools: McpToolInfo[];
   error?: string;
+  /** In-flight startup, shared so parallel tool calls spawn the server once. */
+  connecting?: Promise<StdioClient>;
+  idleTimer?: NodeJS.Timeout;
+  lastUsedAt?: number;
+  busy?: number;
 };
+
+/** How long a lazy server stays up after its last call. */
+const DEFAULT_IDLE_MS = 5 * 60_000;
 
 const entries = new Map<string, ServerEntry>();
 let toolList: ToolRegistration[] = [];
@@ -61,13 +84,26 @@ export function mcpToolInfos(): McpToolInfo[] {
 }
 
 export function mcpStatus(): McpServerStatus[] {
-  return [...entries.values()].map((entry) => ({
-    name: entry.config.name,
-    enabled: entry.config.enabled !== false,
-    connected: Boolean(entry.client),
-    tools: entry.tools.map((tool) => tool.registeredName),
-    ...(entry.error ? { error: entry.error } : {}),
-  }));
+  return [...entries.values()].map((entry) => {
+    const enabled = entry.config.enabled !== false;
+    const state: McpServerState = !enabled
+      ? "disabled"
+      : entry.client
+        ? "connected"
+        : entry.error
+          ? "error"
+          : "idle";
+    return {
+      name: entry.config.name,
+      enabled,
+      connected: Boolean(entry.client),
+      state,
+      lazy: entry.config.lazy !== false,
+      tools: entry.tools.map((tool) => tool.registeredName),
+      ...(entry.lastUsedAt ? { lastUsedAt: new Date(entry.lastUsedAt).toISOString() } : {}),
+      ...(entry.error ? { error: entry.error } : {}),
+    };
+  });
 }
 
 /* ----------------------------- config ----------------------------- */
@@ -99,6 +135,59 @@ export async function saveMcpConfig(config: McpConfig): Promise<void> {
 
 function validName(name: string): boolean {
   return /^[a-z0-9][a-z0-9-]{0,31}$/.test(name);
+}
+
+/* ----------------------------- tool cache ----------------------------- */
+
+type CachedTool = { name: string; description?: string; inputSchema?: Record<string, unknown> };
+type ToolsCache = { version: 1; servers: Record<string, { updatedAt: string; tools: CachedTool[] }> };
+
+async function loadToolsCache(): Promise<ToolsCache> {
+  try {
+    const parsed = JSON.parse(await readFile(mcpToolsPath, "utf8")) as Partial<ToolsCache>;
+    const servers: ToolsCache["servers"] = {};
+    for (const [name, value] of Object.entries(parsed.servers ?? {})) {
+      if (!value || !Array.isArray(value.tools)) continue;
+      const tools = value.tools.filter(
+        (tool): tool is CachedTool => Boolean(tool) && typeof (tool as CachedTool).name === "string",
+      );
+      if (tools.length === 0) continue;
+      servers[name] = { updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : new Date(0).toISOString(), tools };
+    }
+    return { version: 1, servers };
+  } catch {
+    return { version: 1, servers: {} };
+  }
+}
+
+async function saveToolsCache(cache: ToolsCache): Promise<void> {
+  await mkdir(dirname(mcpToolsPath), { recursive: true, mode: 0o700 });
+  const tmp = mcpToolsPath + ".tmp";
+  await writeFile(tmp, JSON.stringify(cache, null, 2) + "\n", { mode: 0o600 });
+  await chmod(tmp, 0o600);
+  await rename(tmp, mcpToolsPath);
+}
+
+/** Remember what a server offers, so the registry can be filled without spawning it. */
+async function cacheTools(serverName: string, tools: CachedTool[]): Promise<void> {
+  try {
+    const cache = await loadToolsCache();
+    cache.servers[serverName] = { updatedAt: new Date().toISOString(), tools };
+    await saveToolsCache(cache);
+  } catch (error) {
+    log.debug("mcp.cache_failed", { server: serverName, ...errorFields(error) });
+  }
+}
+
+async function forgetCachedTools(serverName: string): Promise<void> {
+  try {
+    const cache = await loadToolsCache();
+    if (!(serverName in cache.servers)) return;
+    delete cache.servers[serverName];
+    await saveToolsCache(cache);
+  } catch {
+    /* a stale cache entry is harmless: it is replaced on the next successful connect */
+  }
 }
 
 /* ----------------------------- stdio client ----------------------------- */
@@ -240,6 +329,11 @@ class StdioClient {
     return this.request("tools/call", { name, arguments: args }, this.config.timeoutMs ?? 120_000);
   }
 
+  /** False once the server exited, so callers know they must spawn a fresh one. */
+  get running(): boolean {
+    return !this.closed;
+  }
+
   stop(): void {
     this.closed = true;
     this.fail(new Error("MCP client stopped"));
@@ -282,6 +376,25 @@ function textOf(result: unknown): string {
   return JSON.stringify(result, null, 2);
 }
 
+function buildToolInfos(serverName: string, tools: CachedTool[]): McpToolInfo[] {
+  const infos: McpToolInfo[] = [];
+  const seen = new Set<string>();
+  for (const tool of tools) {
+    let registeredName = "mcp__" + sanitize(serverName) + "__" + sanitize(tool.name);
+    let suffix = 2;
+    while (seen.has(registeredName)) registeredName = "mcp__" + sanitize(serverName) + "__" + sanitize(tool.name) + "_" + suffix++;
+    seen.add(registeredName);
+    infos.push({
+      server: serverName,
+      name: tool.name,
+      registeredName,
+      description: tool.description ?? "",
+      inputSchema: tool.inputSchema ?? { type: "object", properties: {}, additionalProperties: false },
+    });
+  }
+  return infos;
+}
+
 function makeTool(entry: ServerEntry, info: McpToolInfo): ToolRegistration {
   return defineTool({
     name: info.registeredName,
@@ -290,15 +403,24 @@ function makeTool(entry: ServerEntry, info: McpToolInfo): ToolRegistration {
       "MCP tool " + info.name + " from server " + entry.config.name + ". Available to every agent.",
     parameters: Type.Unsafe(JSON.parse(JSON.stringify(info.inputSchema))) as never,
     async execute(args: Record<string, unknown>) {
+      let client: StdioClient | undefined;
       try {
-        const result = await entry.client?.callTool(info.name, args ?? {});
-        const isError = Boolean(result && typeof result === "object" && (result as { isError?: unknown }).isError === true);
-        return {
-          output: [{ type: "text" as const, text: textOf(result) }],
-          isError,
-          details: result as never,
-        };
+        client = await ensureClient(entry);
+        entry.busy = (entry.busy ?? 0) + 1;
+        try {
+          const result = await client.callTool(info.name, args ?? {});
+          const isError = Boolean(result && typeof result === "object" && (result as { isError?: unknown }).isError === true);
+          return {
+            output: [{ type: "text" as const, text: textOf(result) }],
+            isError,
+            details: result as never,
+          };
+        } finally {
+          entry.busy = Math.max(0, (entry.busy ?? 1) - 1);
+          touchIdle(entry);
+        }
       } catch (error) {
+        if (client && !client.running) entry.client = undefined;
         return {
           output: [{ type: "text" as const, text: "MCP " + entry.config.name + "/" + info.name + " failed: " + (error instanceof Error ? error.message : String(error)) }],
           isError: true,
@@ -320,34 +442,87 @@ async function rebindAll(): Promise<number> {
   return rebound;
 }
 
-async function connectServer(config: McpServerConfig): Promise<ServerEntry> {
-  const entry: ServerEntry = { config, tools: [] };
-  const client = new StdioClient(config);
+/** One spawn to learn a server's tools; the client is released again unless the server is eager. */
+async function warmServer(entry: ServerEntry): Promise<void> {
+  const client = new StdioClient(entry.config);
   try {
     await client.initialize();
     const tools = await client.listTools();
-    const seen = new Set<string>();
-    for (const tool of tools) {
-      let registeredName = "mcp__" + sanitize(config.name) + "__" + sanitize(tool.name);
-      let suffix = 2;
-      while (seen.has(registeredName)) registeredName = "mcp__" + sanitize(config.name) + "__" + sanitize(tool.name) + "_" + suffix++;
-      seen.add(registeredName);
-      entry.tools.push({
-        server: config.name,
-        name: tool.name,
-        registeredName,
-        description: tool.description ?? "",
-        inputSchema: tool.inputSchema ?? { type: "object", properties: {}, additionalProperties: false },
-      });
+    entry.tools = buildToolInfos(entry.config.name, tools);
+    entry.error = undefined;
+    await cacheTools(entry.config.name, tools);
+    if (entry.config.lazy === false) {
+      entry.client = client;
+      log.info("mcp.connected", { server: entry.config.name, tools: entry.tools.length, mode: "eager" });
+    } else {
+      client.stop();
+      log.info("mcp.tools_cached", { server: entry.config.name, tools: entry.tools.length });
     }
-    entry.client = client;
-    return entry;
   } catch (error) {
     client.stop();
     entry.error = error instanceof Error ? error.message : String(error);
-    log.warn("mcp.connect_failed", { server: config.name, ...errorFields(error), stderr: client.stderr.slice(-400) });
-    return entry;
+    log.warn("mcp.connect_failed", { server: entry.config.name, ...errorFields(error), stderr: client.stderr.slice(-400) });
   }
+}
+
+/** Arm the idle timer: a lazy server is stopped once it has been unused for its idle window. */
+function touchIdle(entry: ServerEntry): void {
+  entry.lastUsedAt = Date.now();
+  if (entry.config.lazy === false) return;
+  const idleMs = entry.config.idleTimeoutMs ?? DEFAULT_IDLE_MS;
+  if (!(idleMs > 0)) return;
+  if (entry.idleTimer) clearTimeout(entry.idleTimer);
+  const timer = setTimeout(() => {
+    entry.idleTimer = undefined;
+    if (!entry.client) return;
+    if ((entry.busy ?? 0) > 0) {
+      touchIdle(entry);
+      return;
+    }
+    const idleFor = Date.now() - (entry.lastUsedAt ?? Date.now());
+    if (idleFor + 50 < idleMs) {
+      touchIdle(entry);
+      return;
+    }
+    log.info("mcp.idle_stop", { server: entry.config.name, idleMs: idleFor });
+    entry.client.stop();
+    entry.client = undefined;
+  }, idleMs);
+  timer.unref?.();
+  entry.idleTimer = timer;
+}
+
+/** Spawn a lazy server on demand and reuse an existing one. Parallel calls share one startup. */
+async function ensureClient(entry: ServerEntry): Promise<StdioClient> {
+  if (entry.config.enabled === false) throw new Error("MCP server " + entry.config.name + " is disabled");
+  if (entry.client && !entry.client.running) entry.client = undefined;
+  if (!entry.client) {
+    if (!entry.connecting) {
+      entry.connecting = (async () => {
+        const client = new StdioClient(entry.config);
+        try {
+          await client.initialize();
+          const tools = await client.listTools();
+          entry.tools = buildToolInfos(entry.config.name, tools);
+          entry.client = client;
+          entry.error = undefined;
+          await cacheTools(entry.config.name, tools);
+          log.info("mcp.connected", { server: entry.config.name, tools: entry.tools.length, mode: "on_demand" });
+          return client;
+        } catch (error) {
+          client.stop();
+          entry.error = error instanceof Error ? error.message : String(error);
+          log.warn("mcp.connect_failed", { server: entry.config.name, ...errorFields(error), stderr: client.stderr.slice(-400) });
+          throw error;
+        }
+      })().finally(() => {
+        entry.connecting = undefined;
+      });
+    }
+    await entry.connecting;
+  }
+  touchIdle(entry);
+  return entry.client as StdioClient;
 }
 
 function rebuildTools(): void {
@@ -355,25 +530,45 @@ function rebuildTools(): void {
   toolList = [...entries.values()].flatMap((entry) => entry.tools.map((info) => makeTool(entry, info)));
 }
 
-/** Connect every enabled server and install their tools globally. Called at boot and on reload. */
+/**
+ * Register every enabled server's tools. Servers whose tool list is cached cost no process at all; one
+ * without a cached list is spawned once here, asked for its tools and released again. Called at boot
+ * and on reload.
+ */
 export async function startMcp(): Promise<McpServerStatus[]> {
   await stopMcp();
   const config = await loadMcpConfig();
+  const cache = await loadToolsCache();
+  const needWarm: ServerEntry[] = [];
   for (const server of config.servers) {
-    if (server.enabled === false) {
-      entries.set(server.name, { config: server, tools: [] });
-      continue;
-    }
-    entries.set(server.name, await connectServer(server));
+    const entry: ServerEntry = { config: server, tools: [] };
+    entries.set(server.name, entry);
+    if (server.enabled === false) continue;
+    const cached = cache.servers[server.name];
+    if (cached && cached.tools.length > 0) entry.tools = buildToolInfos(server.name, cached.tools);
+    // An eager server (lazy:false) must connect now; a lazy one only when its tools are unknown.
+    if (server.lazy === false || entry.tools.length === 0) needWarm.push(entry);
   }
+  for (const entry of needWarm) await warmServer(entry);
   rebuildTools();
   await installExtension();
-  log.info("mcp.started", { servers: mcpStatus().map((status) => status.name), tools: toolInfos.length });
+  log.info("mcp.started", {
+    servers: mcpStatus().map((status) => status.name),
+    tools: toolInfos.length,
+    idle: mcpStatus().filter((status) => status.state === "idle").map((status) => status.name),
+  });
   return mcpStatus();
 }
 
 export async function stopMcp(): Promise<void> {
-  for (const entry of entries.values()) entry.client?.stop();
+  for (const entry of entries.values()) {
+    if (entry.idleTimer) {
+      clearTimeout(entry.idleTimer);
+      entry.idleTimer = undefined;
+    }
+    entry.client?.stop();
+    entry.client = undefined;
+  }
   entries.clear();
   toolInfos = [];
   toolList = [];
@@ -425,7 +620,46 @@ export async function removeMcpServer(name: string): Promise<{ removed: boolean;
   await saveMcpConfig(config);
   await startMcp();
   const rebound = await rebindAll();
+  await forgetCachedTools(name);
   return { removed: true, rebound };
+}
+
+/** Turn one server off or on without deleting it; existing threads are rebound either way. */
+export async function setMcpEnabled(name: string, enabled: boolean): Promise<{ server: McpServerStatus; tools: string[]; rebound: number }> {
+  const config = await loadMcpConfig();
+  const server = config.servers.find((entry) => entry.name === name);
+  if (!server) throw new Error("no MCP server called " + name);
+  server.enabled = enabled;
+  await saveMcpConfig(config);
+  await startMcp();
+  const rebound = await rebindAll();
+  const status = mcpStatus().find((entry) => entry.name === name);
+  if (!status) throw new Error("MCP server " + name + " did not register");
+  if (status.error) throw new Error(status.error);
+  return { server: status, tools: status.tools, rebound };
+}
+
+/**
+ * Stop running servers now, leaving them configured. Tools stay registered, so the next call spawns the
+ * server again on demand — `dura mcp stop` frees the RAM without disabling anything.
+ */
+export async function stopMcpServers(name?: string): Promise<{ stopped: string[] }> {
+  if (name && !entries.has(name)) throw new Error("no MCP server called " + name);
+  const stopped: string[] = [];
+  for (const [key, entry] of entries) {
+    if (name && key !== name) continue;
+    if (entry.idleTimer) {
+      clearTimeout(entry.idleTimer);
+      entry.idleTimer = undefined;
+    }
+    if (entry.client) {
+      entry.client.stop();
+      entry.client = undefined;
+      stopped.push(key);
+    }
+  }
+  if (stopped.length > 0) log.info("mcp.stopped", { servers: stopped });
+  return { stopped };
 }
 
 export function mcpToolNames(): string[] {

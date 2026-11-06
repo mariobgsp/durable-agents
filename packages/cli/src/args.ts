@@ -5,6 +5,17 @@ export type Parsed = {
   booleans: Set<string>;
 };
 
+/**
+ * The arguments of a command that another command runs on its own.
+ *
+ * Written out once because every such call used to spell `{ positional: [], flags: new Map(), booleans:
+ * new Set() }` by hand, which reads as "no flags" but also silently drops `--json` if a reader assumes the
+ * parent's flags carry over.
+ */
+export function subArgs(...positional: string[]): Parsed {
+  return { positional, flags: new Map(), booleans: new Set() };
+}
+
 export function parseArgs(argv: readonly string[]): Parsed {
   const positional: string[] = [];
   const flags = new Map<string, string[]>();
@@ -62,8 +73,4 @@ export function numberFlag(parsed: Parsed, name: string): number | undefined {
   if (raw === undefined) return undefined;
   const value = Number(raw);
   return Number.isFinite(value) ? value : undefined;
-}
-
-export function jsonFlag(parsed: Parsed): boolean {
-  return has(parsed, "json");
 }

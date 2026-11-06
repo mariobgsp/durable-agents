@@ -309,24 +309,4 @@ export class BotApi {
     return result.invite_link;
   }
 
-  /** True when the error means "this edit cannot land" (message gone, not modified, too old). */
-  static isEditableFailure(error: unknown): boolean {
-    return error instanceof TelegramError && EDITABLE.has(error.status);
-  }
-
-}
-
-export function chunkHtml(text: string, limit = 4096): string[] {
-  if (text.length <= limit) return [text];
-  const chunks: string[] = [];
-  let rest = text;
-  while (rest.length > limit) {
-    let cut = rest.lastIndexOf("\n\n", limit);
-    if (cut < limit / 2) cut = rest.lastIndexOf("\n", limit);
-    if (cut < limit / 2) cut = limit;
-    chunks.push(rest.slice(0, cut).trimEnd());
-    rest = rest.slice(cut).trimStart();
-  }
-  if (rest) chunks.push(rest);
-  return chunks;
 }

@@ -1,6 +1,6 @@
 import { chmod, mkdir, rm, stat } from "node:fs/promises";
 import { createServer, Socket, type Server } from "node:net";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 
 /**
  * The local control plane. A Unix socket, NDJSON frames, one request per line, one response, plus

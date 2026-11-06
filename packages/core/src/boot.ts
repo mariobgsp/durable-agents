@@ -6,6 +6,7 @@ import { errorFields, log } from "./logger.ts";
 import { reconcileMesh } from "./mesh.ts";
 import { setGrantResolver } from "./permissions.ts";
 import { hydrateOrchestrator } from "./orchestrator.ts";
+import { refreshPreferences } from "./preferences.ts";
 import { setAgentResolver } from "./remember.ts";
 import { reconcileSchedules } from "./schedules.ts";
 import {
@@ -38,6 +39,9 @@ export async function boot(): Promise<{ startedAt: number; agents: number; sessi
   for (const dir of [duraHome, runDir, logsDir, secretsDir, telegramDir, telegramTmpDir, cacheDir, exportsDir]) {
     await mkdir(dir, { recursive: true, mode: 0o700 });
   }
+  // The fleet preferences are rendered into every agent prompt; loading them here means the first
+  // thread after a restart already knows what the owner asked for.
+  await refreshPreferences().catch(() => undefined);
 
   const e2e = process.env.DURA_E2E === "1" || process.env.PI_E2E === "1";
   if (e2e) enableE2E();

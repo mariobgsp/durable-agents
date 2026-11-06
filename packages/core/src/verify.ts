@@ -1,9 +1,6 @@
 import { readFile, readdir, readlink, stat, writeFile, rm } from "node:fs/promises";
-import { DatabaseSync } from "node:sqlite";
-import { dirname } from "node:path";
 import { listAgents } from "./agents.ts";
-import { defaultCwd, isChatPlatform, readConfig, type DuraConfig } from "./config.ts";
-import { context, harnessInstance } from "./harness.ts";
+import { isChatPlatform, readConfig, type DuraConfig } from "./config.ts";
 import { log } from "./logger.ts";
 import { models } from "./models.ts";
 import { dbPath, configPath, duraHome, socketPath } from "./paths.ts";
@@ -212,6 +209,9 @@ async function checkIpc(): Promise<Check[]> {
 
 async function checkSqlite(): Promise<Check> {
   try {
+    // Imported here: `node:sqlite` prints an experimental warning when it loads, and every command that
+    // reaches this module would otherwise print a warning about a database it may never open.
+    const { DatabaseSync } = await import("node:sqlite");
     const db = new DatabaseSync(dbPath, { readOnly: true });
     try {
       db.prepare("SELECT count(*) AS n FROM sqlite_master").get();

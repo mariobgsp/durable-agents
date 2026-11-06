@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, rename, stat } from "node:fs/promises";
+import { cp, mkdir, rename, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { type Parsed, flag, has } from "../args.ts";

@@ -93,6 +93,13 @@ export type DuraConfig = {
   telegram: TelegramConfig;
   discord: DiscordConfig;
   storage: { auto: boolean; pruneAfterDays: number; purgeAfterDays: number; intervalHours: number };
+  /**
+   * The learning layer: after a thread has been quiet for a while, one cheap model call turns it into
+   * preferences and memory notes. `auto` is the switch the owner keeps, `idleMinutes` is how quiet a
+   * thread has to be before it is distilled (the point is to learn after the conversation, not mid-run),
+   * and `minMessages` keeps a one-line exchange from costing a model call.
+   */
+  learning: { auto: boolean; idleMinutes: number; minMessages: number; sweepMinutes: number };
   logging: { level: "debug" | "info" | "warn" | "error"; maxBytes: number; keep: number };
   service: { systemd: boolean };
   tui: { allowCreate: boolean };
@@ -155,6 +162,7 @@ export function defaultConfig(): DuraConfig {
     },
     logging: { level: "info", maxBytes: 5 * 1024 * 1024, keep: 3 },
     storage: { auto: true, pruneAfterDays: 3, purgeAfterDays: 3, intervalHours: 6 },
+    learning: { auto: true, idleMinutes: 10, minMessages: 4, sweepMinutes: 30 },
     service: { systemd: true },
     tui: { allowCreate: true },
     setup: { completed: [], verifiedAt: null },
@@ -250,6 +258,7 @@ export type ConfigPatch = {
   };
   logging?: Partial<DuraConfig["logging"]>;
   storage?: Partial<DuraConfig["storage"]>;
+  learning?: Partial<DuraConfig["learning"]>;
   service?: Partial<DuraConfig["service"]>;
   tui?: Partial<DuraConfig["tui"]>;
   setup?: Partial<DuraConfig["setup"]>;
@@ -273,6 +282,7 @@ export async function updateConfig(patch: ConfigPatch): Promise<DuraConfig> {
     },
     logging: { ...current.logging, ...(patch.logging ?? {}) },
     storage: { ...current.storage, ...(patch.storage ?? {}) },
+    learning: { ...current.learning, ...(patch.learning ?? {}) },
     service: { ...current.service, ...(patch.service ?? {}) },
     tui: { ...current.tui, ...(patch.tui ?? {}) },
     setup: { ...current.setup, ...(patch.setup ?? {}) },
@@ -370,6 +380,18 @@ export function validateConfig(config: DuraConfig): string[] {
   if (gateway) problems.push(gateway);
   if (!Number.isFinite(discord.editIntervalMs) || discord.editIntervalMs <= 0) {
     problems.push("discord.editIntervalMs must be a positive number");
+  }
+  if (config.learning && typeof config.learning.auto !== "boolean") {
+    problems.push("learning.auto must be true or false");
+  }
+  if (config.learning && !(Number(config.learning.idleMinutes) > 0)) {
+    problems.push("learning.idleMinutes must be a positive number");
+  }
+  if (config.learning && !(Number(config.learning.minMessages) >= 2)) {
+    problems.push("learning.minMessages must be at least 2");
+  }
+  if (config.learning && !(Number(config.learning.sweepMinutes) >= 1)) {
+    problems.push("learning.sweepMinutes must be at least 1");
   }
   for (const [key, value] of Object.entries(config.limits ?? {})) {
     if (!Number.isFinite(value) || value <= 0) problems.push("limits." + key + " must be a positive number");

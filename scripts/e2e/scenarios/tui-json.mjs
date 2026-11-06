@@ -14,12 +14,15 @@ export default {
           env: { ...process.env, DURA_HOME: h.home },
           stdio: ["ignore", "pipe", "pipe"],
         });
+        // The subject is what a script reads off stdout. stderr carries warnings from dependencies and is
+        // reported only when the command fails, so that unrelated noise cannot fail this test.
         let text = "";
+        let errors = "";
         child.stdout.on("data", (chunk) => (text += String(chunk)));
-        child.stderr.on("data", (chunk) => (text += String(chunk)));
-        child.on("exit", (code) => done({ code, text }));
+        child.stderr.on("data", (chunk) => (errors += String(chunk)));
+        child.on("exit", (code) => done({ code, text, errors }));
       });
-      assert.equal(result.code, 0, result.text);
+      assert.equal(result.code, 0, result.errors || result.text);
       const fleet = JSON.parse(result.text);
       assert.equal(fleet.agents.length, 1);
       assert.equal(fleet.agents[0].id, "helper");

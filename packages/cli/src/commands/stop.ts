@@ -1,8 +1,8 @@
-import { readdir, unlink } from "node:fs/promises";
+import { unlink } from "node:fs/promises";
 import { type Parsed, has } from "../args.ts";
 import { print, paint, json } from "../output.ts";
 import { DaemonClient, DaemonUnavailable } from "../client.ts";
-import { readyPath, runDir } from "../../../core/src/paths.ts";
+import { readyPath } from "../../../core/src/paths.ts";
 
 export async function runStop(parsed: Parsed): Promise<void> {
   let client: DaemonClient | undefined;

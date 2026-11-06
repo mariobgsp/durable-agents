@@ -1,7 +1,7 @@
 import { type Parsed, flag, has } from "../args.ts";
 import { fail, json, paint, print, table } from "../output.ts";
 import { deleteSecret, listSecrets, putSecret, vaultStatus } from "../../../core/src/vault-store.ts";
-import { secret, ask } from "../prompts.ts";
+import { secret } from "../prompts.ts";
 
 export async function runVault(parsed: Parsed): Promise<void> {
   const [action = "list", target] = parsed.positional;

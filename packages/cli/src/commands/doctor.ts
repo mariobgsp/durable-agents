@@ -1,26 +1,14 @@
-import { spawn } from "node:child_process";
+import { run } from "../exec.ts";
 import { readFile, stat, statfs } from "node:fs/promises";
-import { homedir } from "node:os";
 import { type Parsed, has } from "../args.ts";
 import { bytes, json, paint, print, table } from "../output.ts";
-import { DaemonClient, DaemonUnavailable } from "../client.ts";
+import { DaemonClient } from "../client.ts";
 import { readConfig, validateConfig } from "../../../core/src/config.ts";
 import { discordBotsPath, duraHome, telegramBotsPath } from "../../../core/src/paths.ts";
 import { models } from "../../../core/src/models.ts";
 import { bootFacts } from "./service.ts";
 
 type Row = { check: string; ok: boolean; detail: string };
-
-function run(command: string, args: string[]): Promise<{ code: number; text: string }> {
-  return new Promise((done) => {
-    const child = spawn(command, args);
-    let text = "";
-    child.stdout.on("data", (chunk) => (text += String(chunk)));
-    child.stderr.on("data", (chunk) => (text += String(chunk)));
-    child.on("error", () => done({ code: -1, text: "" }));
-    child.on("exit", (code) => done({ code: code ?? -1, text: text.trim() }));
-  });
-}
 
 export async function runDoctor(parsed: Parsed): Promise<void> {
   const rows: Row[] = [];

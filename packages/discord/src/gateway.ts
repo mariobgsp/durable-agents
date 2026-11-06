@@ -1,3 +1,4 @@
+import { backoffDelay } from "../../core/src/retry.ts";
 import type { GatewayPayload, ReadyData } from "./types.ts";
 
 const GATEWAY_VERSION = "10";
@@ -154,7 +155,7 @@ export class DiscordGateway {
   private async scheduleReconnect(reason: string): Promise<void> {
     if (this.stopped) return;
     this.attempts += 1;
-    const delay = Math.min(60_000, 1_000 * 2 ** Math.min(this.attempts - 1, 5)) + Math.random() * 500;
+    const delay = backoffDelay(this.attempts, { capMs: 60_000, jitterMs: 500 });
     await this.health(false, "connecting", reason);
     await sleep(delay);
     if (!this.stopped) this.connect();

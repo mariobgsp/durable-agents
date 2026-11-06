@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { run } from "../exec.ts";
 import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -9,18 +9,6 @@ import { duraHome, repoRoot } from "../../../core/src/paths.ts";
 const UNIT = "dura.service";
 const unitPath = resolve(homedir(), ".config/systemd/user", UNIT);
 const binPath = resolve(import.meta.dirname, "../../bin/dura.ts");
-
-function run(command: string, args: string[]): Promise<{ code: number; text: string }> {
-  return new Promise((done) => {
-    const child = spawn(command, args);
-    let text = "";
-    child.stdout.on("data", (chunk) => (text += String(chunk)));
-    child.stderr.on("data", (chunk) => (text += String(chunk)));
-    child.on("error", () => done({ code: -1, text: command + " is not available" }));
-    child.on("exit", (code) => done({ code: code ?? -1, text: text.trim() }));
-  });
-}
-
 function systemctl(args: string[]): Promise<{ code: number; text: string }> {
   return run("systemctl", ["--user", ...args]);
 }

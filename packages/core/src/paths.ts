@@ -26,6 +26,11 @@ export const secretsDir = resolve(duraHome, "secrets");
 export const telegramBotsPath = resolve(secretsDir, "telegram.json");
 /** MCP server definitions; commands and env may contain secrets, so the file is 0600. */
 export const mcpPath = resolve(duraHome, "mcp.json");
+/**
+ * Cached MCP tool lists. A lazy server is stopped between calls, so its tools are remembered here and
+ * registered from cache instead of being spawned just to be asked what it offers.
+ */
+export const mcpToolsPath = resolve(duraHome, "mcp-tools.json");
 
 export const dbPath = resolve(duraHome, "app.sqlite");
 export const sessionsPath = resolve(duraHome, "sessions.json");
@@ -41,6 +46,16 @@ export const vaultPath = resolve(vaultDir, "secrets.json");
 export const vaultKeyPath = resolve(vaultDir, "key");
 export const browserProfileDir = resolve(duraHome, "browser", "profile");
 export const browserArtifactDir = resolve(duraHome, "browser", "shots");
+
+/**
+ * Standing instructions from the owner, learned across threads and rendered into every agent's prompt.
+ *
+ * It lives at the home root rather than inside an agent directory because it is a fleet fact, not an
+ * agent one: a preference learned in one agent's thread has to change what the other four do.
+ */
+export const preferencesPath = resolve(duraHome, "preferences.md");
+/** Which threads the learning layer already distilled, and how many entries each had at that moment. */
+export const learningsPath = resolve(duraHome, "learnings.json");
 
 /** The last system operation, written only at a terminal phase. */
 export const systemPath = resolve(duraHome, "system.json");

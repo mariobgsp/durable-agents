@@ -1,11 +1,11 @@
 import { stdin, stdout } from "node:process";
-import { type Parsed, flag, has, numberFlag } from "../args.ts";
+import { type Parsed, has, numberFlag } from "../args.ts";
 import { bytes, duration, json, paint, print } from "../output.ts";
 import { DaemonClient, DaemonUnavailable } from "../client.ts";
 import { useBotRegistry } from "../bots.ts";
 import { createAgent } from "../../../core/src/agent-admin.ts";
 import { readConfig } from "../../../core/src/config.ts";
-import { ask, choose, confirm, interactive } from "../prompts.ts";
+import { ask, choose, confirm } from "../prompts.ts";
 
 type FleetAgent = {
   id: string;

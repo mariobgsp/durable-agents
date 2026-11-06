@@ -133,25 +133,6 @@ export function splitDiscordMessage(input: string, limit = MAX_MESSAGE): string[
   return chunks;
 }
 
-/** A short progress line for the status message. */
-export function progressLine(tool: string, summary?: string): string {
-  const name = tool.toLowerCase();
-  const label =
-    name === "bash" || name === "terminal" ? "bash"
-    : name === "read" ? "read"
-    : name === "write" || name === "edit" || name === "create_file" ? name
-    : name === "grep" || name === "glob" || name === "find" ? "search"
-    : name === "codemode" ? "codemode"
-    : name === "coding" ? "coding"
-    : name === "browser" ? "browser"
-    : name === "question" ? "asking you"
-    : name.startsWith("mcp__") ? "mcp: " + tool.split("__").slice(2).join("__")
-    : name.startsWith("agents_") ? "team: " + name.replace("agents_", "")
-    : tool;
-  const detail = (summary ?? "").trim().replace(/\s+/g, " ").slice(0, 90);
-  return detail ? label + " · " + detail : label;
-}
-
 export type ComponentRow = { type: 1; components: Record<string, unknown>[] };
 
 export function buttonRow(buttons: { text: string; data: string; style?: number }[]): ComponentRow {
@@ -188,16 +169,4 @@ export function questionComponents(options: string[], nonce: string): ComponentR
       ],
     },
   ];
-}
-
-/** One code block that is guaranteed to be under the message limit. */
-export function codeBlock(value: string, language = "text"): string {
-  const body = value.length > MAX_CODE ? value.slice(0, MAX_CODE) + "\n…" : value;
-  return "```" + language + "\n" + body + "\n```";
-}
-
-/** Discord message links work in guilds; DMs have no stable public URL. */
-export function messageLink(guildId: string | undefined, channelId: string, messageId: string): string | undefined {
-  if (!guildId) return undefined;
-  return "https://discord.com/channels/" + guildId + "/" + channelId + "/" + messageId;
 }

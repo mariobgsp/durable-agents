@@ -41,7 +41,11 @@ export default {
 
       const list = await h.client.request("mcp.list");
       assert.equal(list.servers[0].name, "fake");
-      assert.equal(list.servers[0].connected, true);
+      // Lazy is the default: adding a server registers its tools and leaves no process running, and the
+      // first tool call is what spawns it (asserted below, after the run).
+      assert.equal(list.servers[0].connected, false, "a lazy server is not spawned on add");
+      assert.equal(list.servers[0].state, "idle");
+      assert.equal(list.servers[0].lazy, true);
       assert.ok(list.tools.some((tool) => tool.registeredName === "mcp__fake__echo"));
 
       const first = await h.client.request("sessions.create", { title: "MCP helper", agent: "helper" });
@@ -49,6 +53,8 @@ export default {
       const firstEntries = await waitFinal(h.client, first.id);
       const firstTool = firstEntries.find((entry) => entry.role === "tool" && String(entry.text).includes("echo: one"));
       assert.ok(firstTool, "helper used the MCP tool");
+      const afterUse = await h.client.request("mcp.list");
+      assert.equal(afterUse.servers[0].state, "connected", "the tool call spawned the server");
 
       const second = await h.client.request("sessions.create", { title: "MCP worker", agent: "worker" });
       await h.client.request("sessions.send", { id: second.id, text: "use the echo tool twice" });

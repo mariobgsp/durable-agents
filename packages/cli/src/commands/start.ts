@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
-import { readFile, readdir, stat, unlink } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { watch } from "node:fs";
-import { type Parsed, flag, flagAll, has } from "../args.ts";
+import { type Parsed, flagAll, has } from "../args.ts";
 import { print, printError, paint, fail, json } from "../output.ts";
 import { readConfig, validateConfig, type DuraConfig } from "../../../core/src/config.ts";
-import { duraHome, readyPath, runDir } from "../../../core/src/paths.ts";
+import { duraHome, readyPath } from "../../../core/src/paths.ts";
 import { startDaemon } from "../../../core/src/daemon.ts";
 import { log } from "../../../core/src/logger.ts";
 

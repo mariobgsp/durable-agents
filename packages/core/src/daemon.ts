@@ -32,7 +32,8 @@ import {
   allSessionRecords,
 } from "./sessions.ts";
 import { isRoom } from "./rooms.ts";
-import { appendMemory, readMemory } from "./agents.ts";
+import { appendLesson, appendMemory, readLessons, readMemory } from "./agents.ts";
+import { appendPreference, preferenceLines, readPreferences } from "./preferences.ts";
 import { cleanupStorage, purgeConversation, storageReport } from "./storage.ts";
 import { usageReport } from "./usage.ts";
 import {
@@ -337,6 +338,18 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       const { mcpToolInfos } = await import("./mcp.ts");
       return mcpToolInfos();
     },
+    "mcp.enable": async (params) => {
+      const { setMcpEnabled } = await import("./mcp.ts");
+      return setMcpEnabled(str(params, "name"), true);
+    },
+    "mcp.disable": async (params) => {
+      const { setMcpEnabled } = await import("./mcp.ts");
+      return setMcpEnabled(str(params, "name"), false);
+    },
+    "mcp.stop": async (params) => {
+      const { stopMcpServers } = await import("./mcp.ts");
+      return stopMcpServers(str(params, "name") || undefined);
+    },
     "bots.pair": async (params) => {
       const { assignBotToAgent } = await import("./agent-admin.ts");
       return assignBotToAgent(str(params, "bot"), str(params, "agent"), "cli");
@@ -378,6 +391,22 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     },
     "agents.memory": async (params) => readMemory(str(params, "id")),
     "agents.remember": async (params) => appendMemory(str(params, "id"), str(params, "note")),
+    "agents.lessons": async (params) => readLessons(str(params, "id")),
+    "agents.learn-lesson": async (params) => appendLesson(str(params, "id"), str(params, "note")),
+    "preferences.list": async () => preferenceLines(await readPreferences()),
+    "preferences.add": async (params) => appendPreference(str(params, "note")),
+    "learning.distill": async (params) => {
+      const { distillSession } = await import("./learnings.ts");
+      return distillSession(str(params, "id"), { forced: params.forced === true });
+    },
+    "learning.sweep": async () => {
+      const { sweepLearning } = await import("./learnings.ts");
+      return sweepLearning();
+    },
+    "learning.consolidate": async (params) => {
+      const { consolidateLessons } = await import("./learnings.ts");
+      return consolidateLessons(str(params, "agent"), { forced: true });
+    },
     "thinking.get": async () => {
       const fresh = await readConfig({ fresh: true });
       const agents = await listAgents();
@@ -486,6 +515,8 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       await stopMcp().catch(() => undefined);
       const { stopRetention } = await import("./retention.ts");
       stopRetention();
+      const { stopLearningLoop } = await import("./learnings.ts");
+      stopLearningLoop();
       stopScheduler();
       disposeSystem();
       await ipc.close().catch(() => undefined);
@@ -503,6 +534,8 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
     startScheduler();
     const { startRetention } = await import("./retention.ts");
     startRetention();
+    const { startLearningLoop } = await import("./learnings.ts");
+    startLearningLoop();
     await options.onReady?.();
   } catch (error) {
     log.error("daemon.start_failed", errorFields(error));

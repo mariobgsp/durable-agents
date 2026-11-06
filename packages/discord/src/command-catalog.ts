@@ -2,9 +2,13 @@ import { errorFields, log } from "../../core/src/logger.ts";
 import type { DiscordApi } from "./client.ts";
 import type { DiscordApplicationCommand, DiscordCommandOption } from "./types.ts";
 
+export type CommandGroup = "threads" | "run" | "data" | "owner" | "setup";
+
 export type DiscordCommandSpec = {
   name: string;
   description: string;
+  /** The /help section this command is listed under; required so a new command has to pick one. */
+  group: CommandGroup;
   options?: DiscordCommandOption[];
   /** Registered with member permissions 0 and also checked by user id in the runtime. */
   ownerOnly?: boolean;
@@ -27,55 +31,56 @@ function opt(type: number, name: string, description: string, required = false):
  * runtime does not know is worse than no command at all.
  */
 export const DISCORD_COMMANDS: DiscordCommandSpec[] = [
-  { name: "help", description: "Show the commands and how threads work", dm: true },
-  { name: "menu", description: "Show a compact command menu", dm: true },
-  { name: "whoami", description: "Show your Discord id and role", dm: true },
-  { name: "status", description: "Show daemon, bot, gateway and run status", dm: true },
-  { name: "new", description: "Start a new thread (or a DM thread) and bind a session", options: [
+  { name: "help", group: "data", description: "Show the commands and how threads work", dm: true },
+  { name: "menu", group: "data", description: "Show a compact command menu", dm: true },
+  { name: "whoami", group: "data", description: "Show your Discord id and role", dm: true },
+  { name: "status", group: "data", description: "Show daemon, bot, gateway and run status", dm: true },
+  { name: "new", group: "threads", description: "Start a new thread (or a DM thread) and bind a session", options: [
     opt(STRING, "title", "Thread title"),
     opt(STRING, "agent", "Agent id; defaults to the channel or bot default"),
   ], dm: true },
-  { name: "threads", description: "List this agent's threads and link the Discord ones", dm: true },
-  { name: "rename", description: "Rename the current thread", options: [opt(STRING, "title", "New title", true)], dm: true },
-  { name: "archive", description: "Archive the current Discord thread", dm: false },
-  { name: "agent", description: "Move the current thread to another agent", options: [opt(STRING, "agent", "Agent id", true)], dm: true },
-  { name: "agents", description: "List agents and their models", dm: true },
-  { name: "model", description: "Show or change the model for this thread", options: [opt(STRING, "model", "provider/model or model id")], dm: true },
-  { name: "thinking", description: "Show or change reasoning effort", options: [opt(STRING, "level", "off, minimal, low, medium, high, xhigh or max")], dm: true },
-  { name: "usage", description: "Show token and cost usage", dm: true },
-  { name: "plan", description: "Ask the agent to plan without executing", options: [opt(STRING, "goal", "Goal to plan", true)], dm: true },
-  { name: "compact", description: "Compact this thread's context", dm: true },
-  { name: "abort", description: "Abort the current run", dm: true },
-  { name: "stop", description: "Stop the current run and withdraw queued inputs", dm: true },
-  { name: "bind", description: "Bind this channel or thread to an agent or group", options: [
+  { name: "threads", group: "threads", description: "List this agent's threads and link the Discord ones", dm: true },
+  { name: "rename", group: "threads", description: "Rename the current thread", options: [opt(STRING, "title", "New title", true)], dm: true },
+  { name: "archive", group: "threads", description: "Archive the current Discord thread", dm: false },
+  { name: "agent", group: "threads", description: "Move the current thread to another agent", options: [opt(STRING, "agent", "Agent id", true)], dm: true },
+  { name: "agents", group: "data", description: "List agents and their models", dm: true },
+  { name: "model", group: "run", description: "Show or change the model for this thread", options: [opt(STRING, "model", "provider/model or model id")], dm: true },
+  { name: "thinking", group: "run", description: "Show or change reasoning effort", options: [opt(STRING, "level", "off, minimal, low, medium, high, xhigh or max")], dm: true },
+  { name: "usage", group: "run", description: "Show token and cost usage", dm: true },
+  { name: "plan", group: "run", description: "Ask the agent to plan without executing", options: [opt(STRING, "goal", "Goal to plan", true)], dm: true },
+  { name: "compact", group: "run", description: "Compact this thread's context", dm: true },
+  { name: "abort", group: "run", description: "Abort the current run", dm: true },
+  { name: "stop", group: "run", description: "Stop the current run and withdraw queued inputs", dm: true },
+  { name: "bind", group: "threads", description: "Bind this channel or thread to an agent or group", options: [
     opt(STRING, "agent", "Agent id"),
     opt(STRING, "group", "Durable group/room id"),
   ], ownerOnly: true, dm: false },
-  { name: "unbind", description: "Remove this channel or thread binding", ownerOnly: true, dm: false },
-  { name: "memory", description: "Show an agent's memory notes", options: [opt(STRING, "agent", "Agent id")], dm: true },
-  { name: "schedules", description: "List cron schedules", dm: true },
-  { name: "bots", description: "List Discord bots, gateway health and default agents", ownerOnly: true, dm: false },
-  { name: "orchestrator", description: "Show or choose the orchestrator", options: [opt(STRING, "agent", "Agent id")], ownerOnly: true, dm: false },
-  { name: "settings", description: "Show the active chat configuration", ownerOnly: true, dm: false },
-  { name: "mcp", description: "List, add, remove or reload MCP servers", options: [
+  { name: "unbind", group: "threads", description: "Remove this channel or thread binding", ownerOnly: true, dm: false },
+  { name: "memory", group: "data", description: "Show an agent's memory notes", options: [opt(STRING, "agent", "Agent id")], dm: true },
+  { name: "schedules", group: "data", description: "List cron schedules", dm: true },
+  { name: "bots", group: "owner", description: "List Discord bots, gateway health and default agents", ownerOnly: true, dm: false },
+  { name: "orchestrator", group: "owner", description: "Show or choose the orchestrator", options: [opt(STRING, "agent", "Agent id")], ownerOnly: true, dm: false },
+  { name: "settings", group: "owner", description: "Show the active chat configuration", ownerOnly: true, dm: false },
+  { name: "mcp", group: "owner", description: "List, add, remove or reload MCP servers", options: [
     opt(STRING, "action", "list, add, remove or reload"),
     opt(STRING, "name", "Server name"),
     opt(STRING, "command", "Command for add"),
   ], ownerOnly: true, dm: false },
-  { name: "prune", description: "Preview stale threads and offer delete/purge", options: [opt(INTEGER, "days", "Older than N days")], ownerOnly: true, dm: false },
-  { name: "reload", description: "Reload tools and rebind agents", ownerOnly: true, dm: false },
-  { name: "restart", description: "Restart the dura service", ownerOnly: true, dm: false },
-  { name: "connect", description: "Add a Discord bot from a token (the token message is deleted)", options: [
+  { name: "prune", group: "owner", description: "Preview stale threads and offer delete/purge", options: [opt(INTEGER, "days", "Older than N days")], ownerOnly: true, dm: false },
+  { name: "reload", group: "owner", description: "Reload tools and rebind agents", ownerOnly: true, dm: false },
+  { name: "restart", group: "owner", description: "Restart the dura service", ownerOnly: true, dm: false },
+  { name: "connect", group: "setup", description: "Add a Discord bot from a token (the token message is deleted)", options: [
     opt(STRING, "label", "Registry label"),
     opt(STRING, "token", "Bot token", true),
     opt(STRING, "agent", "Default agent id for this bot"),
   ], ownerOnly: true, dm: false },
-  { name: "approve", description: "Approve a pending user by id", options: [opt(STRING, "user", "Discord user id", true)], ownerOnly: true, dm: false },
-  { name: "invite", description: "Print the bot invite URL and required permissions", dm: true },
-  { name: "server", description: "Show this guild, channel and thread", ownerOnly: true, dm: false },
-  { name: "ping", description: "Check the gateway and REST round-trip", dm: true },
+  { name: "approve", group: "owner", description: "Approve a pending user by id", options: [opt(STRING, "user", "Discord user id", true)], ownerOnly: true, dm: false },
+  { name: "invite", group: "setup", description: "Print the bot invite URL and required permissions", dm: true },
+  { name: "server", group: "setup", description: "Show this guild, channel and thread", ownerOnly: true, dm: false },
+  { name: "ping", group: "data", description: "Check the gateway and REST round-trip", dm: true },
   {
     name: "mod",
+    group: "owner",
     description: "Moderation: timeout, kick, ban, unban, warn, warnings, audit",
     options: [
       { type: 1, name: "timeout", description: "Timeout a member", options: [
@@ -107,6 +112,23 @@ export const DISCORD_COMMANDS: DiscordCommandSpec[] = [
     dm: false,
   },
 ];
+
+const GROUP_ORDER: CommandGroup[] = ["threads", "run", "data", "owner", "setup"];
+const GROUP_TITLES: Record<CommandGroup, string> = {
+  threads: "Threads",
+  run: "Run",
+  data: "Data",
+  owner: "Owner",
+  setup: "Setup",
+};
+
+/** The command list grouped the way /help prints it, built from the catalog so the two cannot drift. */
+export function commandGroups(): { title: string; names: string[] }[] {
+  return GROUP_ORDER.map((group) => ({
+    title: GROUP_TITLES[group],
+    names: DISCORD_COMMANDS.filter((spec) => spec.group === group).map((spec) => "/" + spec.name),
+  })).filter((entry) => entry.names.length > 0);
+}
 
 export function toApplicationCommand(spec: DiscordCommandSpec): DiscordApplicationCommand {
   return {
