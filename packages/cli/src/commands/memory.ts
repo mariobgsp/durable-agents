@@ -1,6 +1,7 @@
 import { type Parsed, has } from "../args.ts";
 import { fail, json, paint, print } from "../output.ts";
 import { appendLesson, appendMemory, lessonsPath, listAgents, readLessons, memoryPath, readMemory } from "../../../core/src/agents.ts";
+import { recallMemories } from "../../../core/src/recall.ts";
 
 export async function runMemory(parsed: Parsed): Promise<void> {
   const [agentId, action = "list", ...rest] = parsed.positional;
@@ -40,8 +41,24 @@ export async function runMemory(parsed: Parsed): Promise<void> {
     else print(saved.saved ? "saved: " + saved.line : "already learned: " + saved.line);
     return;
   }
+  if (action === "recall") {
+    // Same scorer the prompt-time recall uses, run by hand: keyword overlap with a recency tilt.
+    const query = rest.join(" ").trim();
+    if (!query) fail("usage: dura memory <agent> recall <query>", 2);
+    const sources = [
+      { name: "memory", text: await readMemory(agentId) },
+      { name: "lesson", text: await readLessons(agentId) },
+    ];
+    const matches = sources.flatMap(({ name, text }) =>
+      recallMemories(text, query).map((line) => ({ source: name, line })),
+    );
+    if (has(parsed, "json")) json({ agentId, query: rest.join(" ").trim(), matches });
+    else if (matches.length === 0) print(paint("dim", "(no matching notes)"));
+    else for (const match of matches) print(paint("dim", match.source + ":") + " " + match.line);
+    return;
+  }
   if (action === "edit") {
     fail("edit the files directly: " + memoryPath(agentId) + " · " + lessonsPath(agentId), 2);
   }
-  fail("usage: dura memory <agent> [list|add <note>|lessons|lesson <note>|edit]", 2);
+  fail("usage: dura memory <agent> [list|add <note>|lessons|lesson <note>|recall <query>|edit]", 2);
 }

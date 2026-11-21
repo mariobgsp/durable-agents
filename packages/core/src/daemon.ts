@@ -407,6 +407,10 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<DaemonHa
       const { consolidateLessons } = await import("./learnings.ts");
       return consolidateLessons(str(params, "agent"), { forced: true });
     },
+    "learning.suggest": async (params) => {
+      const { suggestLearning } = await import("./learnings.ts");
+      return suggestLearning(str(params, "id"));
+    },
     "thinking.get": async () => {
       const fresh = await readConfig({ fresh: true });
       const agents = await listAgents();

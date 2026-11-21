@@ -180,7 +180,7 @@ const COMMANDS: readonly Command[] = [
   {
     name: "learn",
     section: "Use",
-    summary: "Distill threads into preferences, memory and lessons: learn [thread|prefs|sweep] [--recent N] [--all]",
+    summary: "Distill threads into preferences, memory and lessons: learn [thread|prefs|sweep|suggest] [--recent N] [--all]",
     run: async (parsed) => (await import("./commands/learn.ts")).runLearn(parsed),
   },
   {

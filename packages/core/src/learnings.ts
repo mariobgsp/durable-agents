@@ -140,6 +140,142 @@ const SYSTEM_PROMPT = [
   "An empty list is the correct answer when the thread taught nothing durable. When in doubt, leave it out.",
 ].join("\n");
 
+/* --------------------------- proactive suggestions --------------------------- */
+
+export type SuggestionResult = {
+  conversationId: string;
+  agentId: string | null;
+  lesson: string;
+  betterApproach: string;
+  skipped?: "disabled" | "busy" | "too-short" | "unchanged" | "no-answer" | "quiet-thinker";
+};
+
+/**
+ * Per-agent thinking profile for suggestions: agents running nearly silent
+ * (off/minimal) opted out of proactive thinking, so suggesting at them is
+ * noise — skip before spending a model call.
+ */
+const QUIET_LEVELS = new Set(["off", "minimal"]);
+
+const SUGGEST_PROMPT = [
+  "You read one finished chat thread and coach the agent that ran it.",
+  "Answer with JSON only, no prose and no code fence:",
+  '{"lesson": "...", "betterApproach": "..."}',
+  "",
+  "lesson: the one durable lesson — a check that would have saved a round trip, a tool that failed and why,",
+  "the order of steps that finally worked. Write it as an instruction to your future self, general enough",
+  "to apply to a different task of the same shape.",
+  "betterApproach: what to do differently next time, concretely — which tool or order of steps, and when.",
+  "",
+  "Rules: each under 240 characters, no dates, no thread context. Never include passwords, tokens, keys or",
+  "other credentials. When the thread taught nothing durable, answer with empty strings.",
+].join("\n");
+
+/** One suggestion out of a model answer that may be wrapped in a fence or prose. */
+function parseSuggestion(text: string): { lesson: string; betterApproach: string } | null {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const record = parsed as Record<string, unknown>;
+  const clean = (value: unknown): string =>
+    typeof value === "string"
+      ? redactSecrets(value.replace(/\s+/g, " ").trim()).slice(0, MAX_ITEM_CHARS).trim()
+      : "";
+  const lesson = clean(record.lesson);
+  const betterApproach = clean(record.betterApproach);
+  if (lesson.length <= 8 || betterApproach.length <= 8) return null;
+  return { lesson, betterApproach };
+}
+
+/**
+ * Idle suggestion pass over one thread: one cheap model call that extracts the
+ * durable lesson and a better approach, without writing anything. Read-only, so
+ * it never grows memory and is safe to run on idle threads; the caller decides
+ * whether to surface or store the answer. Reuses the distill plumbing
+ * (transcript budget, known-notes dedupe, stateless usage ledger).
+ */
+export async function suggestLearning(conversationId: string): Promise<SuggestionResult> {
+  const sessions = await import("./sessions.ts");
+  const result: SuggestionResult = { conversationId, agentId: null, lesson: "", betterApproach: "" };
+  const config = await readConfig({ fresh: true });
+  if (!config.learning.auto) return { ...result, skipped: "disabled" };
+  if (await sessions.sessionBusy(conversationId).catch(() => true)) return { ...result, skipped: "busy" };
+
+  const messages = (await sessions.transcript(conversationId))
+    .filter((message) => (message.role === "user" || message.role === "assistant") && message.text?.trim())
+    .slice(-MAX_MESSAGES);
+  if (messages.length < config.learning.minMessages) return { ...result, skipped: "too-short" };
+
+  const agentId = (await sessions.agentForConversation(conversationId)) ?? null;
+  result.agentId = agentId;
+  if (agentId) {
+    const { readAgent } = await import("./agents.ts");
+    const files = await readAgent(agentId).catch(() => null);
+    if (files && QUIET_LEVELS.has(files.record.thinkingLevel)) return { ...result, skipped: "quiet-thinker" };
+  }
+
+  let budget = MAX_TRANSCRIPT_CHARS;
+  const lines: string[] = [];
+  for (let index = messages.length - 1; index >= 0 && budget > 0; index -= 1) {
+    const message = messages[index]!;
+    const body = (message.text ?? "").replace(/\s+/g, " ").trim().slice(0, 2000);
+    const line = (message.role === "user" ? "owner: " : "agent: ") + body;
+    lines.unshift(line.slice(0, Math.max(200, budget)));
+    budget -= line.length;
+  }
+
+  const lessonsText = agentId ? await readLessons(agentId).catch(() => "") : "";
+  const known = lessonsText ? knownNotes(lessonsText) : new Set<string>();
+
+  const ref = await resolveDefaultModel();
+  const model = await models.getModel(ref.provider, ref.modelId);
+  if (!model) return { ...result, skipped: "no-answer" };
+
+  const answer = await models
+    .completeSimple(
+      model,
+      {
+        systemPrompt: SUGGEST_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: [
+              "Lessons this agent already learned:",
+              lessonsText ? [...known].slice(-20).join("\n") || "(none yet)" : "(this thread has no agent)",
+              "",
+              "Thread transcript, oldest first:",
+              lines.join("\n"),
+            ].join("\n"),
+            timestamp: Date.now(),
+          },
+        ],
+      },
+      { sessionId: "learning-suggest-" + conversationId },
+    )
+    .catch(() => undefined);
+  if (answer?.usage) {
+    await recordStatelessUsage({
+      source: "learning-suggest",
+      provider: ref.provider,
+      modelId: ref.modelId,
+      usage: answer.usage,
+      at: answer.timestamp,
+    }).catch(() => undefined);
+  }
+  const parsed = answer ? parseSuggestion(textOfAnswer(answer)) : null;
+  if (!parsed) return { ...result, skipped: "no-answer" };
+  // Suggesting what the agent already learned is noise: silence, like distill's dedupe.
+  if (!isNew(parsed.lesson, known)) return { ...result, skipped: "unchanged" };
+  return { ...result, lesson: parsed.lesson, betterApproach: parsed.betterApproach };
+}
+
 /**
  * Read one thread, ask a cheap model what was durable, and store it.
  *
