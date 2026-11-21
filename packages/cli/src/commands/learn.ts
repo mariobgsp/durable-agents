@@ -1,6 +1,7 @@
 import { type Parsed, has, numberFlag } from "../args.ts";
 import { fail, json, paint, print } from "../output.ts";
 import { withDaemon } from "../client.ts";
+import { listAgents, readLessons } from "../../../core/src/agents.ts";
 
 type Session = { id: string; title: string; updatedAt: number; deletedAt?: number };
 type SweepResult = {
@@ -33,6 +34,35 @@ type LearnResult = {
  */
 export async function runLearn(parsed: Parsed): Promise<void> {
   const [target] = parsed.positional;
+
+  if (target === "suggest") {
+    // Proactive suggestions without waking the daemon: the newest lessons per agent are the closest
+    // thing to advice the stored memory can give, and reading one small file per agent costs nothing.
+    const [only] = parsed.positional.slice(1);
+    const agents = (await listAgents()).filter((agent) => !only || agent.id === only);
+    if (only && agents.length === 0) fail("unknown agent: " + only, 4);
+    const limit = Math.max(1, numberFlag(parsed, "recent") ?? 3);
+    const suggestions = (
+      await Promise.all(
+        agents.map(async (agent) => ({
+          agentId: agent.id,
+          lessons: (await readLessons(agent.id))
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line.startsWith("- "))
+            .slice(-limit),
+        })),
+      )
+    ).filter((entry) => entry.lessons.length > 0);
+    if (has(parsed, "json")) json({ suggestions });
+    else if (suggestions.length === 0) print(paint("dim", "(no lessons yet - distill a thread first)"));
+    else
+      for (const entry of suggestions) {
+        print(paint("bold", entry.agentId));
+        for (const lesson of entry.lessons) print("  suggest: " + lesson.replace(/^-\s*/, ""));
+      }
+    return;
+  }
 
   if (target === "sweep") {
     const swept = await withDaemon((client) => client.request<SweepResult>("learning.sweep"));

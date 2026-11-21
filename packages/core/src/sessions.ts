@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
 import type { AgentChange, Conversation, ConversationId, EntryId, ToolRegistration } from "@earendil-works/pi-durable";
-import { appendMemory, readAgent, renderInstructions, writeAgent, type ThinkingLevel } from "./agents.ts";
+import { appendMemory, readAgent, readMemory, renderInstructions, writeAgent, type ThinkingLevel } from "./agents.ts";
 import { preferTool } from "./remember.ts";
 import {
   USER_ENTRY_KIND,
@@ -11,6 +11,7 @@ import {
   type UserMessageOptions,
 } from "./attachments.ts";
 import { imagePolicy, type ImagePolicy } from "./capabilities.ts";
+import { recallBlock } from "./recall.ts";
 import { cancelLearning, scheduleLearning } from "./learnings.ts";
 import { refreshPreferences } from "./preferences.ts";
 import { rememberTool } from "./remember.ts";
@@ -850,6 +851,13 @@ export async function sendMessage(
   if (!conversation) return null;
 
   const { data, content } = await prepareUserMessage(body, await attachmentPolicy(record), options);
+  // Fast recall: matching MEMORY.md notes ride along as model-only context, so the stored transcript
+  // keeps exactly what the owner wrote. Empty when nothing matches, so unrelated turns cost nothing.
+  if (record.agent && data.text.length > 0) {
+    const memoryMd = await readMemory(record.agent).catch(() => "");
+    const recall = recallBlock(memoryMd, data.text);
+    if (recall && Array.isArray(content)) content.push({ type: "text", text: recall });
+  }
   // The submission is durable by the time this call returns; the answer arrives over the WebSocket.
   const submission = await conversation.submit(
     {

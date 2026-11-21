@@ -2,6 +2,8 @@ node_modules/
 data/
 dist/
 *.log
+crates/*/target/
+target/
 
 # Credentials and browser sessions. data/ already covers these, but naming them again means a future change
 # to that rule cannot quietly make a password or a login cookie committable.

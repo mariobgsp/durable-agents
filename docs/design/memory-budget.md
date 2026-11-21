@@ -24,3 +24,10 @@ Levers:
 - systemd MemoryHigh 1700M, MemoryMax 2G, MemorySwapMax 1G; Node heap 1400 MB, semi-space 16 MB.
 
 `dura tune` detects zram and sysctl state first and only writes values that are still at kernel defaults.
+
+## Recall and suggest budget
+
+`dura memory <agent> recall <query>` runs the core keyword/recency scorer over MEMORY.md and LESSONS.md:
+two small file reads, no model call, no daemon. `dura learn suggest [agent]` reads one lessons file per
+agent and prints the newest entries. Both stay far under the 2 GB gate: peak extra RSS is the two text
+files (tens of KiB), released when the command exits.

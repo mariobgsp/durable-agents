@@ -1,0 +1,15 @@
+[package]
+name = "mem-integrator"
+version = "0.1.0"
+edition = "2021"
+description = "Tiny memory file-sync + recall sidecar for small devices (stdio / unix socket, std only)"
+license = "MIT"
+
+# No dependencies: std only, so the release binary stays small enough
+# for Hermes-style small-device targets.
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

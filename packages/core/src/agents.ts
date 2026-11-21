@@ -8,6 +8,7 @@ import { models, resolveDefaultModel } from "./models.ts";
 import type { PermissionTier } from "./permissions.ts";
 import { recordStatelessUsage } from "./usage-ledger.ts";
 import { cachedPreferences, preferencesSection } from "./preferences.ts";
+import { memoryNotes } from "./recall.ts";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -470,10 +471,7 @@ export async function appendMemory(id: string, note: string): Promise<{ saved: b
  * meant to inform the prompt, not to become the conversation.
  */
 function memorySection(memoryMd: string): string {
-  const notes = memoryMd
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith("- "));
+  const notes = memoryNotes(memoryMd);
   if (notes.length === 0) return "";
   const kept = notes.slice(-MEMORY_RENDER_LIMIT);
   const omitted = notes.length - kept.length;
